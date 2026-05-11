@@ -1,0 +1,398 @@
+import React, { useState, useRef, useEffect } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  Image,
+  Dimensions,
+  FlatList,
+  Alert,
+  ActivityIndicator,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import { useRouter, useLocalSearchParams } from 'expo-router';
+import { COLORS } from '../src/config';
+import { useScanStore } from '../src/store/scanStore';
+import { ScannedPage } from '../src/types';
+
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+
+export default function PagePreviewScreen() {
+  const router = useRouter();
+  const { pageNumber, phase, studentIndex } = useLocalSearchParams<{
+    pageNumber: string;
+    phase: string;
+    studentIndex?: string;
+  }>();
+
+  const { currentSession, removePage, currentPhase, currentStudentIndex } = useScanStore();
+  const flatListRef = useRef<FlatList>(null);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [imageLoading, setImageLoading] = useState(true);
+
+  // Get pages based on phase
+  const getPages = (): ScannedPage[] => {
+    if (!currentSession) return [];
+    
+    const phaseToUse = phase || currentPhase;
+    const studentIdx = studentIndex ? parseInt(studentIndex) : currentStudentIndex;
+    
+    if (phaseToUse === 'question_paper') {
+      return currentSession.question_paper.pages;
+    } else if (phaseToUse === 'model_answer') {
+      return currentSession.model_answer.pages;
+    } else {
+      return currentSession.students[studentIdx]?.pages || [];
+    }
+  };
+
+  const pages = getPages();
+  
+  // Find initial page index
+  useEffect(() => {
+    if (pageNumber && pages.length > 0) {
+      const index = pages.findIndex(p => p.page_number === parseInt(pageNumber));
+      if (index >= 0) {
+        setCurrentIndex(index);
+        setTimeout(() => {
+          flatListRef.current?.scrollToIndex({ index, animated: false });
+        }, 100);
+      }
+    }
+  }, [pageNumber, pages.length]);
+
+  const getPhaseLabel = () => {
+    const phaseToUse = phase || currentPhase;
+    switch (phaseToUse) {
+      case 'question_paper': return 'Question Paper';
+      case 'model_answer': return 'Model Answer';
+      default: return 'Student Paper';
+    }
+  };
+
+  const handleDelete = () => {
+    const currentPage = pages[currentIndex];
+    if (!currentPage) return;
+
+    Alert.alert(
+      'Delete Page',
+      `Are you sure you want to delete Page ${currentPage.page_number}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            const phaseToUse = phase || currentPhase;
+            const studentIdx = studentIndex ? parseInt(studentIndex) : undefined;
+            removePage(currentPage.page_number, phaseToUse as ScanPhase, studentIdx);
+            // Navigate back if no more pages
+            if (pages.length <= 1) {
+              router.back();
+            } else if (currentIndex >= pages.length - 1) {
+              setCurrentIndex(Math.max(0, currentIndex - 1));
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleRetake = () => {
+    Alert.alert(
+      'Retake Page',
+      'Go back to camera to retake this page?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Retake',
+          onPress: () => {
+            // Delete current page and go back to scanner
+            const currentPage = pages[currentIndex];
+            if (currentPage) {
+              const phaseToUse = phase || currentPhase;
+              const studentIdx = studentIndex ? parseInt(studentIndex) : undefined;
+              removePage(currentPage.page_number, phaseToUse as ScanPhase, studentIdx);
+            }
+            router.back();
+          },
+        },
+      ]
+    );
+  };
+
+  const onViewableItemsChanged = useRef(({ viewableItems }: any) => {
+    if (viewableItems.length > 0) {
+      setCurrentIndex(viewableItems[0].index);
+      setImageLoading(true);
+    }
+  }).current;
+
+  const renderPage = ({ item, index }: { item: ScannedPage; index: number }) => (
+    <View style={styles.pageContainer}>
+      {item.base64 ? (
+        <>
+          <Image
+            source={{ uri: `data:image/jpeg;base64,${item.base64}` }}
+            style={styles.image}
+            resizeMode="contain"
+            onLoadStart={() => setImageLoading(true)}
+            onLoadEnd={() => setImageLoading(false)}
+          />
+          {imageLoading && index === currentIndex && (
+            <View style={styles.loadingOverlay}>
+              <ActivityIndicator size="large" color={COLORS.primary} />
+            </View>
+          )}
+        </>
+      ) : (
+        <View style={styles.noImage}>
+          <Ionicons name="image-outline" size={64} color={COLORS.textMuted} />
+          <Text style={styles.noImageText}>No preview available</Text>
+        </View>
+      )}
+    </View>
+  );
+
+  if (pages.length === 0) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.closeButton}>
+            <Ionicons name="close" size={28} color={COLORS.text} />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>No Pages</Text>
+          <View style={{ width: 44 }} />
+        </View>
+        <View style={styles.noImage}>
+          <Text style={styles.noImageText}>No pages scanned yet</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  const currentPage = pages[currentIndex];
+
+  return (
+    <SafeAreaView style={styles.container}>
+      {/* Header */}
+      <View style={styles.header}>
+        <TouchableOpacity onPress={() => router.back()} style={styles.closeButton}>
+          <Ionicons name="close" size={28} color={COLORS.text} />
+        </TouchableOpacity>
+        <View style={styles.headerInfo}>
+          <Text style={styles.headerTitle}>
+            Page {currentPage?.page_number || 1} of {pages.length}
+          </Text>
+          <Text style={styles.headerSubtitle}>{getPhaseLabel()}</Text>
+        </View>
+        <View style={{ width: 44 }} />
+      </View>
+
+      {/* Page indicator dots */}
+      {pages.length > 1 && (
+        <View style={styles.pagination}>
+          {pages.map((_, idx) => (
+            <View
+              key={idx}
+              style={[
+                styles.paginationDot,
+                idx === currentIndex && styles.paginationDotActive,
+              ]}
+            />
+          ))}
+        </View>
+      )}
+
+      {/* Swipeable Pages */}
+      <FlatList
+        ref={flatListRef}
+        data={pages}
+        renderItem={renderPage}
+        keyExtractor={(item) => `page-${item.page_number}`}
+        horizontal
+        pagingEnabled
+        showsHorizontalScrollIndicator={false}
+        onViewableItemsChanged={onViewableItemsChanged}
+        viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}
+        getItemLayout={(_, index) => ({
+          length: SCREEN_WIDTH,
+          offset: SCREEN_WIDTH * index,
+          index,
+        })}
+        initialNumToRender={1}
+        maxToRenderPerBatch={2}
+        windowSize={3}
+      />
+
+      {/* Swipe hint */}
+      {pages.length > 1 && (
+        <View style={styles.swipeHint}>
+          <Ionicons name="swap-horizontal" size={16} color={COLORS.textMuted} />
+          <Text style={styles.swipeHintText}>Swipe to view other pages</Text>
+        </View>
+      )}
+
+      {/* Footer with actions */}
+      <View style={styles.footer}>
+        <View style={styles.infoRow}>
+          <View style={styles.infoItem}>
+            <Ionicons
+              name={currentPage?.is_blurry ? 'warning' : 'checkmark-circle'}
+              size={18}
+              color={currentPage?.is_blurry ? COLORS.warning : COLORS.success}
+            />
+            <Text style={styles.infoText}>
+              {currentPage?.is_blurry ? 'Blurry' : 'Sharp'}
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.actions}>
+          <TouchableOpacity style={styles.actionButton} onPress={handleRetake}>
+            <Ionicons name="refresh" size={20} color={COLORS.text} />
+            <Text style={styles.actionText}>Retake</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.actionButton, styles.deleteButton]}
+            onPress={handleDelete}
+          >
+            <Ionicons name="trash" size={20} color={COLORS.error} />
+            <Text style={[styles.actionText, { color: COLORS.error }]}>Delete</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#000',
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: COLORS.background,
+  },
+  closeButton: {
+    padding: 8,
+  },
+  headerInfo: {
+    alignItems: 'center',
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  headerSubtitle: {
+    fontSize: 13,
+    color: COLORS.textLight,
+    marginTop: 2,
+  },
+  pagination: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 8,
+    backgroundColor: COLORS.background,
+    gap: 6,
+  },
+  paginationDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: COLORS.border,
+  },
+  paginationDotActive: {
+    backgroundColor: COLORS.primary,
+    width: 24,
+  },
+  pageContainer: {
+    width: SCREEN_WIDTH,
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  image: {
+    width: SCREEN_WIDTH,
+    height: SCREEN_HEIGHT * 0.6,
+  },
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  },
+  noImage: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  noImageText: {
+    fontSize: 16,
+    color: COLORS.textMuted,
+    marginTop: 12,
+  },
+  swipeHint: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+  },
+  swipeHintText: {
+    fontSize: 12,
+    color: COLORS.textMuted,
+  },
+  footer: {
+    backgroundColor: COLORS.background,
+    padding: 16,
+    paddingBottom: 24,
+  },
+  infoRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  infoItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  infoText: {
+    fontSize: 14,
+    color: COLORS.text,
+  },
+  actions: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  actionButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    backgroundColor: COLORS.backgroundDark,
+    borderRadius: 12,
+  },
+  deleteButton: {
+    backgroundColor: `${COLORS.error}15`,
+  },
+  actionText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+});
