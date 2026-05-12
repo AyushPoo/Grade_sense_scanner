@@ -16,7 +16,7 @@ export function useCVAutoCapture({
   cooldownMs = 2000,
 }: UseCVAutoCaptureProps) {
   const [lastCaptureTime, setLastCaptureTime] = useState(0);
-  const captureTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const captureTimeoutRef = useRef<any>(null);
   const isCapturingRef = useRef(false);
 
   const captureState: CaptureState = {

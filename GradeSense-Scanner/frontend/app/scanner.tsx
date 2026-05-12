@@ -49,6 +49,7 @@ const ENABLE_LIVE_DETECTION = false;
 export default function ScannerScreen() {
   const router = useRouter();
   const cameraRef = useRef<CameraView>(null);
+  const isMounted = useRef(true);
   const [permission, requestPermission] = useCameraPermissions();
   const hasPermission = permission?.granted;
   
@@ -117,6 +118,7 @@ export default function ScannerScreen() {
     });
 
     return () => {
+      isMounted.current = false;
       ScreenOrientation.removeOrientationChangeListener(subscription);
       ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     };
@@ -134,40 +136,76 @@ export default function ScannerScreen() {
     setIsCameraReady(true);
   }, []);
 
-  // Live Frame Processing Loop
+  // Live Frame Processing Loop - Redesigned for SAFE THROTTLED ANALYSIS
   const isProcessingFrame = useRef(false);
+  const frameLoopTimeoutRef = useRef<any>(null);
+
   useEffect(() => {
     // STABILITY: Fully bypass live loop if disabled
-    if (!ENABLE_LIVE_DETECTION || !isCameraReady || isPaused || isCapturing) return;
+    if (!ENABLE_LIVE_DETECTION || !isCameraReady || isPaused || isCapturing) {
+      if (frameLoopTimeoutRef.current) clearTimeout(frameLoopTimeoutRef.current);
+      return;
+    }
 
-    const intervalId = setInterval(async () => {
-      if (isProcessingFrame.current || !cameraRef.current) return;
+    const processFrame = async () => {
+      if (isProcessingFrame.current || !cameraRef.current || isPaused || isCapturing) {
+        frameLoopTimeoutRef.current = setTimeout(processFrame, 2000);
+        return;
+      }
       
+      const startTime = Date.now();
       try {
         isProcessingFrame.current = true;
-        // Take a low-resolution frame purely for CV analysis
-        // MEMORY: Use minimal settings to prevent activity death
+        
+        // 1. Capture lightweight frame (Min resolution, low quality)
         const photo = await cameraRef.current.takePictureAsync({
-          quality: 0.3, // Stabilized quality
-          base64: false, // Reduced memory pressure
+          quality: 0.1,
+          base64: false,
           shutterSound: false,
           skipProcessing: true,
         });
 
-        // Skip processing if base64 is disabled for stability
-        if (photo?.uri && ENABLE_LIVE_DETECTION) {
-           // If we ever re-enable, we'd need to convert uri to base64 here or modify detectDocumentInFrame
-           // But for now, we are DISABLING the loop.
+        if (photo?.uri) {
+          const captureTime = Date.now();
+          
+          // 2. Downscale for CV speed
+          const manipulated = await ImageManipulator.manipulateAsync(
+            photo.uri,
+            [{ resize: { width: 480 } }],
+            { base64: true, format: ImageManipulator.SaveFormat.JPEG }
+          );
+
+          if (manipulated.base64) {
+            // 3. REAL-TIME ANALYSIS
+            const result = await detectDocumentInFrame(
+              manipulated.base64,
+              manipulated.width,
+              manipulated.height
+            );
+            
+            const endTime = Date.now();
+            console.log(`[CV Engine] Frame processed in ${endTime - startTime}ms (Analysis: ${endTime - captureTime}ms)`);
+            
+            setCvResult(result);
+          }
+          
+          // Cleanup captured temp file
+          await FileSystem.deleteAsync(photo.uri, { idempotent: true });
         }
       } catch (err) {
-        console.warn('[Scanner] Live frame error (silently handled):', err);
+        console.warn('[Scanner] Live frame error:', err.message);
       } finally {
         isProcessingFrame.current = false;
+        // Schedule next frame ONLY after current is finished
+        frameLoopTimeoutRef.current = setTimeout(processFrame, 2000);
       }
-    }, 1000); // Increased throttle to 1 FPS for stability
+    };
+
+    // Kick off the loop
+    frameLoopTimeoutRef.current = setTimeout(processFrame, 1000);
 
     return () => {
-      if (intervalId) clearInterval(intervalId);
+      if (frameLoopTimeoutRef.current) clearTimeout(frameLoopTimeoutRef.current);
       isProcessingFrame.current = false;
     };
   }, [isCameraReady, isPaused, isCapturing]);
@@ -229,39 +267,25 @@ export default function ScannerScreen() {
    */
   const addImageToSession = async (imageUri: string, blurResult: BlurDetectionResult) => {
     try {
-      if (!FileSystem.cacheDirectory) {
-        throw new Error('FileSystem.cacheDirectory is unavailable');
-      }
-
-      // Process and compress image natively for speed
-      let inputForProcess: string;
-      if (imageUri.startsWith('file://')) {
-        inputForProcess = await FileSystem.readAsStringAsync(imageUri, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-      } else {
-        inputForProcess = imageUri;
-      }
-
-      const processed = await nativeProcessImage(inputForProcess, {
+      // 1. Process image natively (Resizing, Compression, Enhancement)
+      // MEMORY SAFE: nativeProcessImage now works on URIs and returns a URI
+      const processed = await nativeProcessImage(imageUri, {
         targetWidth: CONFIG.IMAGE_TARGET_WIDTH,
         grayscale: true,
-        enhance: true, // Enable real enhancement pipeline
+        enhance: true,
         autoCrop: autoCropEnabled,
       });
 
-      if (!processed.base64 || processed.base64.length === 0) {
-        throw new Error('Image processing returned empty data');
-      }
-
-      const fileSizeBytes = Math.round((processed.base64.length * 3) / 4);
-
-      // Save the native processed image to a permanent file
-      // We use documentDirectory because cacheDirectory can be purged by the OS
+      // 2. Move to permanent storage if needed
       const processedUri = `${FileSystem.documentDirectory}scanned_${Date.now()}.jpg`;
-      await FileSystem.writeAsStringAsync(processedUri, processed.base64, {
-        encoding: FileSystem.EncodingType.Base64,
+      await FileSystem.copyAsync({
+        from: processed.uri,
+        to: processedUri
       });
+
+      // 3. Get file size without reading full content
+      const fileInfo = await FileSystem.getInfoAsync(processedUri);
+      const fileSizeBytes = fileInfo.exists ? fileInfo.size : 0;
 
       let pageNumber = 1;
       if (currentPhase === 'question_paper') {
@@ -329,7 +353,9 @@ export default function ScannerScreen() {
       // Ensure we don't crash the whole screen on capture failure
       Alert.alert('Capture Failed', error?.message || 'The camera was unable to take a picture. Please try again.');
     } finally {
-      setIsCapturing(false);
+      if (isMounted.current) {
+        setIsCapturing(false);
+      }
     }
   }, [isCapturing, lastCaptureTime, isPaused, isCameraReady]);
 

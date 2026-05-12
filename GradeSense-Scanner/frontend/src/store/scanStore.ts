@@ -466,36 +466,23 @@ export const useScanStore = create<ScanState>()(
             'Authorization': token ? `Bearer ${token}` : '',
           };
 
-          // Helper to read page data from disk to avoid keeping base64 in store
-          const preparePages = async (pages: ScannedPage[]) => {
-            return Promise.all(pages.map(async (p) => {
-              const base64 = await FileSystem.readAsStringAsync(p.file_path, {
-                encoding: FileSystem.EncodingType.Base64,
-              });
-              return { ...p, base64 };
-            }));
-          };
-
           let endpoint = '';
           let body = {};
 
           if (currentPhase === 'question_paper') {
             endpoint = `${backendUrl}/api/scan-sessions/${currentSession.session_id}/upload-qp`;
-            const pagesWithBase64 = await preparePages(currentSession.question_paper.pages);
-            body = { pages: pagesWithBase64 };
+            body = { pages: currentSession.question_paper.pages };
           } else if (currentPhase === 'model_answer') {
             endpoint = `${backendUrl}/api/scan-sessions/${currentSession.session_id}/upload-model`;
-            const pagesWithBase64 = await preparePages(currentSession.model_answer.pages);
-            body = { pages: pagesWithBase64 };
+            body = { pages: currentSession.model_answer.pages };
           } else {
             const student = currentSession.students[currentStudentIndex];
             if (!student) return;
             endpoint = `${backendUrl}/api/scan-sessions/${currentSession.session_id}/upload-student`;
-            const pagesWithBase64 = await preparePages(student.pages);
-            body = { student: { ...student, pages: pagesWithBase64 } };
+            body = { student: student };
           }
 
-          console.log(`[Persistence] Syncing ${currentPhase} for session ${currentSession.session_id}...`);
+          console.log(`[Persistence] Syncing metadata for ${currentPhase}...`);
           
           const response = await fetch(endpoint, {
             method: 'POST',
@@ -507,11 +494,9 @@ export const useScanStore = create<ScanState>()(
             throw new Error(`Sync failed with status ${response.status}`);
           }
           
-          console.log(`[Persistence] Successfully synced ${currentPhase}`);
+          console.log(`[Persistence] Successfully synced ${currentPhase} metadata`);
         } catch (error) {
           console.error("[Persistence] Metadata sync error:", error);
-          // We don't throw here to avoid crashing the UI, but we log it.
-          // In a future task, we could mark the session as "unsynced".
         }
       },
     }),

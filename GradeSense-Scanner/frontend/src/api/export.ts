@@ -1,6 +1,59 @@
-import { ScanSession } from '../types';
+import { ScanSession, ScannedPage, ScanPhase } from '../types';
 import { useScanStore } from '../store/scanStore';
 import { useAuthStore } from '../store/authStore';
+import * as FileSystem from 'expo-file-system/legacy';
+
+async function uploadPageFile(
+  sessionId: string,
+  page: ScannedPage,
+  phase: ScanPhase,
+  studentIndex?: number,
+  retries = 3
+): Promise<string> {
+  const token = useAuthStore.getState().sessionToken;
+  const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
+  
+  if (!backendUrl) throw new Error("Missing EXPO_PUBLIC_BACKEND_URL");
+
+  let lastError;
+  for (let i = 0; i < retries; i++) {
+    try {
+      // MEMORY SAFE: Upload directly from file URI using native MULTIPART
+      console.log(`[Upload] Starting multipart upload for page ${page.page_number} (${phase})`);
+      const response = await FileSystem.uploadAsync(
+        `${backendUrl}/api/scan-sessions/${sessionId}/upload-file`,
+        page.file_path,
+        {
+          fieldName: 'file',
+          httpMethod: 'POST',
+          uploadType: FileSystem.FileSystemUploadType.MULTIPART,
+          headers: {
+            'Authorization': token ? `Bearer ${token}` : '',
+          },
+          parameters: {
+            page_number: page.page_number.toString(),
+            phase: phase,
+            ...(studentIndex !== undefined ? { student_index: studentIndex.toString() } : {}),
+          }
+        }
+      );
+
+      if (response.status === 200 || response.status === 201) {
+        const data = JSON.parse(response.body);
+        return data.file_url;
+      }
+      
+      lastError = new Error(`Upload failed with status ${response.status}`);
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      console.warn(`Retry ${i + 1} for page ${page.page_number} failed:`, lastError.message);
+      // Backoff
+      await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
+    }
+  }
+
+  throw lastError || new Error(`Failed to upload image file after ${retries} retries`);
+}
 
 export async function uploadSessionToWebApp(
   session: ScanSession, 
@@ -13,83 +66,89 @@ export async function uploadSessionToWebApp(
     const token = useAuthStore.getState().sessionToken;
     const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
     
-    // Calculate total items (QP + Model Answer + Students)
-    let totalItems = 0;
-    if (session.question_paper.pages.length > 0) totalItems++;
-    if (session.model_answer.pages.length > 0) totalItems++;
-    totalItems += session.students.filter(s => s.pages.length > 0).length;
+    // Calculate total operations (Pages + Metadata Syncs)
+    let totalOps = 0;
+    const qpPages = session.question_paper.pages;
+    const maPages = session.model_answer.pages;
+    const studentsWithPages = session.students.filter(s => s.pages.length > 0);
     
-    if (totalItems === 0) {
-      updateStatus(session.session_id, 'uploaded', 100);
-      return;
+    totalOps += qpPages.length + (qpPages.length > 0 ? 1 : 0);
+    totalOps += maPages.length + (maPages.length > 0 ? 1 : 0);
+    for (const s of studentsWithPages) {
+      totalOps += s.pages.length + 1;
     }
-
-    let uploadedCount = 0;
+    totalOps += 1; // Complete session
+    
+    let completedOps = 0;
 
     const authHeaders = {
       'Content-Type': 'application/json',
       'Authorization': token ? `Bearer ${token}` : '',
     };
 
-    const updateProgress = (label: string) => {
-      uploadedCount++;
-      const progress = uploadedCount / totalItems;
+    const stepProgress = (label: string) => {
+      completedOps++;
+      const progress = completedOps / totalOps;
       onProgress(label, progress);
       updateStatus(session.session_id, 'uploading', Math.round(progress * 100));
     };
 
-    // Helper to read page data from disk
-    const readBase64 = async (pages: any[]) => {
-      const { ScannedPage } = await import('../types');
-      const FileSystem = await import('expo-file-system/legacy');
-      return Promise.all(pages.map(async (p) => {
-        const base64 = await FileSystem.readAsStringAsync(p.file_path, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-        return { ...p, base64 };
-      }));
-    };
-
-    // 1. Upload Question Paper
-    if (session.question_paper.pages.length > 0) {
-      const pagesWithBase64 = await readBase64(session.question_paper.pages);
-      const qpRes = await fetch(`${backendUrl}/api/scan-sessions/${session.session_id}/upload-qp`, {
+    // 1. Upload Question Paper Pages
+    if (qpPages.length > 0) {
+      const updatedPages = [];
+      for (const page of qpPages) {
+        stepProgress(`Uploading QP Page ${page.page_number}`);
+        const fileUrl = await uploadPageFile(session.session_id, page, 'question_paper');
+        updatedPages.push({ ...page, file_url: fileUrl });
+      }
+      
+      stepProgress('Syncing QP Metadata');
+      await fetch(`${backendUrl}/api/scan-sessions/${session.session_id}/upload-qp`, {
         method: 'POST',
         headers: authHeaders,
-        body: JSON.stringify({ pages: pagesWithBase64 })
+        body: JSON.stringify({ pages: updatedPages })
       });
-      if (!qpRes.ok) throw new Error('Failed to upload Question Paper metadata');
-      updateProgress('Question Paper');
     }
 
-    // 2. Upload Model Answer
-    if (session.model_answer.pages.length > 0) {
-      const pagesWithBase64 = await readBase64(session.model_answer.pages);
-      const maRes = await fetch(`${backendUrl}/api/scan-sessions/${session.session_id}/upload-model`, {
+    // 2. Upload Model Answer Pages
+    if (maPages.length > 0) {
+      const updatedPages = [];
+      for (const page of maPages) {
+        stepProgress(`Uploading Model Page ${page.page_number}`);
+        const fileUrl = await uploadPageFile(session.session_id, page, 'model_answer');
+        updatedPages.push({ ...page, file_url: fileUrl });
+      }
+      
+      stepProgress('Syncing Model Metadata');
+      await fetch(`${backendUrl}/api/scan-sessions/${session.session_id}/upload-model`, {
         method: 'POST',
         headers: authHeaders,
-        body: JSON.stringify({ pages: pagesWithBase64 })
+        body: JSON.stringify({ pages: updatedPages })
       });
-      if (!maRes.ok) throw new Error('Failed to upload Model Answer metadata');
-      updateProgress('Model Answer');
     }
 
-    // 3. Upload Students
+    // 3. Upload Student Pages
     for (let i = 0; i < session.students.length; i++) {
       const student = session.students[i];
       if (student.pages.length > 0) {
-        const pagesWithBase64 = await readBase64(student.pages);
-        const stuRes = await fetch(`${backendUrl}/api/scan-sessions/${session.session_id}/upload-student`, {
+        const updatedPages = [];
+        for (const page of student.pages) {
+          stepProgress(`Student ${i + 1}: Page ${page.page_number}`);
+          const fileUrl = await uploadPageFile(session.session_id, page, 'students', i);
+          updatedPages.push({ ...page, file_url: fileUrl });
+        }
+        
+        stepProgress(`Syncing Student ${i + 1} Metadata`);
+        await fetch(`${backendUrl}/api/scan-sessions/${session.session_id}/upload-student`, {
           method: 'POST',
           headers: authHeaders,
-          body: JSON.stringify({ student: { ...student, pages: pagesWithBase64 } })
+          body: JSON.stringify({ student: { ...student, pages: updatedPages } })
         });
-        if (!stuRes.ok) throw new Error(`Failed to upload metadata for Student ${i + 1}`);
-        updateProgress(`Student ${i + 1} of ${session.students.length}`);
       }
     }
 
     // 4. Finalize
+    stepProgress('Finalizing session');
     const compRes = await fetch(`${backendUrl}/api/scan-sessions/${session.session_id}/complete`, {
       method: 'POST',
       headers: authHeaders,
@@ -97,7 +156,7 @@ export async function uploadSessionToWebApp(
     if (!compRes.ok) throw new Error('Failed to complete session');
 
     updateStatus(session.session_id, 'uploaded', 100);
-    console.log(`Session ${session.session_id} successfully synced to webapp.`);
+    console.log(`Session ${session.session_id} successfully synced via multipart upload.`);
 
   } catch (error) {
     console.error('Upload failed:', error);
@@ -105,3 +164,4 @@ export async function uploadSessionToWebApp(
     throw error;
   }
 }
+

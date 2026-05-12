@@ -15,6 +15,8 @@ import cv2
 import numpy as np
 import base64
 from io import BytesIO
+from fastapi import File, UploadFile, Form
+import shutil
 
 # Configure logging early so startup failures are visible.
 logging.basicConfig(
@@ -42,6 +44,14 @@ if not db_name:
 
 client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=5000)
 db = client[db_name]
+
+# ==================== FILE STORAGE ====================
+UPLOADS_DIR = ROOT_DIR / "uploads"
+UPLOADS_DIR.mkdir(exist_ok=True)
+
+from fastapi.staticfiles import StaticFiles
+# Serve uploads for preview if needed
+# app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 
 # Create the main app
 app = FastAPI(title="GradeSense Scanner API")
@@ -91,7 +101,7 @@ class PageMetadata(BaseModel):
     is_blurry: bool
     sharpness_score: float
     captured_at: str
-    base64: Optional[str] = None
+    file_url: Optional[str] = None
 
 class QuestionPaperInfo(BaseModel):
     page_count: int = 0
@@ -349,7 +359,6 @@ async def create_scan_session(data: ScanSessionCreate, authorization: Optional[s
     
     return {"session_id": session_id}
 
-
 @api_router.post("/scan-sessions/{session_id}/upload-qp")
 async def upload_question_paper(session_id: str, data: UploadQpRequest, authorization: Optional[str] = Header(None)):
     """Upload question paper metadata"""
@@ -359,6 +368,56 @@ async def upload_question_paper(session_id: str, data: UploadQpRequest, authoriz
         {"$set": {"question_paper.pages": [p.model_dump() for p in data.pages], "question_paper.page_count": len(data.pages)}}
     )
     return {"status": "success", "pages_received": len(data.pages)}
+
+
+@api_router.post("/scan-sessions/{session_id}/upload-file")
+async def upload_file(
+    session_id: str,
+    page_number: int = Form(...),
+    phase: str = Form(...),
+    student_index: Optional[int] = Form(None),
+    file: UploadFile = File(...),
+    authorization: Optional[str] = Header(None)
+):
+    """
+    Memory-safe multipart upload for individual scanned pages.
+    Saves to disk and updates session metadata with file URL.
+    """
+    logger.info(f"Received upload: session={session_id}, phase={phase}, page={page_number}, file={file.filename}")
+    user = await get_current_user(authorization)
+    
+    # Create session-specific directory
+    session_dir = UPLOADS_DIR / session_id
+    session_dir.mkdir(exist_ok=True)
+    
+    # Generate filename
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    suffix = f"s{student_index}_" if student_index is not None else ""
+    filename = f"{phase}_{suffix}p{page_number}_{timestamp}_{uuid.uuid4().hex[:6]}.jpg"
+    file_path = session_dir / filename
+    
+    # Save file to disk
+    with file_path.open("wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    
+    # Public URL (relative to API root)
+    file_url = f"/api/files/{session_id}/{filename}"
+    
+    return {
+        "status": "success",
+        "file_url": file_url,
+        "filename": filename
+    }
+
+
+@api_router.get("/files/{session_id}/{filename}")
+async def get_file(session_id: str, filename: str):
+    """Serve uploaded files"""
+    from fastapi.responses import FileResponse
+    file_path = UPLOADS_DIR / session_id / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(file_path)
 
 
 @api_router.post("/scan-sessions/{session_id}/upload-model")
