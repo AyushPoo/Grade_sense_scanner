@@ -18,11 +18,20 @@ async function uploadPageFile(
   let lastError;
   for (let i = 0; i < retries; i++) {
     try {
+      // Ensure URI is properly formatted for native modules
+      const uploadUri = page.file_path.startsWith('file://') ? page.file_path : `file://${page.file_path}`;
+      
+      // Check if file still exists before attempting upload
+      const fileInfo = await FileSystem.getInfoAsync(uploadUri);
+      if (!fileInfo.exists) {
+        throw new Error(`Local file not found at ${uploadUri}. Cannot resume upload.`);
+      }
+
       // MEMORY SAFE: Upload directly from file URI using native MULTIPART
-      console.log(`[Upload] Starting multipart upload for page ${page.page_number} (${phase})`);
+      console.log(`[Upload] Attempt ${i + 1}/${retries} for page ${page.page_number} (${phase})`);
       const response = await FileSystem.uploadAsync(
         `${backendUrl}/api/scan-sessions/${sessionId}/upload-file`,
-        page.file_path,
+        uploadUri,
         {
           fieldName: 'file',
           httpMethod: 'POST',
@@ -33,6 +42,7 @@ async function uploadPageFile(
           parameters: {
             page_number: page.page_number.toString(),
             phase: phase,
+            mode: 'enhanced', // Hardened handwriting preservation mode
             ...(studentIndex !== undefined ? { student_index: studentIndex.toString() } : {}),
           }
         }

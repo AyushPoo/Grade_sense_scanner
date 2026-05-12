@@ -54,6 +54,7 @@ interface ScanState {
   deleteBatch: (batchId: string) => void;
   fetchSessions: () => Promise<void>;
   syncCurrentMetadata: () => Promise<void>;
+  checkFileSystemIntegrity: () => Promise<void>;
 }
 
 const createEmptySession = (): Partial<ScanSession> => ({
@@ -499,6 +500,33 @@ export const useScanStore = create<ScanState>()(
           console.error("[Persistence] Metadata sync error:", error);
         }
       },
+
+      checkFileSystemIntegrity: async () => {
+        const session = get().currentSession;
+        if (!session) return;
+
+        console.log(`[Integrity] Checking files for session ${session.session_id}`);
+        const qpPages = session.question_paper.pages;
+        const maPages = session.model_answer.pages;
+        const studentPages = session.students.flatMap(s => s.pages);
+        
+        const allPages = [...qpPages, ...maPages, ...studentPages];
+        let missingCount = 0;
+
+        for (const page of allPages) {
+          const info = await FileSystem.getInfoAsync(page.file_path);
+          if (!info.exists) {
+            console.warn(`[Integrity] Missing file: ${page.file_path}`);
+            missingCount++;
+          }
+        }
+
+        if (missingCount > 0) {
+          console.error(`[Integrity] Session ${session.session_id} has ${missingCount} missing files.`);
+        } else {
+          console.log(`[Integrity] All ${allPages.length} files verified.`);
+        }
+      },
     }),
     {
       name: 'scan-storage',
@@ -534,7 +562,7 @@ export const useScanStore = create<ScanState>()(
       },
       onRehydrateStorage: () => (state) => {
         if (state) {
-          // Aggressive cleanup of legacy base64 data to fix SQLITE_FULL
+          // 1. Aggressive cleanup of legacy base64 data to fix SQLITE_FULL
           const cleanupSession = (session: any) => {
             if (!session) return;
             if (session.question_paper?.pages) {
@@ -555,6 +583,15 @@ export const useScanStore = create<ScanState>()(
           state.savedSessions?.forEach(cleanupSession);
           cleanupSession(state.currentSession);
           console.log('[Persistence] Hydration cleanup: Stripped legacy base64 data from state.');
+
+          // 2. Hardening: Reset interrupted uploads
+          if (state.currentSession?.status === 'uploading') {
+            console.log('[Hydration] Resetting interrupted upload status to scanning');
+            state.updateSessionStatus(state.currentSession.session_id, 'scanning', 0);
+          }
+
+          // 3. Automated integrity check
+          state.checkFileSystemIntegrity();
         }
       },
     }

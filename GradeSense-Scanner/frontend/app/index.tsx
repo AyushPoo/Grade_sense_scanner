@@ -13,6 +13,7 @@ import * as WebBrowser from 'expo-web-browser';
 import * as Linking from 'expo-linking';
 import { useRouter } from 'expo-router';
 import { useAuthStore } from '../src/store/authStore';
+import { testScannerAvailability } from '../src/utils/scannerAudit';
 
 const COLORS = {
   primary: '#FF6B35',
@@ -112,6 +113,7 @@ export default function LoginScreen() {
 
   const handleMockLogin = () => {
     console.log('Using mock login bypass...');
+    testScannerAvailability();
     const mockUser = {
       user_id: 'user_mock_001',
       email: 'rahul.kumar@gradesense.com',

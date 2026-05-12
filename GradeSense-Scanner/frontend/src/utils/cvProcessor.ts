@@ -193,11 +193,13 @@ export async function nativeProcessImage(
     targetWidth: number,
     grayscale?: boolean,
     autoCrop?: boolean,
-    enhance?: boolean
+    enhance?: boolean,
+    points?: { x: number, y: number }[]
   }
 ): Promise<{ uri: string }> {
   try {
     // 1. Resize and Compress using native module (Safe memory usage)
+    // We resize BEFORE sending to backend to save bandwidth/memory
     const resized = await ImageManipulator.manipulateAsync(
       imageUri,
       [{ resize: { width: options.targetWidth } }],
@@ -210,10 +212,13 @@ export async function nativeProcessImage(
 
     let finalUri = resized.uri;
 
-    if (options.enhance) {
+    if (options.enhance || options.points) {
       try {
         const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
         const FileSystem = await import('expo-file-system/legacy');
+        
+        // Scale points if provided (assuming corners were relative to screen)
+        // In a real app, we'd use actual image dimensions
         
         const base64 = await FileSystem.readAsStringAsync(finalUri, {
           encoding: FileSystem.EncodingType.Base64,
@@ -222,13 +227,17 @@ export async function nativeProcessImage(
         const response = await fetch(`${backendUrl}/api/scan-sessions/enhance`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image: base64 })
+          body: JSON.stringify({ 
+            image: base64,
+            points: options.points?.map(p => [p.x, p.y]),
+            mode: 'enhanced'
+          })
         });
 
         if (response.ok) {
           const data = await response.json();
           if (data.enhanced_image) {
-            const enhancedUri = `${FileSystem.documentDirectory}enhanced_${Date.now()}.jpg`;
+            const enhancedUri = `${FileSystem.documentDirectory}proc_${Date.now()}.jpg`;
             await FileSystem.writeAsStringAsync(enhancedUri, data.enhanced_image, {
               encoding: FileSystem.EncodingType.Base64,
             });

@@ -60,6 +60,12 @@
         {
           "cameraPermission": "Allow GradeSense to access your camera for scanning documents"
         }
+      ],
+      [
+        "react-native-document-scanner-plugin",
+        {
+          "cameraPermission": "Allow GradeSense to access your camera for scanning documents"
+        }
       ]
     ],
     "experiments": {

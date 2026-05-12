@@ -31,6 +31,7 @@ import { ThumbnailStrip } from '../src/components/ThumbnailStrip';
 import { CaptureButton } from '../src/components/CaptureButton';
 import { ScannedPage } from '../src/types';
 import { detectBlur, getSharpnessColor, BlurDetectionResult } from '../src/utils/blurDetection';
+import DocumentScanner from 'react-native-document-scanner-plugin';
 
 // Note: Document Scanner with auto-crop requires Dev Build
 // For Expo Go, we use manual capture with blur detection
@@ -224,6 +225,14 @@ export default function ScannerScreen() {
     );
   };
 
+  const handleCropCancel = () => {
+    // No longer needed for native scanner
+  };
+
+  const handleCropConfirm = async (corners: { x: number, y: number }[]) => {
+    // No longer needed for native scanner
+  };
+
   /**
    * Process a scanned image - check for blur and add to session
    */
@@ -268,12 +277,12 @@ export default function ScannerScreen() {
   const addImageToSession = async (imageUri: string, blurResult: BlurDetectionResult) => {
     try {
       // 1. Process image natively (Resizing, Compression, Enhancement)
-      // MEMORY SAFE: nativeProcessImage now works on URIs and returns a URI
+      // Note: Perspective was handled by native scanner already
       const processed = await nativeProcessImage(imageUri, {
         targetWidth: CONFIG.IMAGE_TARGET_WIDTH,
         grayscale: true,
         enhance: true,
-        autoCrop: autoCropEnabled,
+        autoCrop: false, // Handled by DocumentScanner
       });
 
       // 2. Move to permanent storage if needed
@@ -320,44 +329,20 @@ export default function ScannerScreen() {
    * Manual capture (fallback without document scanner)
    */
   const handleManualCapture = useCallback(async () => {
-    if (isCapturing || !cameraRef.current || isPaused || !isCameraReady) {
-      return;
-    }
-    
-    const now = Date.now();
-    if (now - lastCaptureTime < CONFIG.COOLDOWN_AFTER_CAPTURE_MS) return;
-    
-    setIsCapturing(true);
-    setLastCaptureTime(now);
-
     try {
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-
-      // Manual capture remains high quality but optimized
-      const photo = await cameraRef.current.takePictureAsync({
-        quality: 0.4, // AGGRESSIVE STABILITY: Lower quality to prevent native process OOM
-        shutterSound: false,
-        skipProcessing: true, // Let our native pipeline handle it
+      const { scannedImages } = await DocumentScanner.scanDocument({
+        maxNumDocuments: 1,
+        croppedImageQuality: 85,
       });
 
-      if (!photo || !photo.uri) {
-        throw new Error('Failed to capture photo');
+      if (scannedImages && scannedImages.length > 0) {
+        await processScannedImage(scannedImages[0]);
       }
-
-      // Process the captured image with blur check
-      await processScannedImage(photo.uri);
-
     } catch (error: any) {
-      console.error('Capture error:', error);
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      // Ensure we don't crash the whole screen on capture failure
-      Alert.alert('Capture Failed', error?.message || 'The camera was unable to take a picture. Please try again.');
-    } finally {
-      if (isMounted.current) {
-        setIsCapturing(false);
-      }
+      console.error('Native scan error:', error);
+      Alert.alert('Scan Failed', 'Could not open native scanner. Please ensure you are using a Dev Build.');
     }
-  }, [isCapturing, lastCaptureTime, isPaused, isCameraReady]);
+  }, []);
 
   const { captureState, resetCooldown } = useCVAutoCapture({
     enabled: autoCaptureEnabled && !isPaused && isCameraReady && currentPhase !== 'students',
@@ -871,6 +856,17 @@ export default function ScannerScreen() {
           </View>
         </ScrollView>
       </SafeAreaView>
+
+      <Modal visible={false} animationType="slide">
+        {/* Review modal removed in favor of native scanner UI */}
+      </Modal>
+
+      {isCapturing && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color={COLORS.primary} />
+          <Text style={styles.loadingText}>Processing Scan...</Text>
+        </View>
+      )}
     </View>
   );
 }
