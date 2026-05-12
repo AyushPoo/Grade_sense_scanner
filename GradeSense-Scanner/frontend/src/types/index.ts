@@ -30,6 +30,7 @@ export interface ScannedPage {
   sharpness_score: number;
   captured_at: string;
   base64?: string;
+  sync_status?: 'synced' | 'unsynced' | 'failed';
 }
 
 export interface ScannedStudent {
@@ -43,6 +44,7 @@ export interface ScannedStudent {
   page_count: number;
   has_blurry_pages: boolean;
   pages: ScannedPage[];
+  sync_status?: 'synced' | 'unsynced' | 'failed';
 }
 
 export interface ScanSessionSettings {

@@ -1,18 +1,6 @@
-/**
- * Blur Detection Utility
- * 
- * Uses Laplacian variance method to detect image sharpness.
- * Lower variance = more blur, Higher variance = sharper image.
- * 
- * For Dev Build with react-native-fast-opencv, this can be enhanced
- * with actual OpenCV Laplacian calculation. For now, we use a 
- * JavaScript-based edge detection approximation.
- */
-
 import * as ImageManipulator from 'expo-image-manipulator';
 
-// Threshold for blur detection (tune based on testing)
-// Images with variance below this are considered blurry
+// Threshold for blur detection
 export const BLUR_THRESHOLD = 100;
 
 // Sharpness levels for user feedback
@@ -26,118 +14,76 @@ export interface BlurDetectionResult {
 }
 
 /**
- * Simple edge detection based sharpness estimation
- * This is a JavaScript approximation of Laplacian variance
- * 
- * In a Dev Build, this can be replaced with actual OpenCV processing
- * using react-native-fast-opencv for more accurate results.
+ * Detects image blur.
+ * STABILITY: Pure JS fallback only. Native OpenCV is disabled to prevent crashes.
  */
 export async function detectBlur(imageUri: string): Promise<BlurDetectionResult> {
   try {
-    // Resize image for faster processing
+    // 1. Resize image for analysis
     const smallImage = await ImageManipulator.manipulateAsync(
       imageUri,
       [{ resize: { width: 200 } }],
       { format: ImageManipulator.SaveFormat.JPEG, base64: true }
     );
 
-    if (!smallImage.base64) {
-      throw new Error('Failed to get image data');
-    }
+    if (!smallImage.base64) throw new Error('Failed to get image data');
 
-    // Calculate sharpness score using edge detection approximation
-    const sharpnessScore = await calculateSharpnessScore(smallImage.base64);
-    
-    // Determine blur level
+    // 2. Use Heuristic Sharpness (Pure JS)
+    const sharpnessScore = calculateHeuristicSharpness(smallImage.base64);
     const level = getSharpnessLevel(sharpnessScore);
-    const isBlurry = level === 'blurry' || level === 'very_blurry';
     
     return {
-      isBlurry,
+      isBlurry: sharpnessScore < 40,
       sharpnessScore,
       level,
       message: getBlurMessage(level),
     };
   } catch (error) {
-    console.error('Blur detection error:', error);
-    // Default to not blurry if detection fails
+    console.error('[Blur] Analysis error:', error);
     return {
       isBlurry: false,
       sharpnessScore: 100,
       level: 'acceptable',
-      message: 'Could not analyze image quality',
+      message: 'Analysis unavailable',
     };
   }
 }
 
-/**
- * Calculate sharpness score from base64 image
- * Uses a simplified Laplacian-like calculation
- */
-async function calculateSharpnessScore(base64: string): Promise<number> {
-  // Decode base64 to get pixel data
-  // This is a simplified version - in a real implementation,
-  // you'd use native code or OpenCV for accurate Laplacian calculation
-  
-  // For now, we estimate based on file size ratio and compression artifacts
-  // Sharper images typically have more high-frequency data
+function calculateHeuristicSharpness(base64: string): number {
+  // Heuristic based on entropy/file size ratio
   const dataLength = base64.length;
-  
-  // Approximate sharpness based on data density
-  // This is a heuristic - sharper images compress less efficiently
-  // due to more edge detail
-  const estimatedPixels = 200 * 150; // Approximate pixels in resized image
+  const estimatedPixels = 200 * 150;
   const dataPerPixel = dataLength / estimatedPixels;
-  
-  // Normalize to a 0-300 scale (typical sharp images: 150-250)
-  const sharpnessScore = Math.min(300, dataPerPixel * 150);
-  
-  return Math.round(sharpnessScore);
+  // Scale to match typical Laplacian scores roughly
+  return Math.round(dataPerPixel * 80); 
 }
 
-/**
- * Get sharpness level from score
- */
 function getSharpnessLevel(score: number): SharpnessLevel {
-  if (score >= 180) return 'sharp';
-  if (score >= 120) return 'acceptable';
-  if (score >= 70) return 'blurry';
+  if (score >= 150) return 'sharp';
+  if (score >= 80) return 'acceptable';
+  if (score >= 40) return 'blurry';
   return 'very_blurry';
 }
 
-/**
- * Get user-friendly message for blur level
- */
 function getBlurMessage(level: SharpnessLevel): string {
   switch (level) {
-    case 'sharp':
-      return 'Image is sharp and clear';
-    case 'acceptable':
-      return 'Image quality is acceptable';
-    case 'blurry':
-      return 'Image appears blurry. Consider retaking.';
-    case 'very_blurry':
-      return 'Image is very blurry. Please retake.';
+    case 'sharp': return 'Perfectly sharp';
+    case 'acceptable': return 'Good quality';
+    case 'blurry': return 'Slightly blurry';
+    case 'very_blurry': return 'Too blurry - retake';
   }
 }
 
-/**
- * Quick blur check - returns just boolean
- * Useful for real-time feedback
- */
 export async function isImageBlurry(imageUri: string): Promise<boolean> {
   const result = await detectBlur(imageUri);
   return result.isBlurry;
 }
 
-/**
- * Get sharpness indicator color
- */
 export function getSharpnessColor(level: SharpnessLevel): string {
   switch (level) {
-    case 'sharp': return '#22C55E'; // green
-    case 'acceptable': return '#84CC16'; // lime
-    case 'blurry': return '#F59E0B'; // amber
-    case 'very_blurry': return '#EF4444'; // red
+    case 'sharp': return '#22C55E';
+    case 'acceptable': return '#84CC16';
+    case 'blurry': return '#F59E0B';
+    case 'very_blurry': return '#EF4444';
   }
 }

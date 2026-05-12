@@ -11,50 +11,36 @@ interface StatusIndicatorProps {
 export const StatusIndicator: React.FC<StatusIndicatorProps> = ({ captureState }) => {
   const { isStable, isDocumentDetected, isSharp } = captureState;
 
-  const getStatusIcon = (isActive: boolean) => (
-    isActive ? 'checkmark-circle' : 'close-circle'
-  );
+  let guidanceMessage = 'Point at a document';
+  let guidanceColor = COLORS.textMuted;
+  let iconName = 'scan-outline';
 
-  const getStatusColor = (isActive: boolean) => (
-    isActive ? COLORS.success : COLORS.error
-  );
+  if (isDocumentDetected) {
+    if (!isStable) {
+      guidanceMessage = 'Hold steady...';
+      guidanceColor = COLORS.warning;
+      iconName = 'hand-left-outline';
+    } else if (!isSharp) {
+      guidanceMessage = 'Focusing...';
+      guidanceColor = COLORS.warning;
+      iconName = 'eye-outline';
+    } else {
+      guidanceMessage = 'Ready to capture';
+      guidanceColor = COLORS.success;
+      iconName = 'checkmark-circle';
+    }
+  }
 
   return (
     <View style={styles.container}>
       <View style={styles.statusItem}>
         <Ionicons 
-          name={getStatusIcon(isStable)} 
-          size={16} 
-          color={getStatusColor(isStable)} 
+          name={iconName as any} 
+          size={18} 
+          color={guidanceColor} 
         />
-        <Text style={[styles.statusText, { color: getStatusColor(isStable) }]}>
-          {isStable ? 'Stable' : 'Moving'}
-        </Text>
-      </View>
-      
-      <View style={styles.divider} />
-      
-      <View style={styles.statusItem}>
-        <Ionicons 
-          name={getStatusIcon(isSharp)} 
-          size={16} 
-          color={getStatusColor(isSharp)} 
-        />
-        <Text style={[styles.statusText, { color: getStatusColor(isSharp) }]}>
-          {isSharp ? 'Sharp' : 'Blurry'}
-        </Text>
-      </View>
-      
-      <View style={styles.divider} />
-      
-      <View style={styles.statusItem}>
-        <Ionicons 
-          name={getStatusIcon(isDocumentDetected)} 
-          size={16} 
-          color={getStatusColor(isDocumentDetected)} 
-        />
-        <Text style={[styles.statusText, { color: getStatusColor(isDocumentDetected) }]}>
-          {isDocumentDetected ? 'Doc' : 'No Doc'}
+        <Text style={[styles.statusText, { color: guidanceColor }]}>
+          {guidanceMessage}
         </Text>
       </View>
     </View>

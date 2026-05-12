@@ -43,6 +43,9 @@ function reportCaptureFailure(context: string, error: unknown) {
   Alert.alert('Could not save page', message);
 }
 
+// STABILITY HOTFIX: Disable heavy real-time CV loop on real devices
+const ENABLE_LIVE_DETECTION = false;
+
 export default function ScannerScreen() {
   const router = useRouter();
   const cameraRef = useRef<CameraView>(null);
@@ -131,6 +134,44 @@ export default function ScannerScreen() {
     setIsCameraReady(true);
   }, []);
 
+  // Live Frame Processing Loop
+  const isProcessingFrame = useRef(false);
+  useEffect(() => {
+    // STABILITY: Fully bypass live loop if disabled
+    if (!ENABLE_LIVE_DETECTION || !isCameraReady || isPaused || isCapturing) return;
+
+    const intervalId = setInterval(async () => {
+      if (isProcessingFrame.current || !cameraRef.current) return;
+      
+      try {
+        isProcessingFrame.current = true;
+        // Take a low-resolution frame purely for CV analysis
+        // MEMORY: Use minimal settings to prevent activity death
+        const photo = await cameraRef.current.takePictureAsync({
+          quality: 0.3, // Stabilized quality
+          base64: false, // Reduced memory pressure
+          shutterSound: false,
+          skipProcessing: true,
+        });
+
+        // Skip processing if base64 is disabled for stability
+        if (photo?.uri && ENABLE_LIVE_DETECTION) {
+           // If we ever re-enable, we'd need to convert uri to base64 here or modify detectDocumentInFrame
+           // But for now, we are DISABLING the loop.
+        }
+      } catch (err) {
+        console.warn('[Scanner] Live frame error (silently handled):', err);
+      } finally {
+        isProcessingFrame.current = false;
+      }
+    }, 1000); // Increased throttle to 1 FPS for stability
+
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+      isProcessingFrame.current = false;
+    };
+  }, [isCameraReady, isPaused, isCapturing]);
+
   /**
    * Document Scanner with auto-crop (requires Dev Build)
    * Shows message in Expo Go, works in Dev Build
@@ -205,6 +246,7 @@ export default function ScannerScreen() {
       const processed = await nativeProcessImage(inputForProcess, {
         targetWidth: CONFIG.IMAGE_TARGET_WIDTH,
         grayscale: true,
+        enhance: true, // Enable real enhancement pipeline
         autoCrop: autoCropEnabled,
       });
 
@@ -265,12 +307,13 @@ export default function ScannerScreen() {
     setLastCaptureTime(now);
 
     try {
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy); // Distinct haptic for capture
-      // Note: We could use expo-av for a specific 'click' sound if we set it up, but Haptics Heavy acts as a good physical indicator.
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
 
+      // Manual capture remains high quality but optimized
       const photo = await cameraRef.current.takePictureAsync({
-        quality: 1,
+        quality: 0.4, // AGGRESSIVE STABILITY: Lower quality to prevent native process OOM
         shutterSound: false,
+        skipProcessing: true, // Let our native pipeline handle it
       });
 
       if (!photo || !photo.uri) {
@@ -283,7 +326,8 @@ export default function ScannerScreen() {
     } catch (error: any) {
       console.error('Capture error:', error);
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Capture Failed', error?.message || 'Unknown error');
+      // Ensure we don't crash the whole screen on capture failure
+      Alert.alert('Capture Failed', error?.message || 'The camera was unable to take a picture. Please try again.');
     } finally {
       setIsCapturing(false);
     }
@@ -642,14 +686,21 @@ export default function ScannerScreen() {
           </View>
         )}
 
-        {cvResult?.quadrilateral && !isPaused && (
-           <View style={StyleSheet.absoluteFill}>
-               <Svg height="100%" width="100%" style={StyleSheet.absoluteFill}>
+        {ENABLE_LIVE_DETECTION && cvResult?.quadrilateral && cvResult?.dimensions && !isPaused && (
+           <View style={StyleSheet.absoluteFill} pointerEvents="none">
+               <Svg 
+                 height="100%" 
+                 width="100%" 
+                 style={StyleSheet.absoluteFill}
+                 viewBox={`0 0 ${cvResult.dimensions.width} ${cvResult.dimensions.height}`}
+                 preserveAspectRatio="xMidYMid slice"
+               >
                   <Polygon
                     points={`${cvResult.quadrilateral.topLeft.x},${cvResult.quadrilateral.topLeft.y} ${cvResult.quadrilateral.topRight.x},${cvResult.quadrilateral.topRight.y} ${cvResult.quadrilateral.bottomRight.x},${cvResult.quadrilateral.bottomRight.y} ${cvResult.quadrilateral.bottomLeft.x},${cvResult.quadrilateral.bottomLeft.y}`}
                     fill="rgba(46, 204, 113, 0.2)"
                     stroke={COLORS.success}
-                    strokeWidth="3"
+                    strokeWidth="8"
+                    strokeLinejoin="round"
                   />
                </Svg>
            </View>

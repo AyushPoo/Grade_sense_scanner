@@ -53,6 +53,7 @@ interface ScanState {
   addBatch: (batch: Batch) => void;
   deleteBatch: (batchId: string) => void;
   fetchSessions: () => Promise<void>;
+  syncCurrentMetadata: () => Promise<void>;
 }
 
 const createEmptySession = (): Partial<ScanSession> => ({
@@ -131,6 +132,7 @@ export const useScanStore = create<ScanState>()(
           
           set({ 
             currentSession: session, 
+            savedSessions: [session, ...get().savedSessions],
             currentPhase: settings.scan_question_paper ? 'question_paper' : 
                           settings.scan_model_answer ? 'model_answer' : 'students',
             currentStudentIndex: 0,
@@ -167,12 +169,17 @@ export const useScanStore = create<ScanState>()(
           }
         }
 
-        // Update stats
         updatedSession.stats.total_pages++;
         updatedSession.stats.total_size_bytes += page.file_size;
         if (page.is_blurry) updatedSession.stats.blurry_pages++;
 
         set({ currentSession: updatedSession });
+        get().saveSession();
+        
+        // Realtime Persistence: Sync immediately
+        get().syncCurrentMetadata().catch(err => 
+          console.error("[Persistence] Failed to sync new page:", err)
+        );
       },
 
       removePage: (pageNumber, phaseOverride, studentIndexOverride) => {
@@ -219,6 +226,12 @@ export const useScanStore = create<ScanState>()(
         }
 
         set({ currentSession: updatedSession });
+        get().saveSession();
+        
+        // Realtime Persistence: Sync removal
+        get().syncCurrentMetadata().catch(err => 
+          console.error("[Persistence] Failed to sync page removal:", err)
+        );
       },
 
       nextStudent: () => {
@@ -246,6 +259,11 @@ export const useScanStore = create<ScanState>()(
           currentStudentIndex: newIndex,
           currentPhase: 'students',
         });
+
+        // Realtime Persistence: Sync student transition
+        get().syncCurrentMetadata().catch(err => 
+          console.error("[Persistence] Failed to sync student transition:", err)
+        );
       },
 
       previousStudent: () => {
@@ -390,6 +408,12 @@ export const useScanStore = create<ScanState>()(
         }
 
         set({ currentSession: updatedSession });
+        get().saveSession();
+        
+        // Realtime Persistence: Sync undo
+        get().syncCurrentMetadata().catch(err => 
+          console.error("[Persistence] Failed to sync undo:", err)
+        );
       },
 
       // Batch actions
@@ -425,6 +449,58 @@ export const useScanStore = create<ScanState>()(
           console.error("Error fetching sessions:", error);
         }
       },
+
+      syncCurrentMetadata: async () => {
+        const { currentSession, currentPhase, currentStudentIndex } = get();
+        if (!currentSession) return;
+
+        try {
+          const { useAuthStore } = await import('./authStore');
+          const token = useAuthStore.getState().sessionToken;
+          const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
+          
+          if (!backendUrl) throw new Error("Missing EXPO_PUBLIC_BACKEND_URL");
+
+          const authHeaders = {
+            'Content-Type': 'application/json',
+            'Authorization': token ? `Bearer ${token}` : '',
+          };
+
+          let endpoint = '';
+          let body = {};
+
+          if (currentPhase === 'question_paper') {
+            endpoint = `${backendUrl}/api/scan-sessions/${currentSession.session_id}/upload-qp`;
+            body = { pages: currentSession.question_paper.pages };
+          } else if (currentPhase === 'model_answer') {
+            endpoint = `${backendUrl}/api/scan-sessions/${currentSession.session_id}/upload-model`;
+            body = { pages: currentSession.model_answer.pages };
+          } else {
+            const student = currentSession.students[currentStudentIndex];
+            if (!student) return;
+            endpoint = `${backendUrl}/api/scan-sessions/${currentSession.session_id}/upload-student`;
+            body = { student };
+          }
+
+          console.log(`[Persistence] Syncing ${currentPhase} for session ${currentSession.session_id}...`);
+          
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: authHeaders,
+            body: JSON.stringify(body)
+          });
+
+          if (!response.ok) {
+            throw new Error(`Sync failed with status ${response.status}`);
+          }
+          
+          console.log(`[Persistence] Successfully synced ${currentPhase}`);
+        } catch (error) {
+          console.error("[Persistence] Metadata sync error:", error);
+          // We don't throw here to avoid crashing the UI, but we log it.
+          // In a future task, we could mark the session as "unsynced".
+        }
+      },
     }),
     {
       name: 'scan-storage',
@@ -432,6 +508,9 @@ export const useScanStore = create<ScanState>()(
       partialize: (state) => ({ 
         savedSessions: state.savedSessions,
         savedBatches: state.savedBatches,
+        currentSession: state.currentSession,
+        currentPhase: state.currentPhase,
+        currentStudentIndex: state.currentStudentIndex,
       }),
     }
   )
