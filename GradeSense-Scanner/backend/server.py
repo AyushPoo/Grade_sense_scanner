@@ -434,8 +434,38 @@ async def get_user_sessions(authorization: Optional[str] = Header(None)):
 
 # ==================== IMAGE ENHANCEMENT ====================
 
+def order_points(pts):
+    """Sorts 4 points in order: top-left, top-right, bottom-right, bottom-left"""
+    rect = np.zeros((4, 2), dtype="float32")
+    s = pts.sum(axis=1)
+    rect[0] = pts[np.argmin(s)]
+    rect[2] = pts[np.argmax(s)]
+    diff = np.diff(pts, axis=1)
+    rect[1] = pts[np.argmin(diff)]
+    rect[3] = pts[np.argmax(diff)]
+    return rect
+
+def four_point_transform(image, pts):
+    """Applies perspective transform to get a top-down view"""
+    rect = order_points(pts)
+    (tl, tr, br, bl) = rect
+    widthA = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
+    widthB = np.sqrt(((tr[0] - tl[0]) ** 2) + ((tr[1] - tl[1]) ** 2))
+    maxWidth = max(int(widthA), int(widthB))
+    heightA = np.sqrt(((tr[0] - br[0]) ** 2) + ((tr[1] - br[1]) ** 2))
+    heightB = np.sqrt(((tl[0] - bl[0]) ** 2) + ((tl[1] - bl[1]) ** 2))
+    maxHeight = max(int(heightA), int(heightB))
+    dst = np.array([
+        [0, 0],
+        [maxWidth - 1, 0],
+        [maxWidth - 1, maxHeight - 1],
+        [0, maxHeight - 1]], dtype="float32")
+    M = cv2.getPerspectiveTransform(rect, dst)
+    warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
+    return warped
+
 def process_enhance(base64_str: str) -> str:
-    """Real OpenCV enhancement pipeline"""
+    """Real OpenCV enhancement pipeline with document isolation & perspective correction"""
     try:
         # Remove prefix if present
         if "," in base64_str:
@@ -448,22 +478,62 @@ def process_enhance(base64_str: str) -> str:
         if img is None:
             raise ValueError("Could not decode image")
 
+        # --- STEP 1: DOCUMENT ISOLATION & PERSPECTIVE CORRECTION ---
+        orig_h, orig_w = img.shape[:2]
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        edged = cv2.Canny(blurred, 75, 200)
+        
+        # Find contours
+        cnts, _ = cv2.findContours(edged.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        cnts = sorted(cnts, key=cv2.contourArea, reverse=True)[:5]
+        
+        screen_cnt = None
+        for c in cnts:
+            peri = cv2.arcLength(c, True)
+            approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+            
+            # We want a 4-point quadrilateral that takes up at least 20% of the image
+            area = cv2.contourArea(c)
+            if len(approx) == 4 and area > (orig_w * orig_h * 0.20):
+                screen_cnt = approx
+                break
+        
+        # Apply transformation if document found
+        if screen_cnt is not None:
+            img = four_point_transform(img, screen_cnt.reshape(4, 2))
+            logger.info("Document isolated and perspective corrected")
+        else:
+            logger.info("No document boundary detected, using full frame")
+
+        # --- STEP 2: ENHANCEMENT PIPELINE ---
         # 1. Grayscale
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
-        # 2. Adaptive Thresholding (Scan effect)
-        # blockSize=15, C=8 are good defaults for removing shadows while keeping handwriting
-        enhanced = cv2.adaptiveThreshold(
-            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-            cv2.THRESH_BINARY, 15, 8
+        # 2. Lighting Normalization (CLAHE)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        normalized = clahe.apply(gray)
+        
+        # 3. Denoising
+        blurred = cv2.GaussianBlur(normalized, (3, 3), 0)
+        
+        # 4. Adaptive Thresholding
+        binary = cv2.adaptiveThreshold(
+            blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+            cv2.THRESH_BINARY, 25, 10
         )
         
-        # 3. Mild Denoise (Morphology)
-        kernel = np.ones((1, 1), np.uint8)
-        enhanced = cv2.morphologyEx(enhanced, cv2.MORPH_OPEN, kernel)
+        # 5. Stroke Preservation (Closing)
+        kernel = np.ones((2, 2), np.uint8)
+        closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+        
+        # 6. Final Polish: Mild Sharpening
+        sharpen_kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
+        sharpened = cv2.filter2D(closed, -1, sharpen_kernel)
+        final = cv2.addWeighted(closed, 0.7, sharpened, 0.3, 0)
         
         # Encode back to JPEG
-        _, buffer = cv2.imencode('.jpg', enhanced, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        _, buffer = cv2.imencode('.jpg', final, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
         return base64.b64encode(buffer).decode('utf-8')
     except Exception as e:
         logger.error(f"Image enhancement error: {e}")

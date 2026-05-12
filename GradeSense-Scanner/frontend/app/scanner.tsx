@@ -256,8 +256,9 @@ export default function ScannerScreen() {
 
       const fileSizeBytes = Math.round((processed.base64.length * 3) / 4);
 
-      // Save the native processed image to a temp file
-      const processedUri = `${FileSystem.cacheDirectory}scanned_${Date.now()}.jpg`;
+      // Save the native processed image to a permanent file
+      // We use documentDirectory because cacheDirectory can be purged by the OS
+      const processedUri = `${FileSystem.documentDirectory}scanned_${Date.now()}.jpg`;
       await FileSystem.writeAsStringAsync(processedUri, processed.base64, {
         encoding: FileSystem.EncodingType.Base64,
       });
@@ -282,7 +283,6 @@ export default function ScannerScreen() {
         is_blurry: blurResult.isBlurry,
         sharpness_score: blurResult.sharpnessScore,
         captured_at: new Date().toISOString(),
-        base64: processed.base64,
       };
 
       addPage(scannedPage);

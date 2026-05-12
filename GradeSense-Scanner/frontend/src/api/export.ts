@@ -38,12 +38,25 @@ export async function uploadSessionToWebApp(
       updateStatus(session.session_id, 'uploading', Math.round(progress * 100));
     };
 
+    // Helper to read page data from disk
+    const readBase64 = async (pages: any[]) => {
+      const { ScannedPage } = await import('../types');
+      const FileSystem = await import('expo-file-system/legacy');
+      return Promise.all(pages.map(async (p) => {
+        const base64 = await FileSystem.readAsStringAsync(p.file_path, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        return { ...p, base64 };
+      }));
+    };
+
     // 1. Upload Question Paper
     if (session.question_paper.pages.length > 0) {
+      const pagesWithBase64 = await readBase64(session.question_paper.pages);
       const qpRes = await fetch(`${backendUrl}/api/scan-sessions/${session.session_id}/upload-qp`, {
         method: 'POST',
         headers: authHeaders,
-        body: JSON.stringify({ pages: session.question_paper.pages })
+        body: JSON.stringify({ pages: pagesWithBase64 })
       });
       if (!qpRes.ok) throw new Error('Failed to upload Question Paper metadata');
       updateProgress('Question Paper');
@@ -51,10 +64,11 @@ export async function uploadSessionToWebApp(
 
     // 2. Upload Model Answer
     if (session.model_answer.pages.length > 0) {
+      const pagesWithBase64 = await readBase64(session.model_answer.pages);
       const maRes = await fetch(`${backendUrl}/api/scan-sessions/${session.session_id}/upload-model`, {
         method: 'POST',
         headers: authHeaders,
-        body: JSON.stringify({ pages: session.model_answer.pages })
+        body: JSON.stringify({ pages: pagesWithBase64 })
       });
       if (!maRes.ok) throw new Error('Failed to upload Model Answer metadata');
       updateProgress('Model Answer');
@@ -64,10 +78,11 @@ export async function uploadSessionToWebApp(
     for (let i = 0; i < session.students.length; i++) {
       const student = session.students[i];
       if (student.pages.length > 0) {
+        const pagesWithBase64 = await readBase64(student.pages);
         const stuRes = await fetch(`${backendUrl}/api/scan-sessions/${session.session_id}/upload-student`, {
           method: 'POST',
           headers: authHeaders,
-          body: JSON.stringify({ student })
+          body: JSON.stringify({ student: { ...student, pages: pagesWithBase64 } })
         });
         if (!stuRes.ok) throw new Error(`Failed to upload metadata for Student ${i + 1}`);
         updateProgress(`Student ${i + 1} of ${session.students.length}`);

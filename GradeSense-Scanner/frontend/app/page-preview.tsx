@@ -15,7 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { COLORS } from '../src/config';
 import { useScanStore } from '../src/store/scanStore';
-import { ScannedPage } from '../src/types';
+import { ScannedPage, ScanPhase } from '../src/types';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -132,10 +132,10 @@ export default function PagePreviewScreen() {
 
   const renderPage = ({ item, index }: { item: ScannedPage; index: number }) => (
     <View style={styles.pageContainer}>
-      {item.base64 ? (
+      {item.file_path ? (
         <>
           <Image
-            source={{ uri: `data:image/jpeg;base64,${item.base64}` }}
+            source={{ uri: item.file_path }}
             style={styles.image}
             resizeMode="contain"
             onLoadStart={() => setImageLoading(true)}

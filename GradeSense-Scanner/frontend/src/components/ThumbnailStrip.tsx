@@ -36,9 +36,9 @@ export const ThumbnailStrip: React.FC<ThumbnailStripProps> = ({
           onPress={() => onPagePress(page)}
           activeOpacity={0.7}
         >
-          {page.base64 ? (
+          {page.file_path ? (
             <Image 
-              source={{ uri: `data:image/jpeg;base64,${page.base64}` }} 
+              source={{ uri: page.file_path }} 
               style={styles.thumbnailImage} 
             />
           ) : (

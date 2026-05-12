@@ -466,20 +466,33 @@ export const useScanStore = create<ScanState>()(
             'Authorization': token ? `Bearer ${token}` : '',
           };
 
+          // Helper to read page data from disk to avoid keeping base64 in store
+          const preparePages = async (pages: ScannedPage[]) => {
+            return Promise.all(pages.map(async (p) => {
+              const base64 = await FileSystem.readAsStringAsync(p.file_path, {
+                encoding: FileSystem.EncodingType.Base64,
+              });
+              return { ...p, base64 };
+            }));
+          };
+
           let endpoint = '';
           let body = {};
 
           if (currentPhase === 'question_paper') {
             endpoint = `${backendUrl}/api/scan-sessions/${currentSession.session_id}/upload-qp`;
-            body = { pages: currentSession.question_paper.pages };
+            const pagesWithBase64 = await preparePages(currentSession.question_paper.pages);
+            body = { pages: pagesWithBase64 };
           } else if (currentPhase === 'model_answer') {
             endpoint = `${backendUrl}/api/scan-sessions/${currentSession.session_id}/upload-model`;
-            body = { pages: currentSession.model_answer.pages };
+            const pagesWithBase64 = await preparePages(currentSession.model_answer.pages);
+            body = { pages: pagesWithBase64 };
           } else {
             const student = currentSession.students[currentStudentIndex];
             if (!student) return;
             endpoint = `${backendUrl}/api/scan-sessions/${currentSession.session_id}/upload-student`;
-            body = { student };
+            const pagesWithBase64 = await preparePages(student.pages);
+            body = { student: { ...student, pages: pagesWithBase64 } };
           }
 
           console.log(`[Persistence] Syncing ${currentPhase} for session ${currentSession.session_id}...`);
@@ -505,13 +518,60 @@ export const useScanStore = create<ScanState>()(
     {
       name: 'scan-storage',
       storage: createJSONStorage(() => AsyncStorage),
-      partialize: (state) => ({ 
-        savedSessions: state.savedSessions,
-        savedBatches: state.savedBatches,
-        currentSession: state.currentSession,
-        currentPhase: state.currentPhase,
-        currentStudentIndex: state.currentStudentIndex,
-      }),
+      partialize: (state) => {
+        // Deeply strip base64 from sessions before persisting
+        const stripBase64FromSession = (session: any) => {
+          if (!session) return null;
+          return {
+            ...session,
+            question_paper: {
+              ...session.question_paper,
+              pages: session.question_paper.pages.map(({ base64, ...p }: any) => p)
+            },
+            model_answer: {
+              ...session.model_answer,
+              pages: session.model_answer.pages.map(({ base64, ...p }: any) => p)
+            },
+            students: session.students.map((s: any) => ({
+              ...s,
+              pages: s.pages.map(({ base64, ...p }: any) => p)
+            }))
+          };
+        };
+
+        return { 
+          savedSessions: state.savedSessions.map(stripBase64FromSession),
+          savedBatches: state.savedBatches,
+          currentSession: stripBase64FromSession(state.currentSession),
+          currentPhase: state.currentPhase,
+          currentStudentIndex: state.currentStudentIndex,
+        };
+      },
+      onRehydrateStorage: () => (state) => {
+        if (state) {
+          // Aggressive cleanup of legacy base64 data to fix SQLITE_FULL
+          const cleanupSession = (session: any) => {
+            if (!session) return;
+            if (session.question_paper?.pages) {
+              session.question_paper.pages.forEach((p: any) => { delete p.base64; });
+            }
+            if (session.model_answer?.pages) {
+              session.model_answer.pages.forEach((p: any) => { delete p.base64; });
+            }
+            if (session.students) {
+              session.students.forEach((s: any) => {
+                if (s.pages) {
+                  s.pages.forEach((p: any) => { delete p.base64; });
+                }
+              });
+            }
+          };
+
+          state.savedSessions?.forEach(cleanupSession);
+          cleanupSession(state.currentSession);
+          console.log('[Persistence] Hydration cleanup: Stripped legacy base64 data from state.');
+        }
+      },
     }
   )
 );

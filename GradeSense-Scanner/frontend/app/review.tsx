@@ -133,9 +133,9 @@ export default function ReviewScreen() {
                     onPress={() => openPagePreview(student, pageIdx)}
                     activeOpacity={0.8}
                   >
-                    {page.base64 ? (
+                    {page.file_path ? (
                       <Image
-                        source={{ uri: `data:image/jpeg;base64,${page.base64}` }}
+                        source={{ uri: page.file_path }}
                         style={styles.pageThumbImage}
                       />
                     ) : (
@@ -221,9 +221,9 @@ export default function ReviewScreen() {
           }}
           renderItem={({ item }) => (
             <View style={styles.modalImageContainer}>
-              {item.base64 ? (
+              {item.file_path ? (
                 <Image
-                  source={{ uri: `data:image/jpeg;base64,${item.base64}` }}
+                  source={{ uri: item.file_path }}
                   style={styles.modalImage}
                   resizeMode="contain"
                 />
