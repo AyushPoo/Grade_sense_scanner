@@ -18,46 +18,46 @@ async function uploadPageFile(
   let lastError;
   for (let i = 0; i < retries; i++) {
     try {
-      // Ensure URI is properly formatted for native modules
       const uploadUri = page.file_path.startsWith('file://') ? page.file_path : `file://${page.file_path}`;
-      
-      // Check if file still exists before attempting upload
       const file = new FileSystem.File(uploadUri);
       if (!file.exists) {
-        throw new Error(`Local file not found at ${uploadUri}. Cannot resume upload.`);
+        throw new Error(`Local file not found at ${uploadUri}.`);
       }
 
-      // MEMORY SAFE: Upload directly from file URI using native MULTIPART
       console.log(`[Upload] Attempt ${i + 1}/${retries} for page ${page.page_number} (${phase})`);
-      const response = await FileSystem.uploadAsync(
-        `${backendUrl}/api/scan-sessions/${sessionId}/upload-file`,
-        uploadUri,
-        {
-          fieldName: 'file',
-          httpMethod: 'POST',
-          uploadType: FileSystem.FileSystemUploadType.MULTIPART,
-          headers: {
-            'Authorization': token ? `Bearer ${token}` : '',
-          },
-          parameters: {
-            page_number: page.page_number.toString(),
-            phase: phase,
-            mode: 'enhanced', // Hardened handwriting preservation mode
-            ...(studentIndex !== undefined ? { student_index: studentIndex.toString() } : {}),
-          }
-        }
-      );
+      
+      const formData = new FormData();
+      formData.append('file', {
+        uri: uploadUri,
+        name: `page_${page.page_number}.jpg`,
+        type: 'image/jpeg',
+      } as any);
 
-      if (response.status === 200 || response.status === 201) {
-        const data = JSON.parse(response.body);
+      formData.append('page_number', page.page_number.toString());
+      formData.append('phase', phase);
+      formData.append('mode', 'enhanced');
+      if (studentIndex !== undefined) {
+        formData.append('student_index', studentIndex.toString());
+      }
+
+      const response = await fetch(`${backendUrl}/api/scan-sessions/${sessionId}/upload-file`, {
+        method: 'POST',
+        headers: {
+          'Authorization': token ? `Bearer ${token}` : '',
+        },
+        body: formData,
+      });
+
+      if (response.ok) {
+        const data = await response.json();
         return data.file_url;
       }
       
-      lastError = new Error(`Upload failed with status ${response.status}`);
+      const errorText = await response.text();
+      lastError = new Error(`Upload failed with status ${response.status}: ${errorText}`);
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
       console.warn(`Retry ${i + 1} for page ${page.page_number} failed:`, lastError.message);
-      // Backoff
       await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
     }
   }

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -25,6 +25,7 @@ export default function ReviewScreen() {
   const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
   const { savedSessions, currentSession, removePage } = useScanStore();
   
+  const flatListRef = useRef<FlatList>(null);
   const [session, setSession] = useState<ScanSession | null>(null);
   const [expandedStudents, setExpandedStudents] = useState<Set<number>>(new Set());
   const [previewModal, setPreviewModal] = useState<{
@@ -214,6 +215,7 @@ export default function ReviewScreen() {
           horizontal
           pagingEnabled
           showsHorizontalScrollIndicator={false}
+          initialScrollIndex={previewModal.currentIndex}
           getItemLayout={(_, index) => ({
             length: SCREEN_WIDTH,
             offset: SCREEN_WIDTH * index,
@@ -387,6 +389,7 @@ export default function ReviewScreen() {
 
         <View style={{ height: 40 }} />
       </ScrollView>
+      {renderPreviewModal()}
     </SafeAreaView>
   );
 }
