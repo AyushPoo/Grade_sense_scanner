@@ -68,6 +68,41 @@ const createEmptySession = (): Partial<ScanSession> => ({
   },
 });
 
+const recomputeStats = (session: ScanSession): ScanSession['stats'] => {
+  const qpPages = session.question_paper.pages.length;
+  const maPages = session.model_answer.pages.length;
+  const studentsWithPages = session.students.filter(s => s.pages.length > 0);
+  
+  let totalPages = qpPages + maPages;
+  let totalSizeBytes = 0;
+  let blurryPages = 0;
+
+  session.question_paper.pages.forEach(p => {
+    totalSizeBytes += p.file_size;
+    if (p.is_blurry) blurryPages++;
+  });
+  session.model_answer.pages.forEach(p => {
+    totalSizeBytes += p.file_size;
+    if (p.is_blurry) blurryPages++;
+  });
+
+  studentsWithPages.forEach(s => {
+    totalPages += s.pages.length;
+    s.pages.forEach(p => {
+      totalSizeBytes += p.file_size;
+      if (p.is_blurry) blurryPages++;
+    });
+  });
+
+  return {
+    ...session.stats,
+    total_students: studentsWithPages.length,
+    total_pages: totalPages,
+    total_size_bytes: totalSizeBytes,
+    blurry_pages: blurryPages,
+  };
+};
+
 export const useScanStore = create<ScanState>()(
   persist(
     (set, get) => ({
@@ -159,33 +194,32 @@ export const useScanStore = create<ScanState>()(
         
         const updatedSession = { ...currentSession };
         
+        // DETERMINISTIC NUMBERING: Calculate page_number inside the store to avoid rapid-fire duplicates
         if (currentPhase === 'question_paper') {
           if (isDuplicate(updatedSession.question_paper.pages)) return;
+          page.page_number = updatedSession.question_paper.pages.length + 1;
           updatedSession.question_paper.pages = [...updatedSession.question_paper.pages, page];
-          updatedSession.question_paper.page_count++;
+          updatedSession.question_paper.page_count = updatedSession.question_paper.pages.length;
         } else if (currentPhase === 'model_answer') {
           if (isDuplicate(updatedSession.model_answer.pages)) return;
+          page.page_number = updatedSession.model_answer.pages.length + 1;
           updatedSession.model_answer.pages = [...updatedSession.model_answer.pages, page];
-          updatedSession.model_answer.page_count++;
+          updatedSession.model_answer.page_count = updatedSession.model_answer.pages.length;
         } else {
           const updatedStudents = [...updatedSession.students];
           const student = { ...updatedStudents[currentStudentIndex] };
           if (student) {
             if (isDuplicate(student.pages)) return;
+            page.page_number = student.pages.length + 1;
             student.pages = [...student.pages, page];
-            student.page_count++;
+            student.page_count = student.pages.length;
             if (page.is_blurry) student.has_blurry_pages = true;
             updatedStudents[currentStudentIndex] = student;
             updatedSession.students = updatedStudents;
           }
         }
 
-        updatedSession.stats = {
-          ...updatedSession.stats,
-          total_pages: updatedSession.stats.total_pages + 1,
-          total_size_bytes: updatedSession.stats.total_size_bytes + page.file_size,
-          blurry_pages: page.is_blurry ? updatedSession.stats.blurry_pages + 1 : updatedSession.stats.blurry_pages,
-        };
+        updatedSession.stats = recomputeStats(updatedSession);
 
         // BATCHED UPDATE: Update both current and saved list in ONE atomic set()
         const existingIndex = savedSessions.findIndex(s => s.session_id === updatedSession.session_id);
@@ -251,12 +285,7 @@ export const useScanStore = create<ScanState>()(
         }
 
         if (removed) {
-          updatedSession.stats = {
-            ...updatedSession.stats,
-            total_pages: updatedSession.stats.total_pages - 1,
-            total_size_bytes: updatedSession.stats.total_size_bytes - removed.file_size,
-            blurry_pages: removed.is_blurry ? updatedSession.stats.blurry_pages - 1 : updatedSession.stats.blurry_pages,
-          };
+          updatedSession.stats = recomputeStats(updatedSession);
         }
 
         // BATCHED UPDATE: Update both current and saved list in ONE atomic set()
@@ -304,6 +333,8 @@ export const useScanStore = create<ScanState>()(
         if (existingIndex > -1) {
           newSavedSessions[existingIndex] = updatedSession;
         }
+
+        updatedSession.stats = recomputeStats(updatedSession);
 
         set({
           currentSession: updatedSession,
@@ -375,16 +406,24 @@ export const useScanStore = create<ScanState>()(
         const { currentSession, savedSessions } = get();
         if (!currentSession) return;
 
-        const existingIndex = savedSessions.findIndex(s => s.session_id === currentSession.session_id);
+        const updatedSession = { ...currentSession };
+        // Cleanup empty students on save
+        updatedSession.students = updatedSession.students.filter(s => s.page_count > 0);
+        updatedSession.stats = recomputeStats(updatedSession);
+
+        const existingIndex = savedSessions.findIndex(s => s.session_id === updatedSession.session_id);
         const newSavedSessions = [...savedSessions];
         
         if (existingIndex > -1) {
-          newSavedSessions[existingIndex] = currentSession;
+          newSavedSessions[existingIndex] = updatedSession;
         } else {
-          newSavedSessions.unshift(currentSession);
+          newSavedSessions.unshift(updatedSession);
         }
 
-        set({ savedSessions: newSavedSessions });
+        set({ 
+          currentSession: updatedSession,
+          savedSessions: newSavedSessions 
+        });
       },
 
       deleteSession: (sessionId) => {
@@ -462,12 +501,7 @@ export const useScanStore = create<ScanState>()(
         }
 
         if (lastPage) {
-          updatedSession.stats = {
-            ...updatedSession.stats,
-            total_pages: updatedSession.stats.total_pages - 1,
-            total_size_bytes: updatedSession.stats.total_size_bytes - lastPage.file_size,
-            blurry_pages: lastPage.is_blurry ? updatedSession.stats.blurry_pages - 1 : updatedSession.stats.blurry_pages,
-          };
+          updatedSession.stats = recomputeStats(updatedSession);
         }
 
         // BATCHED UPDATE: Update both current and saved list in ONE atomic set()

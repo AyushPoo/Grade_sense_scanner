@@ -327,23 +327,11 @@ export default function ScannerScreen() {
       const fileSizeBytes = destinationFile.size;
       console.log('[ISOLATION] FileSystem.File.size: SUCCESS', fileSizeBytes);
 
-      let pageNumber = 1;
       const processedUri = destinationFile.uri;
-      if (currentPhase === 'question_paper') {
-        const pages = currentSession?.question_paper.pages || [];
-        pageNumber = pages.length > 0 ? Math.max(...pages.map(p => p.page_number)) + 1 : 1;
-      } else if (currentPhase === 'model_answer') {
-        const pages = currentSession?.model_answer.pages || [];
-        pageNumber = pages.length > 0 ? Math.max(...pages.map(p => p.page_number)) + 1 : 1;
-      } else {
-        const student = currentSession?.students[currentStudentIndex];
-        const pages = student?.pages || [];
-        pageNumber = pages.length > 0 ? Math.max(...pages.map(p => p.page_number)) + 1 : 1;
-      }
-
+      
       const scannedPage: ScannedPage = {
         id: generateUUID(),
-        page_number: pageNumber,
+        page_number: 0, // Assigned by store
         file_path: processedUri,
         file_size: fileSizeBytes,
         is_blurry: blurResult.isBlurry,
@@ -352,7 +340,7 @@ export default function ScannerScreen() {
       };
 
       addPage(scannedPage);
-      console.log('Page added:', pageNumber, 'Sharpness:', blurResult.sharpnessScore);
+      console.log('Page added:', scannedPage.id, 'Sharpness:', blurResult.sharpnessScore);
     } catch (error) {
       reportCaptureFailure('addImageToSession', error);
     }

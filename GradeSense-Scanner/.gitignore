@@ -99,3 +99,11 @@ frontend/android/
 frontend/dist-phasea-verify/
 test_reports/
 .emergent/
+
+# Images and scanned documents
+*.jpg
+*.jpeg
+*.png
+*.webp
+backend/uploads/
+!frontend/assets/**
