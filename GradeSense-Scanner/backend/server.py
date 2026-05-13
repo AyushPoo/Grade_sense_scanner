@@ -593,9 +593,70 @@ class EnhanceRequest(BaseModel):
 
 @api_router.post("/scan-sessions/enhance")
 async def enhance_image_endpoint(data: EnhanceRequest, authorization: Optional[str] = Header(None)):
-    """Apply real OpenCV enhancement to a captured image with mode support"""
-    enhanced_base64 = process_enhance(data.image, data.mode)
+    """Apply real OpenCV enhancement to a captured image with mode support (Legacy Base64)"""
+    enhanced_base64 = process_enhance(data.image, data.mode, data.points)
     return {"enhanced_image": enhanced_base64}
+
+@api_router.post("/scan-sessions/enhance-file")
+async def enhance_image_file_endpoint(
+    mode: str = Form("enhanced"),
+    points: Optional[str] = Form(None), # JSON string of points
+    file: UploadFile = File(...),
+    authorization: Optional[str] = Header(None)
+):
+    """
+    Apply real OpenCV enhancement via multipart upload (Binary-safe).
+    Eliminates Base64 overhead on mobile clients.
+    """
+    try:
+        # Read file into memory
+        contents = await file.read()
+        nparr = np.frombuffer(contents, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if img is None:
+            raise HTTPException(status_code=400, detail="Could not decode image")
+
+        # Parse points if provided
+        parsed_points = None
+        if points:
+            import json
+            parsed_points = json.loads(points)
+
+        # Apply perspective transform if points provided
+        if parsed_points and len(parsed_points) == 4:
+            pts = np.array(parsed_points, dtype="float32")
+            img = four_point_transform(img, pts)
+
+        # Grayscale
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        # Enhancement logic (re-using logic from process_enhance but on raw mat)
+        if mode == "bw":
+            final = cv2.adaptiveThreshold(
+                cv2.GaussianBlur(gray, (3, 3), 0), 
+                255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                cv2.THRESH_BINARY, 21, 10
+            )
+        elif mode == "high_contrast":
+            final = cv2.convertScaleAbs(gray, alpha=1.6, beta=-40)
+        else: # enhanced
+            clahe = cv2.createCLAHE(clipLimit=1.2, tileGridSize=(12, 12))
+            normalized = clahe.apply(gray)
+            denoised = cv2.bilateralFilter(normalized, 7, 50, 50)
+            sharpen_kernel = np.array([[-0.5,-0.5,-0.5], [-0.5,5,-0.5], [-0.5,-0.5,-0.5]])
+            final = cv2.filter2D(denoised, -1, sharpen_kernel)
+
+        # Encode to JPEG
+        _, buffer = cv2.imencode('.jpg', final, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        
+        # Return as Base64 for now to maintain frontend compatibility with the return path,
+        # but the UPLOAD path is now binary-safe. 
+        # (Future optimization: return binary and save to local FS directly)
+        return {"enhanced_image": base64.b64encode(buffer).decode('utf-8')}
+    except Exception as e:
+        logger.error(f"Multipart enhancement error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ==================== HEALTH CHECK ====================

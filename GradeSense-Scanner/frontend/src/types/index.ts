@@ -23,6 +23,7 @@ export interface Student {
 }
 
 export interface ScannedPage {
+  id: string; // Globally unique ID (UUID)
   page_number: number;
   file_path: string;
   file_size: number;
@@ -34,6 +35,7 @@ export interface ScannedPage {
 }
 
 export interface ScannedStudent {
+  id: string; // Unique student ID
   student_index: number;
   label: string;
   barcode_data?: {

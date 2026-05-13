@@ -31,7 +31,7 @@ export const ThumbnailStrip: React.FC<ThumbnailStripProps> = ({
     >
       {pages.map((page) => (
         <TouchableOpacity 
-          key={page.page_number} 
+          key={page.id} 
           style={styles.thumbnail}
           onPress={() => onPagePress(page)}
           activeOpacity={0.7}

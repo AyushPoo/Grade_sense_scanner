@@ -1,7 +1,7 @@
 import { ScanSession, ScannedPage, ScanPhase } from '../types';
 import { useScanStore } from '../store/scanStore';
 import { useAuthStore } from '../store/authStore';
-import * as FileSystem from 'expo-file-system/legacy';
+import * as FileSystem from 'expo-file-system';
 
 async function uploadPageFile(
   sessionId: string,
@@ -22,8 +22,8 @@ async function uploadPageFile(
       const uploadUri = page.file_path.startsWith('file://') ? page.file_path : `file://${page.file_path}`;
       
       // Check if file still exists before attempting upload
-      const fileInfo = await FileSystem.getInfoAsync(uploadUri);
-      if (!fileInfo.exists) {
+      const file = new FileSystem.File(uploadUri);
+      if (!file.exists) {
         throw new Error(`Local file not found at ${uploadUri}. Cannot resume upload.`);
       }
 

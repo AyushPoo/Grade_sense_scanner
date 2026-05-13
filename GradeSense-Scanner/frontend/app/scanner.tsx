@@ -16,12 +16,13 @@ import Svg, { Polygon } from 'react-native-svg';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { detectDocumentInFrame, nativeProcessImage } from '../src/utils/cvProcessor';
+import { generateUUID } from '../src/store/scanStore';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as ScreenOrientation from 'expo-screen-orientation';
-import * as FileSystem from 'expo-file-system/legacy';
+import * as FileSystem from 'expo-file-system';
 import { COLORS, CONFIG } from '../src/config';
 import { useScanStore } from '../src/store/scanStore';
 import { useCVAutoCapture } from '../src/hooks/useCVAutoCapture';
@@ -191,10 +192,12 @@ export default function ScannerScreen() {
           }
           
           // Cleanup captured temp file
-          await FileSystem.deleteAsync(photo.uri, { idempotent: true });
+          const tempFile = new FileSystem.File(photo.uri);
+          await tempFile.delete();
         }
       } catch (err) {
-        console.warn('[Scanner] Live frame error:', err.message);
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn('[Scanner] Live frame error:', message);
       } finally {
         isProcessingFrame.current = false;
         // Schedule next frame ONLY after current is finished
@@ -237,6 +240,8 @@ export default function ScannerScreen() {
    * Process a scanned image - check for blur and add to session
    */
   const processScannedImage = async (imageUri: string) => {
+    console.log(`[ISOLATION] processScannedImage: START for ${imageUri}`);
+    
     // Show blur check modal
     setBlurCheckModal({
       visible: true,
@@ -245,8 +250,25 @@ export default function ScannerScreen() {
       isChecking: true,
     });
 
+    // TEST GROUP ISOLATION: Toggle these to find the crash
+    const SKIP_BLUR_DETECTION = false;
+    const SKIP_PROCESSING = false;
+
+    if (SKIP_BLUR_DETECTION) {
+      console.log('[ISOLATION] Skipping blur detection');
+      setTimeout(() => {
+        void addImageToSession(imageUri, { isBlurry: false, sharpnessScore: 100, level: 'sharp', message: 'Skipped' }).catch((err) =>
+          reportCaptureFailure('addImageToSession (auto skipped blur)', err)
+        );
+        setBlurCheckModal(prev => ({ ...prev, visible: false }));
+      }, 1000);
+      return;
+    }
+
     // Check for blur
+    console.log('[ISOLATION] detectBlur: START');
     const blurResult = await detectBlur(imageUri);
+    console.log('[ISOLATION] detectBlur: SUCCESS', blurResult.level);
     
     setBlurCheckModal(prev => ({
       ...prev,
@@ -256,13 +278,13 @@ export default function ScannerScreen() {
 
     // If image is very blurry, show warning and wait for user decision
     if (blurResult.level === 'very_blurry') {
-      // Don't auto-add, let user decide
       return;
     }
 
     // If acceptable or sharp, auto-add after brief delay
     if (blurResult.level === 'sharp' || blurResult.level === 'acceptable') {
       setTimeout(() => {
+        console.log('[ISOLATION] Auto-adding after blur check');
         void addImageToSession(imageUri, blurResult).catch((err) =>
           reportCaptureFailure('addImageToSession (auto after blur check)', err)
         );
@@ -275,28 +297,38 @@ export default function ScannerScreen() {
    * Add the image to the current session
    */
   const addImageToSession = async (imageUri: string, blurResult: BlurDetectionResult) => {
+    console.log(`[ISOLATION] addImageToSession: START for ${imageUri}`);
     try {
-      // 1. Process image natively (Resizing, Compression, Enhancement)
-      // Note: Perspective was handled by native scanner already
+      // 1. Process image natively
+      console.log('[ISOLATION] nativeProcessImage: START');
       const processed = await nativeProcessImage(imageUri, {
         targetWidth: CONFIG.IMAGE_TARGET_WIDTH,
         grayscale: true,
         enhance: true,
-        autoCrop: false, // Handled by DocumentScanner
+        autoCrop: false,
       });
 
-      // 2. Move to permanent storage if needed
-      const processedUri = `${FileSystem.documentDirectory}scanned_${Date.now()}.jpg`;
-      await FileSystem.copyAsync({
-        from: processed.uri,
-        to: processedUri
-      });
+      if (!processed || !processed.uri) {
+        throw new Error('Native image processing returned an invalid result');
+      }
+      
+      console.log('[ISOLATION] nativeProcessImage: SUCCESS');
 
-      // 3. Get file size without reading full content
-      const fileInfo = await FileSystem.getInfoAsync(processedUri);
-      const fileSizeBytes = fileInfo.exists ? fileInfo.size : 0;
+      // 2. Move to permanent storage
+      console.log('[ISOLATION] FileSystem.copy: START');
+      const filename = `scanned_${Date.now()}.jpg`;
+      const processedFile = new FileSystem.File(processed.uri);
+      const destinationFile = new FileSystem.File(FileSystem.Paths.document, filename);
+      
+      await processedFile.copy(destinationFile);
+      console.log('[ISOLATION] FileSystem.copy: SUCCESS', destinationFile.uri);
+
+      // 3. Get file info
+      const fileSizeBytes = destinationFile.size;
+      console.log('[ISOLATION] FileSystem.File.size: SUCCESS', fileSizeBytes);
 
       let pageNumber = 1;
+      const processedUri = destinationFile.uri;
       if (currentPhase === 'question_paper') {
         const pages = currentSession?.question_paper.pages || [];
         pageNumber = pages.length > 0 ? Math.max(...pages.map(p => p.page_number)) + 1 : 1;
@@ -310,6 +342,7 @@ export default function ScannerScreen() {
       }
 
       const scannedPage: ScannedPage = {
+        id: generateUUID(),
         page_number: pageNumber,
         file_path: processedUri,
         file_size: fileSizeBytes,

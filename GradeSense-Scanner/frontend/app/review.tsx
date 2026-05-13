@@ -128,7 +128,7 @@ export default function ReviewScreen() {
               >
                 {student.pages.map((page, pageIdx) => (
                   <TouchableOpacity
-                    key={pageIdx}
+                    key={page.id}
                     style={styles.pageThumb}
                     onPress={() => openPagePreview(student, pageIdx)}
                     activeOpacity={0.8}
@@ -161,7 +161,6 @@ export default function ReviewScreen() {
     );
   };
 
-  // Page Preview Modal
   const renderPreviewModal = () => (
     <Modal
       visible={previewModal.visible}
@@ -188,28 +187,33 @@ export default function ReviewScreen() {
           <View style={{ width: 44 }} />
         </View>
 
-        {/* Pagination dots */}
         {previewModal.pages.length > 1 && (
-          <View style={styles.modalPagination}>
-            {previewModal.pages.map((_, idx) => (
-              <View
-                key={idx}
+          <FlatList
+            horizontal
+            data={previewModal.pages}
+            keyExtractor={(item) => item.id}
+            renderItem={({ item, index }) => (
+              <TouchableOpacity 
+                key={item.id}
+                onPress={() => {
+                    setPreviewModal({...previewModal, currentIndex: index});
+                    flatListRef.current?.scrollToIndex({index, animated: true});
+                }}
                 style={[
-                  styles.paginationDot,
-                  idx === previewModal.currentIndex && styles.paginationDotActive,
+                  styles.navThumbnail,
+                  previewModal.currentIndex === index && styles.navThumbnailActive
                 ]}
               />
-            ))}
-          </View>
+            )}
+          />
         )}
 
-        {/* Swipeable images */}
         <FlatList
+          ref={flatListRef}
           data={previewModal.pages}
           horizontal
           pagingEnabled
           showsHorizontalScrollIndicator={false}
-          initialScrollIndex={previewModal.currentIndex}
           getItemLayout={(_, index) => ({
             length: SCREEN_WIDTH,
             offset: SCREEN_WIDTH * index,
@@ -235,10 +239,9 @@ export default function ReviewScreen() {
               )}
             </View>
           )}
-          keyExtractor={(item) => `modal-page-${item.page_number}`}
+          keyExtractor={(item) => item.id}
         />
 
-        {/* Swipe hint */}
         {previewModal.pages.length > 1 && (
           <View style={styles.swipeHint}>
             <Ionicons name="swap-horizontal" size={16} color={COLORS.textMuted} />

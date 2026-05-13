@@ -34,8 +34,28 @@ export const useAuthStore = create<AuthState>()(
     }),
     {
       name: 'auth-storage',
-      storage: createJSONStorage(() => AsyncStorage),
+      storage: createJSONStorage(() => ({
+        getItem: (name) => {
+          console.log(`[TRACE] auth-storage.getItem: start for ${name} at ${Date.now()}`);
+          return AsyncStorage.getItem(name);
+        },
+        setItem: (name, value) => {
+          console.log(`[TRACE] auth-storage.setItem: start for ${name} at ${Date.now()}`);
+          return AsyncStorage.setItem(name, value);
+        },
+        removeItem: (name) => {
+          console.log(`[TRACE] auth-storage.removeItem: start for ${name} at ${Date.now()}`);
+          return AsyncStorage.removeItem(name);
+        },
+      })),
+      partialize: (state) => {
+        // HYDRATION ISOLATION: Do not persist hydration/loading flags
+        // This prevents setHasHydrated(true) from triggering a persistence write
+        const { hasHydrated, isLoading, ...rest } = state;
+        return rest;
+      },
       onRehydrateStorage: () => (state) => {
+        console.log(`[TRACE] auth-storage.onRehydrateStorage: Hydration complete at ${Date.now()}`);
         state?.setHasHydrated(true);
       },
     }

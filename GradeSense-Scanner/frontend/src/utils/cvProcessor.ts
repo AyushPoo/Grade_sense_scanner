@@ -214,38 +214,57 @@ export async function nativeProcessImage(
 
     if (options.enhance || options.points) {
       try {
+        console.log('[ISOLATION] nativeProcessImage: Enhancement requested (Binary Flow)');
         const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
-        const FileSystem = await import('expo-file-system/legacy');
         
-        // Scale points if provided (assuming corners were relative to screen)
-        // In a real app, we'd use actual image dimensions
+        // 2. STABILITY: Use FormData for binary upload to prevent bridge Base64 overload
+        const formData = new FormData();
         
-        const base64 = await FileSystem.readAsStringAsync(finalUri, {
-          encoding: FileSystem.EncodingType.Base64,
+        // @ts-ignore - React Native FormData expects an object with uri, name, and type
+        formData.append('file', {
+          uri: finalUri,
+          name: 'enhance_capture.jpg',
+          type: 'image/jpeg',
         });
+        
+        formData.append('mode', 'enhanced');
+        if (options.points) {
+          formData.append('points', JSON.stringify(options.points.map(p => [p.x, p.y])));
+        }
 
-        const response = await fetch(`${backendUrl}/api/scan-sessions/enhance`, {
+        console.log('[ISOLATION] fetch (Enhance-File): START (Multipart)');
+        const response = await fetch(`${backendUrl}/api/scan-sessions/enhance-file`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            image: base64,
-            points: options.points?.map(p => [p.x, p.y]),
-            mode: 'enhanced'
-          })
+          body: formData,
+          headers: {
+            'Accept': 'application/json',
+          },
         });
+        console.log('[ISOLATION] fetch (Enhance-File): SUCCESS', response.status);
 
         if (response.ok) {
           const data = await response.json();
           if (data.enhanced_image) {
-            const enhancedUri = `${FileSystem.documentDirectory}proc_${Date.now()}.jpg`;
-            await FileSystem.writeAsStringAsync(enhancedUri, data.enhanced_image, {
+            console.log('[ISOLATION] FileSystem.writeAsString: START');
+            const enhancedFile = new FileSystem.File(FileSystem.Paths.document, `proc_${Date.now()}.jpg`);
+            await enhancedFile.writeAsString(data.enhanced_image, {
               encoding: FileSystem.EncodingType.Base64,
             });
-            finalUri = enhancedUri;
+            
+            // CLEANUP: Delete the intermediate resized image to save space
+            try {
+              const resizedFile = new FileSystem.File(resized.uri);
+              await resizedFile.delete();
+            } catch (e) {
+              console.warn('[Cleanup] Failed to delete temp resized image:', e);
+            }
+            
+            finalUri = enhancedFile.uri;
+            console.log('[ISOLATION] FileSystem.writeAsString: SUCCESS');
           }
         }
       } catch (err) {
-        console.warn('[CV] Cloud enhancement fallback:', err.message);
+        console.warn('[ISOLATION] Binary enhancement fallback:', err.message);
       }
     }
 
