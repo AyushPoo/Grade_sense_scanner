@@ -278,33 +278,42 @@ export const useScanStore = create<ScanState>()(
       },
 
       nextStudent: () => {
+        const { currentSession, currentStudentIndex, savedSessions } = get();
         if (!currentSession) return;
 
         const updatedSession = { ...currentSession };
-        const newIndex = currentStudentIndex + 1;
+        const nextIndex = currentStudentIndex + 1;
         
-        // Create new student if needed
-        if (newIndex >= updatedSession.students.length) {
-          updatedSession.students.push({
-            student_index: newIndex + 1,
-            label: `Student #${newIndex + 1}`,
-            page_count: 0,
-            has_blurry_pages: false,
-            pages: [],
-          });
+        // Ensure student exists and has an ID
+        if (nextIndex >= updatedSession.students.length) {
+          updatedSession.students = [
+            ...updatedSession.students,
+            {
+              id: generateUUID(),
+              student_index: nextIndex + 1,
+              label: `Student #${nextIndex + 1}`,
+              page_count: 0,
+              has_blurry_pages: false,
+              pages: [],
+            },
+          ];
         }
-        
-        updatedSession.stats.total_students = updatedSession.students.length;
-        
-        set({ 
-          currentSession: updatedSession, 
-          currentStudentIndex: newIndex,
+
+        const existingIndex = savedSessions.findIndex(s => s.session_id === updatedSession.session_id);
+        const newSavedSessions = [...savedSessions];
+        if (existingIndex > -1) {
+          newSavedSessions[existingIndex] = updatedSession;
+        }
+
+        set({
+          currentSession: updatedSession,
+          savedSessions: newSavedSessions,
+          currentStudentIndex: nextIndex,
           currentPhase: 'students',
         });
-
-        // Realtime Persistence: Sync student transition
-        get().syncCurrentMetadata().catch(err => 
-          console.error("[Persistence] Failed to sync student transition:", err)
+        
+        get().syncCurrentMetadata('student', nextIndex).catch(err => 
+          console.error("[Persistence] Failed to sync next student:", err)
         );
       },
 
