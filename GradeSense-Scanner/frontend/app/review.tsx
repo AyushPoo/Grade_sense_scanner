@@ -84,9 +84,10 @@ export default function ReviewScreen() {
 
   const renderStudentCard = (student: ScannedStudent, index: number) => {
     const isExpanded = expandedStudents.has(index);
+    const studentKey = `student-${student.id ?? student.student_index}`;
     
     return (
-      <View key={index} style={styles.studentCard}>
+      <View key={studentKey} style={styles.studentCard}>
         <TouchableOpacity
           style={styles.studentHeader}
           onPress={() => toggleStudentExpand(index)}
@@ -99,7 +100,7 @@ export default function ReviewScreen() {
             <Text style={styles.studentName}>{student.label}</Text>
             <Text style={styles.studentMeta}>
               {student.page_count} pages
-              {student.barcode_data && ` • Roll: ${student.barcode_data.data}`}
+              {(student.roll_number || student.barcode_data?.data) && ` • Roll: ${student.roll_number || student.barcode_data?.data}`}
             </Text>
           </View>
           <View style={styles.studentStatus}>
@@ -127,33 +128,36 @@ export default function ReviewScreen() {
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={styles.pagesScrollContent}
               >
-                {student.pages.map((page, pageIdx) => (
-                  <TouchableOpacity
-                    key={page.id}
-                    style={styles.pageThumb}
-                    onPress={() => openPagePreview(student, pageIdx)}
-                    activeOpacity={0.8}
-                  >
-                    {page.file_path ? (
-                      <Image
-                        source={{ uri: page.file_path }}
-                        style={styles.pageThumbImage}
-                      />
-                    ) : (
-                      <View style={styles.pageThumbPlaceholder}>
-                        <Ionicons name="document" size={24} color={COLORS.textMuted} />
+                {student.pages.map((page, pageIdx) => {
+                  const pageKey = `page-${student.student_index}-${page.page_number}-${page.file_path}`;
+                  return (
+                    <TouchableOpacity
+                      key={pageKey}
+                      style={styles.pageThumb}
+                      onPress={() => openPagePreview(student, pageIdx)}
+                      activeOpacity={0.8}
+                    >
+                      {page.file_path ? (
+                        <Image
+                          source={{ uri: page.file_path }}
+                          style={styles.pageThumbImage}
+                        />
+                      ) : (
+                        <View style={styles.pageThumbPlaceholder}>
+                          <Ionicons name="document" size={24} color={COLORS.textMuted} />
+                        </View>
+                      )}
+                      <View style={styles.pageThumbBadge}>
+                        <Text style={styles.pageThumbBadgeText}>P{page.page_number}</Text>
                       </View>
-                    )}
-                    <View style={styles.pageThumbBadge}>
-                      <Text style={styles.pageThumbBadgeText}>P{page.page_number}</Text>
-                    </View>
-                    {page.is_blurry && (
-                      <View style={styles.blurryIndicator}>
-                        <Ionicons name="warning" size={12} color={COLORS.warning} />
-                      </View>
-                    )}
-                  </TouchableOpacity>
-                ))}
+                      {page.is_blurry && (
+                        <View style={styles.blurryIndicator}>
+                          <Ionicons name="warning" size={12} color={COLORS.warning} />
+                        </View>
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
               </ScrollView>
             )}
           </View>
@@ -195,7 +199,6 @@ export default function ReviewScreen() {
             keyExtractor={(item) => item.id}
             renderItem={({ item, index }) => (
               <TouchableOpacity 
-                key={item.id}
                 onPress={() => {
                     setPreviewModal({...previewModal, currentIndex: index});
                     flatListRef.current?.scrollToIndex({index, animated: true});
@@ -279,7 +282,6 @@ export default function ReviewScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      {renderPreviewModal()}
       
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
@@ -289,16 +291,16 @@ export default function ReviewScreen() {
         <View style={{ width: 40 }} />
       </View>
 
-      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView key="main-scroll" style={styles.content} showsVerticalScrollIndicator={false}>
         {/* Session Info */}
-        <View style={styles.sessionInfo}>
+        <View key="session-info-section" style={styles.sessionInfo}>
           <Ionicons name="document-text" size={36} color={COLORS.primary} />
           <Text style={styles.sessionName}>{session.session_name}</Text>
           <Text style={styles.batchName}>{session.batch_name}</Text>
         </View>
 
         {/* Quick Stats */}
-        <View style={styles.statsRow}>
+        <View key="stats-row-section" style={styles.statsRow}>
           <View style={styles.statBox}>
             <Text style={styles.statValue}>{studentsWithPages.length}</Text>
             <Text style={styles.statLabel}>Students</Text>
@@ -315,9 +317,9 @@ export default function ReviewScreen() {
 
         {/* Optional: Question Paper & Model Answer */}
         {(session.question_paper.page_count > 0 || session.model_answer.page_count > 0) && (
-          <View style={styles.optionalSection}>
+          <View key="optional-docs-section" style={styles.optionalSection}>
             {session.question_paper.page_count > 0 && (
-              <TouchableOpacity style={styles.optionalItem}>
+              <TouchableOpacity key="qp-item" style={styles.optionalItem}>
                 <Ionicons name="document-text" size={20} color={COLORS.primary} />
                 <Text style={styles.optionalText}>
                   Question Paper: {session.question_paper.page_count} pages
@@ -326,7 +328,7 @@ export default function ReviewScreen() {
               </TouchableOpacity>
             )}
             {session.model_answer.page_count > 0 && (
-              <TouchableOpacity style={styles.optionalItem}>
+              <TouchableOpacity key="ma-item" style={styles.optionalItem}>
                 <Ionicons name="clipboard" size={20} color={COLORS.success} />
                 <Text style={styles.optionalText}>
                   Model Answer: {session.model_answer.page_count} pages
@@ -338,13 +340,13 @@ export default function ReviewScreen() {
         )}
 
         {/* Students Section */}
-        <View style={styles.sectionHeader}>
+        <View key="students-header-section" style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>STUDENTS ({studentsWithPages.length})</Text>
           <Text style={styles.sectionHint}>Tap to expand & view pages</Text>
         </View>
 
         {studentsWithPages.length === 0 ? (
-          <View style={styles.noStudents}>
+          <View key="no-students-view" style={styles.noStudents}>
             <Ionicons name="people-outline" size={48} color={COLORS.textMuted} />
             <Text style={styles.noStudentsText}>No student papers scanned</Text>
           </View>
@@ -354,7 +356,7 @@ export default function ReviewScreen() {
 
         {/* Blurry Pages Warning */}
         {session.stats.blurry_pages > 0 && (
-          <View style={styles.warningBox}>
+          <View key="blurry-warning-section" style={styles.warningBox}>
             <Ionicons name="warning" size={20} color={COLORS.warning} />
             <Text style={styles.warningText}>
               {session.stats.blurry_pages} potentially blurry pages detected
@@ -363,22 +365,23 @@ export default function ReviewScreen() {
         )}
 
         {/* Action Buttons */}
-        <View style={styles.actionsContainer}>
+        <View key="actions-container-section" style={styles.actionsContainer}>
           {(session.status === 'ready' || session.status === 'failed') && (
-            <TouchableOpacity style={styles.uploadButton} onPress={handleUpload}>
+            <TouchableOpacity key="upload-main-btn" style={styles.uploadButton} onPress={handleUpload}>
               <Ionicons name="cloud-upload" size={24} color="#fff" />
               <Text style={styles.uploadButtonText}>UPLOAD TO GRADESENSE</Text>
             </TouchableOpacity>
           )}
 
           {session.status === 'uploaded' && (
-            <View style={styles.uploadedBadge}>
+            <View key="uploaded-status-badge" style={styles.uploadedBadge}>
               <Ionicons name="checkmark-circle" size={24} color={COLORS.success} />
               <Text style={styles.uploadedText}>Already Uploaded</Text>
             </View>
           )}
 
           <TouchableOpacity
+            key="home-back-btn"
             style={styles.homeButton}
             onPress={() => router.replace('/(tabs)/home')}
           >
@@ -387,7 +390,7 @@ export default function ReviewScreen() {
           </TouchableOpacity>
         </View>
 
-        <View style={{ height: 40 }} />
+        <View key="scroll-spacer" style={{ height: 40 }} />
       </ScrollView>
       {renderPreviewModal()}
     </SafeAreaView>

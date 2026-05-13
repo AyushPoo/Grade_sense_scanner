@@ -11,6 +11,7 @@ import {
   Image,
   ActivityIndicator,
   Platform,
+  TextInput,
 } from 'react-native';
 import Svg, { Polygon } from 'react-native-svg';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -97,6 +98,29 @@ export default function ScannerScreen() {
     blurResult: null,
     isChecking: false,
   });
+  
+  // Student Identity State
+  const [studentIdentityModal, setStudentIdentityModal] = useState({
+    visible: false,
+    name: '',
+    rollNumber: '',
+  });
+
+  const [inputLayout, setInputLayout] = useState({ keyboardHeight: 0 });
+
+  // Initial Student Identity Flow
+  useEffect(() => {
+    if (currentPhase === 'students' && currentSession) {
+      const currentStudent = currentSession.students[currentStudentIndex];
+      if (currentStudent && !currentStudent.name && !studentIdentityModal.visible) {
+        setStudentIdentityModal({
+          visible: true,
+          name: '',
+          rollNumber: '',
+        });
+      }
+    }
+  }, [currentPhase, currentSession?.session_id]); // Trigger on phase change or new session
 
   // Enable auto-rotation for camera
   useEffect(() => {
@@ -392,8 +416,27 @@ export default function ScannerScreen() {
   const currentPages = getCurrentPages();
 
   const handleNextStudent = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    nextStudent();
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    
+    // Open identity modal before moving to next student
+    setStudentIdentityModal({
+      visible: true,
+      name: '',
+      rollNumber: '',
+    });
+  };
+
+  const submitStudentIdentity = (skip = false) => {
+    if (skip) {
+      nextStudent();
+    } else {
+      nextStudent({
+        name: studentIdentityModal.name.trim(),
+        roll_number: studentIdentityModal.rollNumber.trim(),
+      });
+    }
+    
+    setStudentIdentityModal({ visible: false, name: '', rollNumber: '' });
     resetCooldown();
   };
 
@@ -454,7 +497,10 @@ export default function ScannerScreen() {
     switch (currentPhase) {
       case 'question_paper': return 'QUESTION PAPER';
       case 'model_answer': return 'MODEL ANSWER';
-      default: return `STUDENT #${currentStudentIndex + 1}`;
+      default: {
+        const student = currentSession?.students[currentStudentIndex];
+        return student?.label || `STUDENT #${currentStudentIndex + 1}`;
+      }
     }
   };
 
@@ -535,8 +581,69 @@ export default function ScannerScreen() {
     ? screenDimensions.height * 0.65 
     : screenDimensions.height * 0.38;
 
+  const renderStudentIdentityModal = () => (
+    <Modal
+      visible={studentIdentityModal.visible}
+      transparent
+      animationType="slide"
+      onRequestClose={() => setStudentIdentityModal({ ...studentIdentityModal, visible: false })}
+    >
+      <View style={styles.identityOverlay}>
+        <View style={styles.identityContent}>
+          <Text style={styles.identityTitle}>Student Identity</Text>
+          <Text style={styles.identitySubtitle}>Optionally identify the next student</Text>
+          
+          <View style={styles.inputGroup}>
+            <Text style={styles.inputLabel}>STUDENT NAME</Text>
+            <View style={styles.textInputWrapper}>
+              <Ionicons name="person-outline" size={20} color={COLORS.textMuted} />
+              <TextInput
+                style={styles.textInput}
+                placeholder="Enter Name"
+                value={studentIdentityModal.name}
+                onChangeText={(text) => setStudentIdentityModal({ ...studentIdentityModal, name: text })}
+                autoFocus
+              />
+            </View>
+          </View>
+
+          <View style={styles.inputGroup}>
+            <Text style={styles.inputLabel}>ROLL NUMBER (OPTIONAL)</Text>
+            <View style={styles.textInputWrapper}>
+              <Ionicons name="card-outline" size={20} color={COLORS.textMuted} />
+              <TextInput
+                style={styles.textInput}
+                placeholder="Enter Roll Number"
+                value={studentIdentityModal.rollNumber}
+                onChangeText={(text) => setStudentIdentityModal({ ...studentIdentityModal, rollNumber: text })}
+              />
+            </View>
+          </View>
+
+          <View style={styles.identityActions}>
+            <TouchableOpacity 
+              style={styles.skipBtn} 
+              onPress={() => submitStudentIdentity(true)}
+            >
+              <Text style={styles.skipBtnText}>Skip</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity 
+              style={styles.continueBtn} 
+              onPress={() => submitStudentIdentity(false)}
+            >
+              <Text style={styles.continueBtnText}>Continue Scanning</Text>
+              <Ionicons name="arrow-forward" size={18} color="#fff" />
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+
   return (
     <View style={styles.container}>
+      {renderStudentIdentityModal()}
       {/* Blur Check Modal */}
       <Modal
         visible={blurCheckModal.visible}
@@ -777,35 +884,18 @@ export default function ScannerScreen() {
         />
       </View>
 
-      {/* Controls */}
+      {/* Controls Area */}
       <SafeAreaView edges={['bottom']} style={styles.controlsSafeArea}>
-        <ScrollView 
-          style={styles.controlsScrollView}
-          contentContainerStyle={styles.controlsContainer}
-          showsVerticalScrollIndicator={false}
-        >
-          {/* Primary Action: Document Scanner with Auto-Crop */}
-          <TouchableOpacity
-            style={styles.scanButton}
-            onPress={handleDocumentScan}
-            disabled={isCapturing}
-          >
-            <Ionicons name="scan" size={24} color="#fff" />
-            <Text style={styles.scanButtonText}>
-              SCAN WITH AUTO-CROP
-            </Text>
-          </TouchableOpacity>
-
-          {/* Secondary: Manual Capture Row */}
-          <View style={styles.manualCaptureRow}>
-            {autoCaptureEnabled && (
-              <TouchableOpacity
-                style={[styles.pausePlayButton, isPaused && styles.playButton]}
-                onPress={togglePause}
-              >
-                <Ionicons name={isPaused ? 'play' : 'pause'} size={20} color="#fff" />
-              </TouchableOpacity>
-            )}
+        <View style={styles.controlsContainer}>
+          {/* Main Action Bar */}
+          <View style={styles.mainActionBar}>
+            <TouchableOpacity
+              style={[styles.miniBtn, isPaused && styles.miniBtnActive]}
+              onPress={togglePause}
+            >
+              <Ionicons name={isPaused ? 'play' : 'pause'} size={24} color="#fff" />
+              <Text style={styles.miniBtnLabel}>{isPaused ? 'RESUME' : 'PAUSE'}</Text>
+            </TouchableOpacity>
 
             <CaptureButton
               onPress={handleManualCapture}
@@ -814,68 +904,48 @@ export default function ScannerScreen() {
               autoCaptureEnabled={autoCaptureEnabled && !isPaused && isCameraReady}
             />
 
-            <TouchableOpacity
-              style={[styles.undoButton, currentPages.length === 0 && styles.undoButtonDisabled]}
-              onPress={handleUndo}
-              disabled={currentPages.length === 0}
-            >
-              <Ionicons
-                name="arrow-undo"
-                size={18}
-                color={currentPages.length > 0 ? '#fff' : 'rgba(255,255,255,0.3)'}
-              />
-            </TouchableOpacity>
+            {currentPhase === 'students' ? (
+              <TouchableOpacity style={styles.nextStudentAction} onPress={handleNextStudent}>
+                <Ionicons name="person-add" size={24} color="#fff" />
+                <Text style={styles.nextStudentActionLabel}>NEXT STUDENT</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity 
+                style={[styles.undoButton, currentPages.length === 0 && styles.undoButtonDisabled]}
+                onPress={handleUndo}
+                disabled={currentPages.length === 0}
+              >
+                <Ionicons
+                  name="arrow-undo"
+                  size={20}
+                  color={currentPages.length > 0 ? '#fff' : 'rgba(255,255,255,0.3)'}
+                />
+                <Text style={styles.miniBtnLabel}>UNDO</Text>
+              </TouchableOpacity>
+            )}
           </View>
 
-          <Text style={styles.orText}>or tap capture button for manual mode</Text>
-
-          {/* Phase Actions / Next Student Button */}
-          {currentPhase === 'students' ? (
-            <TouchableOpacity style={styles.nextStudentButton} onPress={handleNextStudent}>
-              <Ionicons name="person-add" size={22} color="#fff" />
-              <Text style={styles.nextStudentText}>NEXT STUDENT</Text>
-              <Text style={styles.nextStudentCount}>(#{currentStudentIndex + 2})</Text>
-            </TouchableOpacity>
-          ) : (
-            <View style={styles.phaseActions}>
-              <TouchableOpacity style={styles.skipButton} onPress={handleSkipPhase}>
-                <Ionicons name="play-skip-forward" size={18} color={COLORS.textMuted} />
-                <Text style={styles.skipButtonText}>Skip</Text>
+          {/* Secondary Actions Row */}
+          <View style={styles.secondaryActionsRow}>
+            {currentPhase !== 'students' ? (
+              <TouchableOpacity style={styles.donePhaseBtn} onPress={handleNextPhase}>
+                <Text style={styles.donePhaseBtnText}>FINISH {currentPhase === 'question_paper' ? 'QP' : 'MODEL'}</Text>
+                <Ionicons name="arrow-forward" size={16} color="#fff" />
               </TouchableOpacity>
-              <TouchableOpacity style={styles.nextPhaseButton} onPress={handleNextPhase}>
-                <Text style={styles.nextPhaseText}>
-                  Done with {currentPhase === 'question_paper' ? 'QP' : 'Model'}
-                </Text>
-                <Ionicons name="arrow-forward" size={20} color="#fff" />
-              </TouchableOpacity>
-            </View>
-          )}
-
-          {/* Done Button */}
-          {currentPhase === 'students' && (
-            <TouchableOpacity style={styles.doneButton} onPress={handleDone}>
-              <Ionicons name="checkmark-done-circle" size={24} color="#fff" />
-              <Text style={styles.doneButtonText}>DONE - Review All</Text>
-            </TouchableOpacity>
-          )}
-
-          {/* Settings Row */}
-          <View style={styles.settingsRow}>
-            <TouchableOpacity
-              style={[styles.settingButton, autoCaptureEnabled && styles.settingButtonActive]}
-              onPress={() => setAutoCaptureEnabled(!autoCaptureEnabled)}
-            >
-              <Ionicons 
-                name="flash" 
-                size={16} 
-                color={autoCaptureEnabled ? '#fff' : COLORS.textMuted} 
-              />
-              <Text style={[styles.settingButtonText, autoCaptureEnabled && { color: '#fff' }]}>
-                Auto {autoCaptureEnabled ? 'ON' : 'OFF'}
-              </Text>
-            </TouchableOpacity>
+            ) : (
+              <View style={styles.studentStatsRow}>
+                <TouchableOpacity style={styles.undoStudentBtn} onPress={handleUndo}>
+                   <Ionicons name="arrow-undo" size={16} color="rgba(255,255,255,0.6)" />
+                   <Text style={styles.undoStudentBtnText}>Undo Last Page</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.finishSessionBtn} onPress={handleDone}>
+                  <Text style={styles.finishSessionBtnText}>FINISH SESSION</Text>
+                  <Ionicons name="checkmark-done" size={18} color="#fff" />
+                </TouchableOpacity>
+              </View>
+            )}
           </View>
-        </ScrollView>
+        </View>
       </SafeAreaView>
 
       <Modal visible={false} animationType="slide">
@@ -1273,6 +1343,119 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: COLORS.textMuted,
   },
+  // Refined Controls
+  controlsSafeArea: {
+    backgroundColor: '#000',
+    paddingTop: 10,
+  },
+  controlsContainer: {
+    paddingHorizontal: 20,
+    paddingBottom: 20,
+  },
+  mainActionBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+  },
+  miniBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+  },
+  miniBtnActive: {
+    backgroundColor: COLORS.primary,
+  },
+  miniBtnLabel: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: 'rgba(255,255,255,0.6)',
+    marginTop: 4,
+  },
+  nextStudentAction: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: COLORS.primary,
+    shadowColor: COLORS.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  nextStudentActionLabel: {
+    fontSize: 9,
+    fontWeight: '900',
+    color: '#fff',
+    marginTop: 4,
+    textAlign: 'center',
+  },
+  undoButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+  },
+  undoButtonDisabled: {
+    opacity: 0.3,
+  },
+  secondaryActionsRow: {
+    marginTop: 20,
+    flexDirection: 'row',
+    justifyContent: 'center',
+  },
+  donePhaseBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 25,
+  },
+  donePhaseBtnText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  studentStatsRow: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  undoStudentBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    padding: 10,
+  },
+  undoStudentBtnText: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  finishSessionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: COLORS.success,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 25,
+  },
+  finishSessionBtnText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '800',
+  },
   // Blur Modal Styles
   blurModalOverlay: {
     flex: 1,
@@ -1363,5 +1546,97 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 14,
     fontWeight: '600',
+  },
+  // Identity Modal Styles
+  identityOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  identityContent: {
+    backgroundColor: COLORS.background,
+    borderRadius: 20,
+    padding: 24,
+    width: '100%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.3,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  identityTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: COLORS.text,
+    marginBottom: 6,
+  },
+  identitySubtitle: {
+    fontSize: 14,
+    color: COLORS.textMuted,
+    marginBottom: 24,
+  },
+  inputGroup: {
+    marginBottom: 16,
+  },
+  inputLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.textMuted,
+    marginBottom: 8,
+    letterSpacing: 1,
+  },
+  textInputWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.backgroundDark,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    height: 54,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  textInput: {
+    flex: 1,
+    marginLeft: 12,
+    fontSize: 16,
+    color: COLORS.text,
+    borderWidth: 0,
+    backgroundColor: 'transparent',
+  },
+  identityActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 8,
+  },
+  skipBtn: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: COLORS.backgroundDark,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  skipBtnText: {
+    color: COLORS.textLight,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  continueBtn: {
+    flex: 2,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: COLORS.primary,
+  },
+  continueBtnText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
   },
 });

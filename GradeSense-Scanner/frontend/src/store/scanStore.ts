@@ -69,27 +69,27 @@ const createEmptySession = (): Partial<ScanSession> => ({
 });
 
 export const recomputeStats = (session: ScanSession): ScanSession['stats'] => {
-  const qpPages = session.question_paper.pages.length;
-  const maPages = session.model_answer.pages.length;
-  const studentsWithPages = session.students.filter(s => s.pages.length > 0);
+  const qpPages = session.question_paper?.pages?.length || 0;
+  const maPages = session.model_answer?.pages?.length || 0;
+  const studentsWithPages = (session.students || []).filter(s => (s.pages || []).length > 0);
   
   let totalPages = qpPages + maPages;
   let totalSizeBytes = 0;
   let blurryPages = 0;
 
-  session.question_paper.pages.forEach(p => {
-    totalSizeBytes += p.file_size;
+  session.question_paper?.pages?.forEach(p => {
+    totalSizeBytes += p.file_size || 0;
     if (p.is_blurry) blurryPages++;
   });
-  session.model_answer.pages.forEach(p => {
-    totalSizeBytes += p.file_size;
+  session.model_answer?.pages?.forEach(p => {
+    totalSizeBytes += p.file_size || 0;
     if (p.is_blurry) blurryPages++;
   });
 
   studentsWithPages.forEach(s => {
-    totalPages += s.pages.length;
-    s.pages.forEach(p => {
-      totalSizeBytes += p.file_size;
+    totalPages += (s.pages || []).length;
+    (s.pages || []).forEach(p => {
+      totalSizeBytes += p.file_size || 0;
       if (p.is_blurry) blurryPages++;
     });
   });
@@ -101,6 +101,12 @@ export const recomputeStats = (session: ScanSession): ScanSession['stats'] => {
     total_size_bytes: totalSizeBytes,
     blurry_pages: blurryPages,
   };
+};
+
+const generateStudentLabel = (index: number, name?: string | null, roll?: string | null): string => {
+  if (name && roll) return `${name} (${roll})`;
+  if (name) return name;
+  return `Student #${index}`;
 };
 
 export const useScanStore = create<ScanState>()(
@@ -190,25 +196,28 @@ export const useScanStore = create<ScanState>()(
         if (!currentSession) return;
 
         // IDENTITY PROTECTION: Prevent duplicate page insertions by ID
-        const isDuplicate = (pages: ScannedPage[]) => pages.some(p => p.id === page.id);
+        const isDuplicate = (pages: ScannedPage[]) => (pages || []).some(p => p.id === page.id);
         
         const updatedSession = { ...currentSession };
         
         // DETERMINISTIC NUMBERING: Calculate page_number inside the store to avoid rapid-fire duplicates
         if (currentPhase === 'question_paper') {
+          if (!updatedSession.question_paper.pages) updatedSession.question_paper.pages = [];
           if (isDuplicate(updatedSession.question_paper.pages)) return;
           page.page_number = updatedSession.question_paper.pages.length + 1;
           updatedSession.question_paper.pages = [...updatedSession.question_paper.pages, page];
           updatedSession.question_paper.page_count = updatedSession.question_paper.pages.length;
         } else if (currentPhase === 'model_answer') {
+          if (!updatedSession.model_answer.pages) updatedSession.model_answer.pages = [];
           if (isDuplicate(updatedSession.model_answer.pages)) return;
           page.page_number = updatedSession.model_answer.pages.length + 1;
           updatedSession.model_answer.pages = [...updatedSession.model_answer.pages, page];
           updatedSession.model_answer.page_count = updatedSession.model_answer.pages.length;
         } else {
-          const updatedStudents = [...updatedSession.students];
+          const updatedStudents = [...(updatedSession.students || [])];
           const student = { ...updatedStudents[currentStudentIndex] };
           if (student) {
+            if (!student.pages) student.pages = [];
             if (isDuplicate(student.pages)) return;
             page.page_number = student.pages.length + 1;
             student.pages = [...student.pages, page];
@@ -306,26 +315,41 @@ export const useScanStore = create<ScanState>()(
         );
       },
 
-      nextStudent: () => {
+      nextStudent: (metadata?: { name?: string; roll_number?: string }) => {
         const { currentSession, currentStudentIndex, savedSessions } = get();
         if (!currentSession) return;
 
         const updatedSession = { ...currentSession };
         const nextIndex = currentStudentIndex + 1;
         
+        // Finalize label for current student if they were just created and had no metadata
+        // Actually, it's better to set metadata on the *new* student.
+        
         // Ensure student exists and has an ID
         if (nextIndex >= updatedSession.students.length) {
+          const name = metadata?.name || null;
+          const roll = metadata?.roll_number || null;
+          
           updatedSession.students = [
             ...updatedSession.students,
             {
               id: generateUUID(),
               student_index: nextIndex + 1,
-              label: `Student #${nextIndex + 1}`,
+              name: name,
+              roll_number: roll,
+              label: generateStudentLabel(nextIndex + 1, name, roll),
               page_count: 0,
               has_blurry_pages: false,
               pages: [],
             },
           ];
+        } else if (metadata) {
+          // If we somehow jump to an existing empty student, update metadata
+          const student = { ...updatedSession.students[nextIndex] };
+          student.name = metadata.name || student.name;
+          student.roll_number = metadata.roll_number || student.roll_number;
+          student.label = generateStudentLabel(student.student_index, student.name, student.roll_number);
+          updatedSession.students[nextIndex] = student;
         }
 
         const existingIndex = savedSessions.findIndex(s => s.session_id === updatedSession.session_id);
@@ -346,6 +370,35 @@ export const useScanStore = create<ScanState>()(
         get().syncCurrentMetadata('student', nextIndex).catch(err => 
           console.error("[Persistence] Failed to sync next student:", err)
         );
+      },
+
+      updateStudentMetadata: (studentIndex: number, name: string, rollNumber: string) => {
+        const { currentSession, savedSessions } = get();
+        if (!currentSession) return;
+
+        const updatedSession = { ...currentSession };
+        const student = { ...updatedSession.students[studentIndex] };
+        if (student) {
+          student.name = name || null;
+          student.roll_number = rollNumber || null;
+          student.label = generateStudentLabel(student.student_index, student.name, student.roll_number);
+          updatedSession.students[studentIndex] = student;
+          
+          const existingIndex = savedSessions.findIndex(s => s.session_id === updatedSession.session_id);
+          const newSavedSessions = [...savedSessions];
+          if (existingIndex > -1) {
+            newSavedSessions[existingIndex] = updatedSession;
+          }
+
+          set({ 
+            currentSession: updatedSession,
+            savedSessions: newSavedSessions
+          });
+          
+          get().syncCurrentMetadata('student', studentIndex).catch(err => 
+            console.error("[Persistence] Failed to sync student metadata:", err)
+          );
+        }
       },
 
       previousStudent: () => {

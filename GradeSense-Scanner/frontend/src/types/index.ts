@@ -43,6 +43,8 @@ export interface ScannedStudent {
     data: string;
     matched_name?: string;
   };
+  name?: string | null;
+  roll_number?: string | null;
   page_count: number;
   has_blurry_pages: boolean;
   pages: ScannedPage[];
