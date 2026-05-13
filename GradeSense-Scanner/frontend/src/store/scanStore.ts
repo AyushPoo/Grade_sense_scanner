@@ -68,7 +68,7 @@ const createEmptySession = (): Partial<ScanSession> => ({
   },
 });
 
-const recomputeStats = (session: ScanSession): ScanSession['stats'] => {
+export const recomputeStats = (session: ScanSession): ScanSession['stats'] => {
   const qpPages = session.question_paper.pages.length;
   const maPages = session.model_answer.pages.length;
   const studentsWithPages = session.students.filter(s => s.pages.length > 0);
@@ -552,8 +552,16 @@ export const useScanStore = create<ScanState>()(
           }
 
           const data = await response.json();
-          console.log(`[TRACE] fetchSessions: success, received ${data.sessions?.length || 0} sessions at ${Date.now()}`);
-          set({ savedSessions: data.sessions });
+          const fetchedSessions = data.sessions || [];
+          
+          // NORMALIZATION: Ensure all fetched sessions have accurate derived stats
+          const normalizedSessions = fetchedSessions.map((s: ScanSession) => ({
+            ...s,
+            stats: recomputeStats(s)
+          }));
+
+          console.log(`[TRACE] fetchSessions: success, received ${normalizedSessions.length} sessions at ${Date.now()}`);
+          set({ savedSessions: normalizedSessions });
         } catch (error) {
           console.error(`[TRACE] fetchSessions: FAILED at ${Date.now()} with error:`, error);
         }
@@ -749,6 +757,9 @@ export const useScanStore = create<ScanState>()(
                 }
               });
             }
+
+            // DERIVED-STATE NORMALIZATION: Recompute aggregate stats from nested data
+            session.stats = recomputeStats(session);
           };
 
           state.savedSessions?.forEach(cleanupSession);
