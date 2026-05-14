@@ -24,6 +24,7 @@ export interface Student {
 
 export interface ScannedPage {
   id: string; // Globally unique ID (UUID)
+  ui_id: string; // Deterministic ID for UI reconciliation
   page_number: number;
   file_path: string;
   file_size: number;

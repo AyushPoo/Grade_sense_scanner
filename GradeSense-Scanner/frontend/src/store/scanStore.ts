@@ -205,12 +205,14 @@ export const useScanStore = create<ScanState>()(
           if (!updatedSession.question_paper.pages) updatedSession.question_paper.pages = [];
           if (isDuplicate(updatedSession.question_paper.pages)) return;
           page.page_number = updatedSession.question_paper.pages.length + 1;
+          page.ui_id = `${updatedSession.session_id}_qp_${page.file_path}`;
           updatedSession.question_paper.pages = [...updatedSession.question_paper.pages, page];
           updatedSession.question_paper.page_count = updatedSession.question_paper.pages.length;
         } else if (currentPhase === 'model_answer') {
           if (!updatedSession.model_answer.pages) updatedSession.model_answer.pages = [];
           if (isDuplicate(updatedSession.model_answer.pages)) return;
           page.page_number = updatedSession.model_answer.pages.length + 1;
+          page.ui_id = `${updatedSession.session_id}_ma_${page.file_path}`;
           updatedSession.model_answer.pages = [...updatedSession.model_answer.pages, page];
           updatedSession.model_answer.page_count = updatedSession.model_answer.pages.length;
         } else {
@@ -220,6 +222,7 @@ export const useScanStore = create<ScanState>()(
             if (!student.pages) student.pages = [];
             if (isDuplicate(student.pages)) return;
             page.page_number = student.pages.length + 1;
+            page.ui_id = `${updatedSession.session_id}_${student.student_index}_${page.file_path}`;
             student.pages = [...student.pages, page];
             student.page_count = student.pages.length;
             if (page.is_blurry) student.has_blurry_pages = true;
@@ -607,11 +610,31 @@ export const useScanStore = create<ScanState>()(
           const data = await response.json();
           const fetchedSessions = data.sessions || [];
           
-          // NORMALIZATION: Ensure all fetched sessions have accurate derived stats
-          const normalizedSessions = fetchedSessions.map((s: ScanSession) => ({
-            ...s,
-            stats: recomputeStats(s)
-          }));
+          // NORMALIZATION: Ensure all fetched sessions have accurate derived stats and ui_ids
+          const normalizedSessions = fetchedSessions.map((s: ScanSession) => {
+            // Apply ui_ids to all pages
+            if (s.question_paper?.pages) {
+              s.question_paper.pages.forEach(p => {
+                p.ui_id = `${s.session_id}_qp_${p.file_path}`;
+              });
+            }
+            if (s.model_answer?.pages) {
+              s.model_answer.pages.forEach(p => {
+                p.ui_id = `${s.session_id}_ma_${p.file_path}`;
+              });
+            }
+            if (s.students) {
+              s.students.forEach(st => {
+                st.pages?.forEach(p => {
+                  p.ui_id = `${s.session_id}_${st.student_index}_${p.file_path}`;
+                });
+              });
+            }
+            return {
+              ...s,
+              stats: recomputeStats(s)
+            };
+          });
 
           console.log(`[TRACE] fetchSessions: success, received ${normalizedSessions.length} sessions at ${Date.now()}`);
           set({ savedSessions: normalizedSessions });
@@ -791,12 +814,14 @@ export const useScanStore = create<ScanState>()(
               session.question_paper.pages.forEach((p: any) => { 
                 delete p.base64; 
                 if (!p.id) p.id = generateUUID(); 
+                p.ui_id = `${session.session_id}_qp_${p.file_path}`;
               });
             }
             if (session.model_answer?.pages) {
               session.model_answer.pages.forEach((p: any) => { 
                 delete p.base64; 
                 if (!p.id) p.id = generateUUID(); 
+                p.ui_id = `${session.session_id}_ma_${p.file_path}`;
               });
             }
             if (session.students) {
@@ -806,6 +831,7 @@ export const useScanStore = create<ScanState>()(
                   s.pages.forEach((p: any) => { 
                     delete p.base64; 
                     if (!p.id) p.id = generateUUID();
+                    p.ui_id = `${session.session_id}_${s.student_index}_${p.file_path}`;
                   });
                 }
               });

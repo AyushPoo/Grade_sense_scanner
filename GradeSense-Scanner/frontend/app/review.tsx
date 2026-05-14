@@ -55,12 +55,12 @@ export default function ReviewScreen() {
     }
   };
 
-  const toggleStudentExpand = (index: number) => {
+  const toggleStudentExpand = (studentIndex: number) => {
     const newExpanded = new Set(expandedStudents);
-    if (newExpanded.has(index)) {
-      newExpanded.delete(index);
+    if (newExpanded.has(studentIndex)) {
+      newExpanded.delete(studentIndex);
     } else {
-      newExpanded.add(index);
+      newExpanded.add(studentIndex);
     }
     setExpandedStudents(newExpanded);
   };
@@ -82,15 +82,15 @@ export default function ReviewScreen() {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
-  const renderStudentCard = (student: ScannedStudent, index: number) => {
-    const isExpanded = expandedStudents.has(index);
-    const studentKey = `student-${student.id ?? student.student_index}`;
+  const renderStudentCard = (student: ScannedStudent) => {
+    const isExpanded = expandedStudents.has(student.student_index);
+    const studentKey = `student-${student.student_index}-${student.label}`;
     
     return (
       <View key={studentKey} style={styles.studentCard}>
         <TouchableOpacity
           style={styles.studentHeader}
-          onPress={() => toggleStudentExpand(index)}
+          onPress={() => toggleStudentExpand(student.student_index)}
           activeOpacity={0.7}
         >
           <View style={styles.studentIcon}>
@@ -129,7 +129,7 @@ export default function ReviewScreen() {
                 contentContainerStyle={styles.pagesScrollContent}
               >
                 {student.pages.map((page, pageIdx) => {
-                  const pageKey = `page-${student.student_index}-${page.page_number}-${page.file_path}`;
+                  const pageKey = `page-${page.file_path}`;
                   return (
                     <TouchableOpacity
                       key={pageKey}
@@ -196,7 +196,9 @@ export default function ReviewScreen() {
           <FlatList
             horizontal
             data={previewModal.pages}
-            keyExtractor={(item) => item.id}
+            keyExtractor={(item) => item.ui_id}
+            contentContainerStyle={styles.modalPagination}
+            showsHorizontalScrollIndicator={false}
             renderItem={({ item, index }) => (
               <TouchableOpacity 
                 onPress={() => {
@@ -204,8 +206,8 @@ export default function ReviewScreen() {
                     flatListRef.current?.scrollToIndex({index, animated: true});
                 }}
                 style={[
-                  styles.navThumbnail,
-                  previewModal.currentIndex === index && styles.navThumbnailActive
+                  styles.paginationDot,
+                  previewModal.currentIndex === index && styles.paginationDotActive
                 ]}
               />
             )}
@@ -244,7 +246,7 @@ export default function ReviewScreen() {
               )}
             </View>
           )}
-          keyExtractor={(item) => item.id}
+          keyExtractor={(item) => item.ui_id}
         />
 
         {previewModal.pages.length > 1 && (
@@ -351,7 +353,7 @@ export default function ReviewScreen() {
             <Text style={styles.noStudentsText}>No student papers scanned</Text>
           </View>
         ) : (
-          studentsWithPages.map((student, index) => renderStudentCard(student, index))
+          studentsWithPages.map((student) => renderStudentCard(student))
         )}
 
         {/* Blurry Pages Warning */}
