@@ -6,7 +6,8 @@ export const testScannerAvailability = async () => {
     console.log('[Audit] DocumentScanner:', DocumentScanner);
     return true;
   } catch (e) {
-    console.error('[Audit] DocumentScanner not available:', e.message);
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error('[Audit] DocumentScanner not available:', msg);
     return false;
   }
 };

@@ -1,75 +1,113 @@
+/**
+ * StatusIndicator — Adobe-style 5-state scan status pill
+ *
+ * States:
+ *   searching  — no document in frame
+ *   detected   — document found, not stable enough
+ *   holding    — stable + ready, auto-capture imminent
+ *   capturing  — shutter in flight
+ *   saved      — page persisted successfully
+ */
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { COLORS } from '../config';
 import { CaptureState } from '../types';
+
+// ─── LiveScanStatus ───────────────────────────────────────────────────────────
+
+export type LiveScanStatus =
+  | 'searching'
+  | 'detected'
+  | 'holding'
+  | 'capturing'
+  | 'saved';
+
+// ─── State config table ───────────────────────────────────────────────────────
+
+interface StatusConfig {
+  label: string;
+  color: string;
+  icon: string;
+  bgColor: string;
+}
+
+const STATUS_CONFIG: Record<LiveScanStatus, StatusConfig> = {
+  searching: {
+    label: 'Searching...',
+    color: '#AAAAAA',
+    icon: 'scan-outline',
+    bgColor: 'rgba(0,0,0,0.60)',
+  },
+  detected: {
+    label: 'Document Detected',
+    color: '#FFC107',
+    icon: 'document-outline',
+    bgColor: 'rgba(40,28,0,0.78)',
+  },
+  holding: {
+    label: 'Hold Steady...',
+    color: '#FFD54F',
+    icon: 'hand-left-outline',
+    bgColor: 'rgba(40,28,0,0.78)',
+  },
+  capturing: {
+    label: 'Capturing...',
+    color: '#FF6B35',
+    icon: 'camera',
+    bgColor: 'rgba(50,15,0,0.85)',
+  },
+  saved: {
+    label: 'Saved  ✓',
+    color: '#4CAF50',
+    icon: 'checkmark-circle',
+    bgColor: 'rgba(0,35,0,0.80)',
+  },
+};
+
+// ─── Component ────────────────────────────────────────────────────────────────
 
 interface StatusIndicatorProps {
   captureState: CaptureState;
+  liveScanStatus?: LiveScanStatus;
 }
 
-export const StatusIndicator: React.FC<StatusIndicatorProps> = ({ captureState }) => {
-  const { isStable, isDocumentDetected, isSharp } = captureState;
-
-  let guidanceMessage = 'Point at a document';
-  let guidanceColor = COLORS.textMuted;
-  let iconName = 'scan-outline';
-
-  if (isDocumentDetected) {
-    if (!isStable) {
-      guidanceMessage = 'Hold steady...';
-      guidanceColor = COLORS.warning;
-      iconName = 'hand-left-outline';
-    } else if (!isSharp) {
-      guidanceMessage = 'Focusing...';
-      guidanceColor = COLORS.warning;
-      iconName = 'eye-outline';
-    } else {
-      guidanceMessage = 'Ready to capture';
-      guidanceColor = COLORS.success;
-      iconName = 'checkmark-circle';
-    }
-  }
+export const StatusIndicator: React.FC<StatusIndicatorProps> = ({
+  captureState: _captureState, // kept for API compatibility — UI now driven by liveScanStatus
+  liveScanStatus = 'searching',
+}) => {
+  const cfg = STATUS_CONFIG[liveScanStatus];
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: cfg.bgColor }]}>
       <View style={styles.statusItem}>
-        <Ionicons 
-          name={iconName as any} 
-          size={18} 
-          color={guidanceColor} 
-        />
-        <Text style={[styles.statusText, { color: guidanceColor }]}>
-          {guidanceMessage}
+        <Ionicons name={cfg.icon as any} size={16} color={cfg.color} />
+        <Text style={[styles.statusText, { color: cfg.color }]}>
+          {cfg.label}
         </Text>
       </View>
     </View>
   );
 };
 
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
   container: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    paddingVertical: 8,
-    paddingHorizontal: 16,
+    paddingVertical: 7,
+    paddingHorizontal: 18,
     borderRadius: 20,
   },
   statusItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 6,
   },
   statusText: {
     fontSize: 12,
-    fontWeight: '600',
-  },
-  divider: {
-    width: 1,
-    height: 16,
-    backgroundColor: 'rgba(255, 255, 255, 0.3)',
-    marginHorizontal: 12,
+    fontWeight: '700',
+    letterSpacing: 0.3,
   },
 });

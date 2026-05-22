@@ -1,0 +1,217 @@
+import { File, Paths } from 'expo-file-system';
+import * as ImageManipulator from 'expo-image-manipulator';
+import { OpenCV, ObjectType, DataTypes } from 'react-native-fast-opencv';
+import { Point, Quadrilateral, cleanupMats } from './cvProcessor';
+
+export interface NormalizationOptions {
+  enhancementMode?: 'original' | 'enhanced_color' | 'grayscale';
+  debugMode?: boolean;
+}
+
+export interface NormalizationResult {
+  uri: string;
+  width: number;
+  height: number;
+}
+
+const TARGET_MAX_HEIGHT = 2048;
+const OUTPUT_WIDTH = 1440;
+const OUTPUT_HEIGHT = 2048;
+const CROP_PADDING_RATIO = 0.03; // 3% padding
+
+/**
+ * Order corners deterministically: Top-Left, Top-Right, Bottom-Right, Bottom-Left
+ * using Sum/Difference method for robust skew/rotation handling.
+ */
+function orderCorners(pts: Point[]): Quadrilateral {
+  const sums = pts.map(p => p.x + p.y);
+  const diffs = pts.map(p => p.y - p.x);
+
+  const tlIdx = sums.indexOf(Math.min(...sums));
+  const brIdx = sums.indexOf(Math.max(...sums));
+
+  const trIdx = diffs.indexOf(Math.min(...diffs));
+  const blIdx = diffs.indexOf(Math.max(...diffs));
+
+  return {
+    topLeft: pts[tlIdx],
+    topRight: pts[trIdx],
+    bottomRight: pts[brIdx],
+    bottomLeft: pts[blIdx]
+  };
+}
+
+/**
+ * Expand the quadrilateral outwards by a padding ratio to prevent tight cropping.
+ */
+function expandQuad(quad: Quadrilateral, width: number, height: number, ratio: number): Quadrilateral {
+  const center = {
+    x: (quad.topLeft.x + quad.topRight.x + quad.bottomRight.x + quad.bottomLeft.x) / 4,
+    y: (quad.topLeft.y + quad.topRight.y + quad.bottomRight.y + quad.bottomLeft.y) / 4
+  };
+
+  const expandPoint = (p: Point): Point => {
+    const dx = p.x - center.x;
+    const dy = p.y - center.y;
+    return {
+      x: Math.max(0, Math.min(width, center.x + dx * (1 + ratio))),
+      y: Math.max(0, Math.min(height, center.y + dy * (1 + ratio)))
+    };
+  };
+
+  return {
+    topLeft: expandPoint(quad.topLeft),
+    topRight: expandPoint(quad.topRight),
+    bottomRight: expandPoint(quad.bottomRight),
+    bottomLeft: expandPoint(quad.bottomLeft)
+  };
+}
+
+/**
+ * Normalizes a captured document image via a Hybrid Pipeline:
+ * 1. Native downscale using ImageManipulator (Memory safety)
+ * 2. Base64 conversion + OpenCV Mat loading
+ * 3. Perspective Warp + Smart Crop
+ * 4. Safe memory cleanup
+ */
+export async function normalizeCapturedDocument(
+  rawImageUri: string,
+  rawQuad: Quadrilateral,
+  originalPreviewDimensions: { width: number, height: number },
+  options: NormalizationOptions = {}
+): Promise<NormalizationResult> {
+  let base64String: string | null = null;
+  let downscaledUri: string | null = null;
+  let finalUri: string | null = null;
+
+  // Mats and buffers for cleanup
+  let srcMat: any = null;
+  let dstMat: any = null;
+  let transformMat: any = null;
+  let enhancedMat: any = null;
+
+  try {
+    // ── STEP 1: Safe Native Downscaling ──────────────────────────────────
+    // Never pass 12MP full-res base64 to OpenCV bridge!
+    const manipResult = await ImageManipulator.manipulateAsync(
+      rawImageUri,
+      [{ resize: { height: TARGET_MAX_HEIGHT } }],
+      { base64: true, format: ImageManipulator.SaveFormat.JPEG, compress: 0.9 }
+    );
+
+    downscaledUri = manipResult.uri;
+    base64String = manipResult.base64 || null;
+
+    if (!base64String) {
+      throw new Error('Failed to extract base64 from downscaled image');
+    }
+
+    // ── STEP 2: Scale Quadrilateral ─────────────────────────────────────
+    // rawQuad is relative to the small 480px preview frame. We must scale it 
+    // to the new downscaled dimensions (TARGET_MAX_HEIGHT).
+    const scaleX = manipResult.width / originalPreviewDimensions.width;
+    const scaleY = manipResult.height / originalPreviewDimensions.height;
+
+    const scalePoint = (p: Point): Point => ({ x: p.x * scaleX, y: p.y * scaleY });
+
+    const scaledQuad: Quadrilateral = {
+      topLeft: scalePoint(rawQuad.topLeft),
+      topRight: scalePoint(rawQuad.topRight),
+      bottomRight: scalePoint(rawQuad.bottomRight),
+      bottomLeft: scalePoint(rawQuad.bottomLeft),
+    };
+
+    // Order corners deterministically
+    const orderedQuad = orderCorners([
+      scaledQuad.topLeft,
+      scaledQuad.topRight,
+      scaledQuad.bottomRight,
+      scaledQuad.bottomLeft
+    ]);
+
+    // Apply smart crop padding
+    const expandedQuad = expandQuad(orderedQuad, manipResult.width, manipResult.height, CROP_PADDING_RATIO);
+
+    // ── STEP 3: Load into OpenCV ─────────────────────────────────────────
+    srcMat = OpenCV.base64ToMat(base64String);
+
+    // Free JS string memory immediately
+    base64String = null;
+
+    // ── STEP 4: Perspective Warp ─────────────────────────────────────────
+    // Source points
+    const srcPoints = [
+      OpenCV.createObject(ObjectType.Point2f, expandedQuad.topLeft.x, expandedQuad.topLeft.y),
+      OpenCV.createObject(ObjectType.Point2f, expandedQuad.topRight.x, expandedQuad.topRight.y),
+      OpenCV.createObject(ObjectType.Point2f, expandedQuad.bottomRight.x, expandedQuad.bottomRight.y),
+      OpenCV.createObject(ObjectType.Point2f, expandedQuad.bottomLeft.x, expandedQuad.bottomLeft.y)
+    ];
+    const srcVector = OpenCV.createObject(ObjectType.Point2fVector, srcPoints);
+
+    // Destination points (flattened rectangle)
+    const dstPoints = [
+      OpenCV.createObject(ObjectType.Point2f, 0, 0),
+      OpenCV.createObject(ObjectType.Point2f, OUTPUT_WIDTH, 0),
+      OpenCV.createObject(ObjectType.Point2f, OUTPUT_WIDTH, OUTPUT_HEIGHT),
+      OpenCV.createObject(ObjectType.Point2f, 0, OUTPUT_HEIGHT)
+    ];
+    const dstVector = OpenCV.createObject(ObjectType.Point2fVector, dstPoints);
+
+    // Get Transform Matrix (0 = DECOMP_LU)
+    transformMat = (OpenCV as any).invoke('getPerspectiveTransform', srcVector, dstVector, 0);
+
+    // Warp
+    dstMat = OpenCV.createObject(ObjectType.Mat, OUTPUT_HEIGHT, OUTPUT_WIDTH, DataTypes.CV_8UC3);
+    const dsize = OpenCV.createObject(ObjectType.Size, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+    // 1 = INTER_LINEAR, 0 = BORDER_CONSTANT
+    const scalar0 = OpenCV.createObject(ObjectType.Scalar, 0, 0, 0);
+    (OpenCV as any).invoke('warpPerspective', srcMat, dstMat, transformMat, dsize, 1, 0, scalar0);
+
+    // ── STEP 5: Image Enhancement ────────────────────────────────────────
+    let finalProcessingMat = dstMat;
+
+    if (options.enhancementMode === 'grayscale') {
+      enhancedMat = OpenCV.createObject(ObjectType.Mat, OUTPUT_HEIGHT, OUTPUT_WIDTH, DataTypes.CV_8UC1);
+      (OpenCV as any).invoke('cvtColor', dstMat, enhancedMat, 6); // COLOR_RGBA2GRAY
+      finalProcessingMat = enhancedMat;
+    } else if (options.enhancementMode === 'enhanced_color' || !options.enhancementMode) {
+      // Basic sharpening fallback: unsharp mask or Laplacian could be used. 
+      // For now, we return the warped RGB as 'enhanced' to maintain safety.
+      // (Advanced OpenCV color balancing is risky in this constrained environment).
+      finalProcessingMat = dstMat;
+    }
+
+    // ── STEP 6: Save Normalized Output ───────────────────────────────────
+    const outFilename = `normalized_${Date.now()}.jpg`;
+    // Use new class-based API: Paths.cache is the safe cache directory
+    const outFile = new File(Paths.cache, outFilename);
+    finalUri = outFile.uri;
+    
+    // Save directly from Native Mat to File (avoids Base64 output serialization!)
+    OpenCV.saveMatToFile(finalProcessingMat, finalUri, 'jpeg', 0.9);
+
+    // Wait slightly to ensure filesystem flush
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    return {
+      uri: finalUri,
+      width: OUTPUT_WIDTH,
+      height: OUTPUT_HEIGHT
+    };
+
+  } finally {
+    // ── STEP 7: Aggressive Memory Cleanup ────────────────────────────────
+    cleanupMats([srcMat, dstMat, transformMat, enhancedMat]);
+    
+    try {
+      OpenCV.clearBuffers();
+    } catch { /* ignore */ }
+
+    // Cleanup temp downscaled image to save disk space
+    if (downscaledUri) {
+      try {
+        new File(downscaledUri).delete();
+      } catch { /* ignore */ }
+    }
+  }
+}

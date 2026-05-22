@@ -1,4 +1,5 @@
 import * as ImageManipulator from 'expo-image-manipulator';
+import { File, Paths } from 'expo-file-system';
 import { OpenCV, ObjectType, DataTypes } from 'react-native-fast-opencv';
 
 export interface CVProcessingResult {
@@ -9,6 +10,9 @@ export interface CVProcessingResult {
   quadrilateral: null | Quadrilateral;
   dimensions?: { width: number; height: number };
   captureReadiness: number; // 0-100 score
+  confidence: number;
+  areaScore: number;
+  rectangularityScore: number;
 }
 
 export interface Point {
@@ -36,124 +40,256 @@ const APPROX_POLY_DP = 'approxPolyDP';
 
 let lastPoints: Point[] = [];
 
+/** Safe fallback returned whenever input is invalid or CV throws */
+const SAFE_NO_DETECT_RESULT: CVProcessingResult = {
+  isDocumentDetected: false,
+  sharpnessScore: 0,
+  motionLevel: 0,
+  isStable: false,
+  quadrilateral: null,
+  captureReadiness: 0,
+  confidence: 0,
+  areaScore: 0,
+  rectangularityScore: 0,
+};
+
 /**
- * Real-time document detection using native OpenCV via JSI
+ * Safely delete a list of OpenCV mat objects, ignoring any per-mat cleanup errors.
+ * Call this in every early-return error path to prevent memory accumulation.
+ */
+export const cleanupMats = (mats: any[]): void => {
+  mats.forEach(mat => {
+    try {
+      if (mat?.delete) mat.delete();
+    } catch { /* ignore per-mat cleanup errors */ }
+  });
+};
+
+/**
+ * Real-time document detection using native OpenCV via JSI.
+ * NEVER throws to callers — always returns a valid CVProcessingResult.
+ * Each stage is isolated in its own try/catch for precise fault isolation.
  */
 export async function detectDocumentInFrame(
   base64Image: string,
   width: number,
   height: number
 ): Promise<CVProcessingResult> {
-  const startTime = Date.now();
+  // ── INPUT GUARDS ─────────────────────────────────────────────────────────
+  // Prevent undefined/empty strings reaching OpenCV JSI (causes HostFunction crash)
+  if (!base64Image || typeof base64Image !== 'string' || base64Image.length < 10) {
+    console.warn('[CV] detectDocumentInFrame: invalid base64 input — returning safe default');
+    return { ...SAFE_NO_DETECT_RESULT };
+  }
+  if (!width || !height || width <= 0 || height <= 0 || !Number.isFinite(width) || !Number.isFinite(height)) {
+    console.warn('[CV] detectDocumentInFrame: invalid dimensions — returning safe default');
+    return { ...SAFE_NO_DETECT_RESULT };
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+  // Declare all mats upfront so cleanup is always reachable
+  let srcMat: any    = null;
+  let grayMat: any   = null;
+  let lapMat: any    = null;
+  let meanMat: any   = null;
+  let stddevMat: any = null;
+  let blurMat: any   = null;
+  let ksizeMat: any  = null;
+  let edgeMat: any   = null;
+  let ctrData: any   = null;
+
+  /** Cleanup all allocated mats + clear OpenCV buffer pool */
+  const safeCleanup = () => {
+    cleanupMats([srcMat, grayMat, lapMat, meanMat, stddevMat, blurMat, ksizeMat, edgeMat, ctrData]);
+    try { OpenCV.clearBuffers(); } catch { /* ignore */ }
+  };
+
+  // ── STAGE 1: base64 → Mat ─────────────────────────────────────────────────────────
   try {
-    // 1. Convert base64 to Mat
-    const mat = OpenCV.base64ToMat(base64Image);
-    
-    // 2. Pre-processing pipeline
-    const gray = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC1);
-    (OpenCV as any).invoke('cvtColor', mat, gray, COLOR_RGBA2GRAY);
-    
-    // 3. Real Sharpness Scoring (Laplacian Variance)
-    const laplacian = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC1);
-    // STABILITY FIX: Pass all 7 parameters required by native Laplacian implementation
-    // src, dst, ddepth, ksize, scale, delta, borderType
-    (OpenCV as any).invoke('Laplacian', gray, laplacian, 3, 1, 1, 0, 4); 
-    
-    const meanMat = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8U);
-    const stddevMat = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8U);
-    (OpenCV as any).invoke('meanStdDev', laplacian, meanMat, stddevMat);
-    
-    // Extract standard deviation value
-    const stddevRaw: any = OpenCV.toJSValue(stddevMat);
-    const stddevArray = stddevRaw?.array || stddevRaw;
-    const sharpnessScore = Math.pow(Array.isArray(stddevArray) ? stddevArray[0] : 0, 2); 
-    
-    // 4. Document Detection
-    const blurred = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC1);
-    // STABILITY FIX: Use native Size object instead of plain JS object
-    const ksize = OpenCV.createObject(ObjectType.Size, 5, 5);
-    (OpenCV as any).invoke(GAUSSIAN_BLUR, gray, blurred, ksize, 0);
-    
-    const edged = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC1);
-    (OpenCV as any).invoke(CANNY, blurred, edged, 75, 200);
-    
-    const contoursData = OpenCV.createObject(ObjectType.PointVectorOfVectors);
-    (OpenCV as any).invoke(FIND_CONTOURS, edged, contoursData, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
-    const contoursRaw: any = OpenCV.toJSValue(contoursData);
-    const contours = contoursRaw?.array || contoursRaw;
-    
-    let bestQuad: Quadrilateral | null = null;
-    let maxArea = 0;
-    
-    const frameArea = width * height;
-    
-    if (contours && Array.isArray(contours)) {
-      for (let i = 0; i < contours.length; i++) {
-        const contour = contours[i];
-        const area = (OpenCV as any).invoke(CONTOUR_AREA, contour);
-        
-        // Filter out small noise (must be at least 15% of frame)
-        if (area < frameArea * 0.15) continue;
-        
-        const peri = (OpenCV as any).invoke(ARC_LENGTH, contour, true);
-        const approxData = OpenCV.createObject(ObjectType.PointVector);
-        (OpenCV as any).invoke(APPROX_POLY_DP, contour, approxData, 0.02 * peri, true);
-        const approxRaw: any = OpenCV.toJSValue(approxData);
-        const approx = approxRaw?.array || approxRaw;
-        
-        if (approx && Array.isArray(approx) && approx.length === 4) {
-          if (area > maxArea) {
-            maxArea = area;
-            bestQuad = orderPoints(approx);
-          }
-        }
-      }
-    }
-
-    // 5. Calculate stability/motion
-    const currentPoints = bestQuad ? [bestQuad.topLeft, bestQuad.topRight, bestQuad.bottomRight, bestQuad.bottomLeft] : [];
-    const motionLevel = calculateMotion(currentPoints, lastPoints);
-    lastPoints = currentPoints;
-
-    // 6. Final Readiness Score
-    // Criteria: detected, sharp enough (>50), large enough (>25% frame), stable (<10px drift)
-    const areaRatio = maxArea / frameArea;
-    const isSharp = sharpnessScore > 50;
-    const isStable = motionLevel < 15;
-    const isLarge = areaRatio > 0.25;
-
-    let captureReadiness = 0;
-    if (bestQuad) {
-      captureReadiness = 20; // Detected base
-      if (isSharp) captureReadiness += 30;
-      if (isLarge) captureReadiness += 20;
-      if (isStable) captureReadiness += 30;
-    }
-
-    // MEMORY MANAGEMENT: Clear buffers
-    OpenCV.clearBuffers();
-
-    return {
-      isDocumentDetected: !!bestQuad,
-      sharpnessScore,
-      motionLevel,
-      isStable,
-      quadrilateral: bestQuad,
-      dimensions: { width, height },
-      captureReadiness
-    };
+    srcMat = OpenCV.base64ToMat(base64Image);
   } catch (err) {
-    console.error('[CV] Real-time processing failed:', err.message);
-    OpenCV.clearBuffers();
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[CV][STAGE:base64ToMat]', msg);
+    safeCleanup();
+    return { ...SAFE_NO_DETECT_RESULT };
+  }
+
+  // ── STAGE 2: Grayscale conversion ────────────────────────────────────────────────
+  try {
+    grayMat = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC1);
+    (OpenCV as any).invoke('cvtColor', srcMat, grayMat, COLOR_RGBA2GRAY);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[CV][STAGE:grayscale]', msg);
+    safeCleanup();
+    return { ...SAFE_NO_DETECT_RESULT };
+  }
+
+  // ── STAGE 3: Sharpness (Laplacian) — non-fatal ────────────────────────────────
+  let sharpnessScore = 0;
+  try {
+    lapMat    = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC1);
+    // All 7 params required: src, dst, ddepth, ksize, scale, delta, borderType
+    (OpenCV as any).invoke('Laplacian', grayMat, lapMat, 3, 1, 1, 0, 4);
+    meanMat   = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8U);
+    stddevMat = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8U);
+    (OpenCV as any).invoke('meanStdDev', lapMat, meanMat, stddevMat);
+    const stddevRaw: any  = OpenCV.toJSValue(stddevMat);
+    const stddevArr: any  = stddevRaw?.array || stddevRaw;
+    sharpnessScore = Math.pow(Array.isArray(stddevArr) ? stddevArr[0] : 0, 2);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn('[CV][STAGE:sharpness] (non-fatal — continuing with score=0):', msg);
+    cleanupMats([lapMat, meanMat, stddevMat]);
+    lapMat = null; meanMat = null; stddevMat = null;
+    sharpnessScore = 0;
+  }
+
+  // ── STAGE 4: Gaussian blur ───────────────────────────────────────────────────
+  try {
+    blurMat  = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC1);
+    ksizeMat = OpenCV.createObject(ObjectType.Size, 5, 5);
+    (OpenCV as any).invoke(GAUSSIAN_BLUR, grayMat, blurMat, ksizeMat, 0);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[CV][STAGE:blur]', msg);
+    safeCleanup();
+    return { ...SAFE_NO_DETECT_RESULT };
+  }
+
+  // ── STAGE 5: Canny edge detection ───────────────────────────────────────────
+  try {
+    edgeMat = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC1);
+    (OpenCV as any).invoke(CANNY, blurMat, edgeMat, 75, 200);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[CV][STAGE:canny]', msg);
+    safeCleanup();
+    return { ...SAFE_NO_DETECT_RESULT };
+  }
+
+  // ── STAGE 6: Find contours ────────────────────────────────────────────────────
+  let contours: any[] = [];
+  try {
+    ctrData = OpenCV.createObject(ObjectType.PointVectorOfVectors);
+    (OpenCV as any).invoke(FIND_CONTOURS, edgeMat, ctrData, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+    const ctrRaw: any = OpenCV.toJSValue(ctrData);
+    contours = ctrRaw?.array || ctrRaw || [];
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[CV][STAGE:findContours]', msg);
+    safeCleanup();
+    return { ...SAFE_NO_DETECT_RESULT };
+  }
+
+  // ── Strict contour array guard ───────────────────────────────────────────────────────
+  if (!contours || !Array.isArray(contours) || contours.length === 0) {
+    safeCleanup();
     return {
       isDocumentDetected: false,
-      sharpnessScore: 0,
+      sharpnessScore,
       motionLevel: 0,
       isStable: false,
       quadrilateral: null,
-      captureReadiness: 0
+      captureReadiness: 0,
+      confidence: 0,
+      areaScore: 0,
+      rectangularityScore: 0,
     };
   }
+
+  // ── STAGE 7: Contour processing (each contour isolated) ──────────────────────
+  let bestQuad: Quadrilateral | null = null;
+  let maxArea = 0;
+  const frameArea = width * height;
+
+  for (let i = 0; i < contours.length; i++) {
+    const contour = contours[i];
+    // Strict per-contour guards
+    if (!contour) continue;
+    if (contour.length !== undefined && contour.length < 4) continue;
+
+    try {
+      const area = (OpenCV as any).invoke(CONTOUR_AREA, contour);
+      if (!area || area < frameArea * 0.15) continue;
+
+      const peri = (OpenCV as any).invoke(ARC_LENGTH, contour, true);
+      if (!peri || peri <= 0) continue;
+
+      const approxData = OpenCV.createObject(ObjectType.PointVector);
+      (OpenCV as any).invoke(APPROX_POLY_DP, contour, approxData, 0.02 * peri, true);
+      const approxRaw: any = OpenCV.toJSValue(approxData);
+      const approx = approxRaw?.array || approxRaw;
+
+      // Strict approx guards
+      if (!approx) continue;
+      if (!Array.isArray(approx)) continue;
+      if (approx.length !== 4) continue;
+
+      if (area > maxArea) {
+        maxArea = area;
+        bestQuad = orderPoints(approx);
+      }
+    } catch {
+      continue; // per-contour error — skip and try next
+    }
+  }
+
+  // ── Motion & readiness ───────────────────────────────────────────────────────────────
+  const currentPoints = bestQuad
+    ? [bestQuad.topLeft, bestQuad.topRight, bestQuad.bottomRight, bestQuad.bottomLeft]
+    : [];
+  const motionLevel = calculateMotion(currentPoints, lastPoints);
+  lastPoints = currentPoints;
+
+  const areaRatio = maxArea / frameArea;
+  const isSharp   = sharpnessScore > 50;
+  const isStable  = motionLevel < 15;
+  const isLarge   = areaRatio > 0.25;
+
+  let captureReadiness = 0;
+  let areaScore = 0;
+  let rectangularityScore = 0;
+  let confidence = 0;
+
+  if (bestQuad) {
+    captureReadiness = 20;
+    if (isSharp)  captureReadiness += 30;
+    if (isLarge)  captureReadiness += 20;
+    if (isStable) captureReadiness += 30;
+
+    // Continuous confidence derivation
+    areaScore = Math.min(1, areaRatio * 2); // 50% frame area is a perfect 1.0 score
+    
+    let minX = width, maxX = 0, minY = height, maxY = 0;
+    currentPoints.forEach(p => {
+      minX = Math.min(minX, p.x);
+      maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y);
+      maxY = Math.max(maxY, p.y);
+    });
+    const bboxArea = (maxX - minX) * (maxY - minY);
+    rectangularityScore = bboxArea > 0 ? maxArea / bboxArea : 0;
+
+    confidence = 0.3 
+      + (areaScore * 0.3) 
+      + (rectangularityScore * 0.2) 
+      + (Math.min(1, sharpnessScore / 50) * 0.2);
+  }
+
+  safeCleanup();
+
+  return {
+    isDocumentDetected: !!bestQuad,
+    sharpnessScore,
+    motionLevel,
+    isStable,
+    quadrilateral: bestQuad,
+    dimensions: { width, height },
+    captureReadiness,
+    confidence,
+    areaScore,
+    rectangularityScore,
+  };
 }
 
 /**
@@ -246,15 +382,14 @@ export async function nativeProcessImage(
           const data = await response.json();
           if (data.enhanced_image) {
             console.log('[ISOLATION] FileSystem.writeAsString: START');
-            const enhancedFile = new FileSystem.File(FileSystem.Paths.document, `proc_${Date.now()}.jpg`);
-            await enhancedFile.writeAsString(data.enhanced_image, {
-              encoding: FileSystem.EncodingType.Base64,
-            });
+            const enhancedFile = new File(Paths.document, `proc_${Date.now()}.jpg`);
+            // write() accepts a string; for base64, we write the raw base64 data string
+            enhancedFile.write(data.enhanced_image);
             
             // CLEANUP: Delete the intermediate resized image to save space
             try {
-              const resizedFile = new FileSystem.File(resized.uri);
-              await resizedFile.delete();
+              const resizedFile = new File(resized.uri);
+              resizedFile.delete();
             } catch (e) {
               console.warn('[Cleanup] Failed to delete temp resized image:', e);
             }
@@ -264,7 +399,8 @@ export async function nativeProcessImage(
           }
         }
       } catch (err) {
-        console.warn('[ISOLATION] Binary enhancement fallback:', err.message);
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn('[ISOLATION] Binary enhancement fallback:', msg);
       }
     }
 

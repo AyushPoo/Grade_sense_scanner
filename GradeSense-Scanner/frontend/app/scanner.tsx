@@ -13,24 +13,26 @@ import {
   Platform,
   TextInput,
 } from 'react-native';
-import Svg, { Polygon } from 'react-native-svg';
+// Svg/Polygon used inside DocumentContourOverlay — not directly here
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { detectDocumentInFrame, nativeProcessImage } from '../src/utils/cvProcessor';
+import { normalizeCapturedDocument } from '../src/utils/documentNormalizer';
 import { generateUUID } from '../src/store/scanStore';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as ScreenOrientation from 'expo-screen-orientation';
-import * as FileSystem from 'expo-file-system';
+import { File, Paths } from 'expo-file-system';
 import { COLORS, CONFIG } from '../src/config';
 import { useScanStore } from '../src/store/scanStore';
 import { useCVAutoCapture } from '../src/hooks/useCVAutoCapture';
-import { CVProcessingResult } from '../src/utils/cvProcessor';
-import { StatusIndicator } from '../src/components/StatusIndicator';
+import { CVProcessingResult, Quadrilateral } from '../src/utils/cvProcessor';
+import { StatusIndicator, LiveScanStatus } from '../src/components/StatusIndicator';
 import { ThumbnailStrip } from '../src/components/ThumbnailStrip';
 import { CaptureButton } from '../src/components/CaptureButton';
+import { DocumentContourOverlay } from '../src/components/DocumentContourOverlay';
 import { ScannedPage } from '../src/types';
 import { detectBlur, getSharpnessColor, BlurDetectionResult } from '../src/utils/blurDetection';
 import DocumentScanner from 'react-native-document-scanner-plugin';
@@ -46,8 +48,17 @@ function reportCaptureFailure(context: string, error: unknown) {
   Alert.alert('Could not save page', message);
 }
 
-// STABILITY HOTFIX: Disable heavy real-time CV loop on real devices
-const ENABLE_LIVE_DETECTION = false;
+export type ScanWorkflowState =
+  | 'SCANNING_ACTIVE'
+  | 'SCANNING_PAUSED'
+  | 'ANALYZING_FRAME'
+  | 'CAPTURING'
+  | 'PROCESSING_CAPTURE'
+  | 'CAPTURE_COOLDOWN'
+  | 'CHANGING_STUDENT';
+
+// Enable CV frame loop by default for auto capture capability
+const ENABLE_LIVE_DETECTION = true;
 
 export default function ScannerScreen() {
   const router = useRouter();
@@ -75,10 +86,58 @@ export default function ScannerScreen() {
     clearCurrentSession,
   } = useScanStore();
 
+  const [workflowState, setWorkflowState] = useState<ScanWorkflowState>('SCANNING_ACTIVE');
+  const workflowStateRef = useRef<ScanWorkflowState>('SCANNING_ACTIVE');
+  const isCapturingRef = useRef(false);
+  const captureCooldownRef = useRef(false);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const cooldownTimeoutRef = useRef<any>(null);
+  // Stability engine — updated every frame, never cause re-renders
+  const stabilityFrameCountRef = useRef(0);
+  const lastQuadRef = useRef<Quadrilateral | null>(null);
+  const capturedQuadRef = useRef<Quadrilateral | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const savedStatusTimerRef = useRef<any>(null);
+  const lastLoggedCVStateRef = useRef<string>('');
+
   const [isCapturing, setIsCapturing] = useState(false);
   const [cvResult, setCvResult] = useState<CVProcessingResult | null>(null);
   const [lastCaptureTime, setLastCaptureTime] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
+  const [liveScanStatus, setLiveScanStatus] = useState<LiveScanStatus>('searching');
+
+  // Move dependencies to refs to prevent frame loop reinitialization
+  const isPausedRef = useRef(isPaused);
+  const cvResultRef = useRef(cvResult);
+  const currentStudentRef = useRef(currentSession?.students[currentStudentIndex]);
+  const autoCaptureEnabledRef = useRef(autoCaptureEnabled);
+  const processingGenerationRef = useRef(0);
+  const lastCvErrorRef = useRef<string | null>(null);
+  const lastCvErrorTimeRef = useRef<number>(0);
+  const normalizationInProgressRef = useRef(false);
+
+  // Hysteresis refs
+  const stableDetectCountRef = useRef(0);
+  const lostDetectCountRef = useRef(0);
+  const isDocumentLockedRef = useRef(false);
+
+  useEffect(() => { isPausedRef.current = isPaused; }, [isPaused]);
+  useEffect(() => { cvResultRef.current = cvResult; }, [cvResult]);
+  useEffect(() => { currentStudentRef.current = currentSession?.students[currentStudentIndex]; }, [currentSession, currentStudentIndex]);
+  useEffect(() => { autoCaptureEnabledRef.current = autoCaptureEnabled; }, [autoCaptureEnabled]);
+
+  const setWorkflowStateWithLog = useCallback((nextState: ScanWorkflowState) => {
+    workflowStateRef.current = nextState;
+    setWorkflowState(prev => {
+      console.log(`[WORKFLOW] Transition: ${prev} -> ${nextState}`);
+      return nextState;
+    });
+    
+    // Sync legacy states for UI compatibility
+    setIsCapturing(nextState === 'CAPTURING' || nextState === 'PROCESSING_CAPTURE');
+    setIsPaused(nextState === 'SCANNING_PAUSED');
+  }, []);
+
   const [isCameraReady, setIsCameraReady] = useState(false);
   const [orientation, setOrientation] = useState<'portrait' | 'landscape'>('portrait');
   const [screenDimensions, setScreenDimensions] = useState({
@@ -145,6 +204,7 @@ export default function ScannerScreen() {
 
     return () => {
       isMounted.current = false;
+      if (savedStatusTimerRef.current) clearTimeout(savedStatusTimerRef.current);
       ScreenOrientation.removeOrientationChangeListener(subscription);
       ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     };
@@ -168,22 +228,36 @@ export default function ScannerScreen() {
 
   useEffect(() => {
     // STABILITY: Fully bypass live loop if disabled
-    if (!ENABLE_LIVE_DETECTION || !isCameraReady || isPaused || isCapturing) {
+    if (!ENABLE_LIVE_DETECTION || !isCameraReady || !hasPermission) {
       if (frameLoopTimeoutRef.current) clearTimeout(frameLoopTimeoutRef.current);
       return;
     }
 
     const processFrame = async () => {
-      if (isProcessingFrame.current || !cameraRef.current || isPaused || isCapturing) {
+      const generation = ++processingGenerationRef.current;
+
+      // Skip if busy or in a non-analysis state
+      if (
+        isProcessingFrame.current ||
+        !cameraRef.current ||
+        workflowStateRef.current === 'SCANNING_PAUSED' ||
+        workflowStateRef.current === 'CAPTURING' ||
+        workflowStateRef.current === 'PROCESSING_CAPTURE' ||
+        workflowStateRef.current === 'CHANGING_STUDENT'
+      ) {
         frameLoopTimeoutRef.current = setTimeout(processFrame, 2000);
         return;
       }
-      
+
       const startTime = Date.now();
       try {
         isProcessingFrame.current = true;
-        
-        // 1. Capture lightweight frame (Min resolution, low quality)
+
+        if (workflowStateRef.current === 'SCANNING_ACTIVE') {
+          setWorkflowStateWithLog('ANALYZING_FRAME');
+        }
+
+        // ── Step 1: Capture lightweight frame ───────────────────────────────
         const photo = await cameraRef.current.takePictureAsync({
           quality: 0.1,
           base64: false,
@@ -191,52 +265,136 @@ export default function ScannerScreen() {
           skipProcessing: true,
         });
 
-        if (photo?.uri) {
-          const captureTime = Date.now();
-          
-          // 2. Downscale for CV speed
-          const manipulated = await ImageManipulator.manipulateAsync(
-            photo.uri,
-            [{ resize: { width: 480 } }],
-            { base64: true, format: ImageManipulator.SaveFormat.JPEG }
-          );
+        // GUARD 1: Validate URI — prevents undefined reaching ImageManipulator
+        if (!photo?.uri || typeof photo.uri !== 'string' || photo.uri.length === 0) {
+          console.warn('[FRAME] Skipped: takePictureAsync returned invalid URI');
+          return;
+        }
 
-          if (manipulated.base64) {
-            // 3. REAL-TIME ANALYSIS
-            const result = await detectDocumentInFrame(
-              manipulated.base64,
-              manipulated.width,
-              manipulated.height
-            );
-            
-            const endTime = Date.now();
-            console.log(`[CV Engine] Frame processed in ${endTime - startTime}ms (Analysis: ${endTime - captureTime}ms)`);
-            
-            setCvResult(result);
+        const captureTime = Date.now();
+
+        // ── Step 2: Downscale for CV speed ──────────────────────────────────
+        const manipulated = await ImageManipulator.manipulateAsync(
+          photo.uri,
+          [{ resize: { width: 480 } }],
+          { base64: true, format: ImageManipulator.SaveFormat.JPEG }
+        );
+
+        // GUARD 2: Validate base64 — prevents undefined reaching OpenCV JSI
+        if (!manipulated?.base64 || typeof manipulated.base64 !== 'string' || manipulated.base64.length < 10) {
+          console.warn('[FRAME] Skipped: manipulateAsync returned invalid base64');
+          try { const f = new File(photo.uri); if (f.exists) f.delete(); } catch { /* ignore */ }
+          return;
+        }
+
+        // ── Step 3: CV analysis ──────────────────────────────────────────────
+        const result = await detectDocumentInFrame(
+          manipulated.base64,
+          manipulated.width,
+          manipulated.height
+        );
+
+        const endTime = Date.now();
+
+        // ── Step 4: Stability engine & Hysteresis ────────────────────────────
+        const DETECT_THRESHOLD = 0.7;
+        const REQUIRED_STABLE_FRAMES = 3;
+        const LOST_THRESHOLD = 0.4;
+        const REQUIRED_LOST_FRAMES = 5;
+
+        // Confidence hysteresis
+        if (result.confidence >= DETECT_THRESHOLD) {
+          stableDetectCountRef.current++;
+          lostDetectCountRef.current = 0;
+          if (stableDetectCountRef.current >= REQUIRED_STABLE_FRAMES) {
+            isDocumentLockedRef.current = true;
           }
-          
-          // Cleanup captured temp file
-          const tempFile = new FileSystem.File(photo.uri);
-          await tempFile.delete();
+        } else if (result.confidence <= LOST_THRESHOLD) {
+          lostDetectCountRef.current++;
+          stableDetectCountRef.current = 0;
+          if (lostDetectCountRef.current >= REQUIRED_LOST_FRAMES) {
+            isDocumentLockedRef.current = false;
+          }
+        } else {
+          stableDetectCountRef.current = 0;
+          lostDetectCountRef.current = 0;
+        }
+
+        // Track consecutive frames where the document is stable
+        if (isDocumentLockedRef.current && result.isStable) {
+          stabilityFrameCountRef.current = Math.min(stabilityFrameCountRef.current + 1, 10);
+        } else if (!isDocumentLockedRef.current) {
+          stabilityFrameCountRef.current = 0;   // lost — hard reset
+        } else {
+          stabilityFrameCountRef.current = Math.max(0, stabilityFrameCountRef.current - 1); // unstable — decay
+        }
+        lastQuadRef.current = result.quadrilateral;
+
+        const isCaptureReady = isDocumentLockedRef.current && result.confidence >= 0.8 && stabilityFrameCountRef.current >= 3;
+        
+        // Pass derived states down
+        result.isDocumentDetected = isDocumentLockedRef.current;
+        result.captureReadiness = isCaptureReady ? 100 : (isDocumentLockedRef.current ? 50 : 0);
+
+        // ── Step 5: Throttled logging — fires only on CV state transitions ───
+        const cvStateKey = isDocumentLockedRef.current
+          ? `det-${result.captureReadiness}-${stabilityFrameCountRef.current}`
+          : 'none';
+        if (cvStateKey !== lastLoggedCVStateRef.current) {
+          if (result.isDocumentDetected) {
+            console.log(
+              `[CV] DETECTED | readiness=${result.captureReadiness.toFixed(0)} | stability=${stabilityFrameCountRef.current} | motion=${result.motionLevel.toFixed(1)} | time=${endTime - startTime}ms (capture=${captureTime - startTime}ms)`
+            );
+          } else {
+            console.log(`[CV] Document LOST | time=${endTime - startTime}ms`);
+            if (capturedQuadRef.current) {
+              console.log('[QUAD] Live contour lost (but frozen quad preserved)');
+            }
+          }
+          lastLoggedCVStateRef.current = cvStateKey;
+        }
+
+        setCvResult(result);
+
+        // ── Step 6: Cleanup temp frame file ─────────────────────────────────
+        try {
+          const tempFile = new File(photo.uri);
+          if (tempFile.exists) tempFile.delete();
+        } catch (cleanupErr) {
+          console.warn('[MEMORY] Error deleting frame temp file:', cleanupErr);
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        console.warn('[Scanner] Live frame error:', message);
+        const now = Date.now();
+        if (lastCvErrorRef.current !== message || now - lastCvErrorTimeRef.current > 5000) {
+          console.warn('[FRAME] Live frame error:', message);
+          lastCvErrorRef.current = message;
+          lastCvErrorTimeRef.current = now;
+        }
       } finally {
         isProcessingFrame.current = false;
-        // Schedule next frame ONLY after current is finished
+
+        if (generation !== processingGenerationRef.current) {
+          return;
+        }
+
+        if (workflowStateRef.current === 'ANALYZING_FRAME') {
+          setWorkflowStateWithLog('SCANNING_ACTIVE');
+        }
+
         frameLoopTimeoutRef.current = setTimeout(processFrame, 2000);
       }
     };
 
     // Kick off the loop
+    console.log('[FRAME] Throttled frame loop initialized');
     frameLoopTimeoutRef.current = setTimeout(processFrame, 1000);
 
     return () => {
       if (frameLoopTimeoutRef.current) clearTimeout(frameLoopTimeoutRef.current);
       isProcessingFrame.current = false;
     };
-  }, [isCameraReady, isPaused, isCapturing]);
+  }, [isCameraReady, hasPermission]);
 
   /**
    * Document Scanner with auto-crop (requires Dev Build)
@@ -263,99 +421,90 @@ export default function ScannerScreen() {
   /**
    * Process a scanned image - check for blur and add to session
    */
-  const processScannedImage = async (imageUri: string) => {
-    console.log(`[ISOLATION] processScannedImage: START for ${imageUri}`);
+  const processScannedImage = async (imageUri: string, snapshotQuad: Quadrilateral | null, previewDims: { width: number, height: number }) => {
+    console.log(`[CAPTURE] processScannedImage: START for ${imageUri}`);
     
-    // Show blur check modal
-    setBlurCheckModal({
-      visible: true,
-      imageUri,
-      blurResult: null,
-      isChecking: true,
-    });
-
-    // TEST GROUP ISOLATION: Toggle these to find the crash
-    const SKIP_BLUR_DETECTION = false;
-    const SKIP_PROCESSING = false;
-
-    if (SKIP_BLUR_DETECTION) {
-      console.log('[ISOLATION] Skipping blur detection');
-      setTimeout(() => {
-        void addImageToSession(imageUri, { isBlurry: false, sharpnessScore: 100, level: 'sharp', message: 'Skipped' }).catch((err) =>
-          reportCaptureFailure('addImageToSession (auto skipped blur)', err)
-        );
-        setBlurCheckModal(prev => ({ ...prev, visible: false }));
-      }, 1000);
-      return;
-    }
-
-    // Check for blur
-    console.log('[ISOLATION] detectBlur: START');
+    // Check for blur in background (non-blocking)
+    console.log('[CAPTURE] detectBlur: START');
     const blurResult = await detectBlur(imageUri);
-    console.log('[ISOLATION] detectBlur: SUCCESS', blurResult.level);
-    
-    setBlurCheckModal(prev => ({
-      ...prev,
-      blurResult,
-      isChecking: false,
-    }));
+    console.log('[CAPTURE] detectBlur: SUCCESS', blurResult.level);
 
-    // If image is very blurry, show warning and wait for user decision
     if (blurResult.level === 'very_blurry') {
+      // If image is very blurry, show warning modal and wait for user decision
+      setBlurCheckModal({
+        visible: true,
+        imageUri,
+        blurResult,
+        isChecking: false,
+      });
+      console.log('[CAPTURE] Image is very blurry, prompt shown to user.');
       return;
     }
 
-    // If acceptable or sharp, auto-add after brief delay
-    if (blurResult.level === 'sharp' || blurResult.level === 'acceptable') {
-      setTimeout(() => {
-        console.log('[ISOLATION] Auto-adding after blur check');
-        void addImageToSession(imageUri, blurResult).catch((err) =>
-          reportCaptureFailure('addImageToSession (auto after blur check)', err)
-        );
-        setBlurCheckModal(prev => ({ ...prev, visible: false }));
-      }, 1000);
-    }
+    // If acceptable or sharp, auto-add instantly to session in background
+    console.log('[CAPTURE] Image is acceptable/sharp. Auto-persisting to session.');
+    await addImageToSession(imageUri, blurResult, snapshotQuad, previewDims);
   };
 
   /**
    * Add the image to the current session
    */
-  const addImageToSession = async (imageUri: string, blurResult: BlurDetectionResult) => {
-    console.log(`[ISOLATION] addImageToSession: START for ${imageUri}`);
-    try {
-      // 1. Process image natively
-      console.log('[ISOLATION] nativeProcessImage: START');
-      const processed = await nativeProcessImage(imageUri, {
-        targetWidth: CONFIG.IMAGE_TARGET_WIDTH,
-        grayscale: true,
-        enhance: true,
-        autoCrop: false,
-      });
+  const addImageToSession = async (
+    imageUri: string,
+    blurResult: BlurDetectionResult,
+    snapshotQuad: Quadrilateral | null,
+    previewDims: { width: number, height: number }
+  ) => {
+    console.log(`[CAPTURE] addImageToSession: START for ${imageUri}`);
+    if (normalizationInProgressRef.current) {
+      console.warn('[CAPTURE] Aborted: Normalization already in progress');
+      return;
+    }
 
-      if (!processed || !processed.uri) {
-        throw new Error('Native image processing returned an invalid result');
+    normalizationInProgressRef.current = true;
+    try {
+      let finalUri = imageUri;
+
+      try {
+        const quadToUse = capturedQuadRef.current || snapshotQuad;
+        if (!quadToUse) throw new Error('No valid quadrilateral for normalization');
+        console.log('[CAPTURE] Running Phase 1C Hybrid Normalization...');
+        const normResult = await normalizeCapturedDocument(imageUri, quadToUse, previewDims, { enhancementMode: 'enhanced_color' });
+        finalUri = normResult.uri;
+        console.log('[CAPTURE] Normalization SUCCESS:', finalUri);
+      } catch (normErr) {
+        console.warn('[CAPTURE] Normalization fallback invoked. Error:', normErr);
+        // Fallback safety
+        const processed = await nativeProcessImage(imageUri, {
+          targetWidth: CONFIG.IMAGE_TARGET_WIDTH,
+          grayscale: true,
+          enhance: true,
+          autoCrop: false,
+        });
+        if (processed && processed.uri) {
+          finalUri = processed.uri;
+        }
       }
       
-      console.log('[ISOLATION] nativeProcessImage: SUCCESS');
-
       // 2. Move to permanent storage
-      console.log('[ISOLATION] FileSystem.copy: START');
+      console.log('[CAPTURE] File.copy: START');
       const filename = `scanned_${Date.now()}.jpg`;
-      const processedFile = new FileSystem.File(processed.uri);
-      const destinationFile = new FileSystem.File(FileSystem.Paths.document, filename);
+      const destFile = new File(Paths.document, filename);
+      const destinationUri = destFile.uri;
       
-      await processedFile.copy(destinationFile);
-      console.log('[ISOLATION] FileSystem.copy: SUCCESS', destinationFile.uri);
+      new File(finalUri).copy(destFile);
+      console.log('[CAPTURE] File.copy: SUCCESS', destinationUri);
 
       // 3. Get file info
-      const fileSizeBytes = destinationFile.size;
-      console.log('[ISOLATION] FileSystem.File.size: SUCCESS', fileSizeBytes);
+      const fileSizeBytes = destFile.size ?? 0;
+      console.log('[CAPTURE] File.size: SUCCESS', fileSizeBytes);
 
-      const processedUri = destinationFile.uri;
+      const processedUri = destinationUri;
       
       const scannedPage: ScannedPage = {
         id: generateUUID(),
-        page_number: 0, // Assigned by store
+        ui_id: '',           // Normalised by store on addPage
+        page_number: 0,      // Assigned by store
         file_path: processedUri,
         file_size: fileSizeBytes,
         is_blurry: blurResult.isBlurry,
@@ -364,36 +513,187 @@ export default function ScannerScreen() {
       };
 
       addPage(scannedPage);
-      console.log('Page added:', scannedPage.id, 'Sharpness:', blurResult.sharpnessScore);
+      console.log('[CAPTURE] Page added successfully:', scannedPage.id, 'Sharpness:', blurResult.sharpnessScore);
+
+      // UX: Flash 'Saved' status for 2.5 s then restore to searching
+      setLiveScanStatus('saved');
+      if (savedStatusTimerRef.current) clearTimeout(savedStatusTimerRef.current);
+      savedStatusTimerRef.current = setTimeout(() => setLiveScanStatus('searching'), 2500);
+      
+      // 4. Memory Safety: Cleanup raw and intermediate temporary files
+      try {
+        new File(imageUri).delete();
+        console.log(`[MEMORY] Cleaned up raw temporary capture: ${imageUri}`);
+      } catch (cleanupErr) {
+        console.warn('[MEMORY] Error deleting raw temporary file:', cleanupErr);
+      }
+
+      try {
+        if (finalUri !== imageUri) {
+          new File(finalUri).delete();
+          console.log(`[MEMORY] Cleaned up intermediate processed file: ${finalUri}`);
+        }
+      } catch (cleanupErr) {
+        console.warn('[MEMORY] Error deleting intermediate processed file:', cleanupErr);
+      }
+
     } catch (error) {
       reportCaptureFailure('addImageToSession', error);
+    } finally {
+      normalizationInProgressRef.current = false;
+      capturedQuadRef.current = null;
+      console.log('[QUAD] Normalization quad cleared');
     }
   };
 
   /**
-   * Manual capture (fallback without document scanner)
+   * Cooldown Engine - transition back to Scanning or active state after 1500ms
    */
-  const handleManualCapture = useCallback(async () => {
+  const startCooldown = useCallback(() => {
+    if (cooldownTimeoutRef.current) {
+      clearTimeout(cooldownTimeoutRef.current);
+    }
+    
+    console.log('[COOLDOWN] Entering capture cooldown for 1500ms');
+    captureCooldownRef.current = true;
+    setWorkflowStateWithLog('CAPTURE_COOLDOWN');
+
+    cooldownTimeoutRef.current = setTimeout(() => {
+      captureCooldownRef.current = false;
+      console.log('[COOLDOWN] Capture cooldown finished');
+      
+      // If the scanner isn't paused or transitioning student, resume active scanning
+      if (workflowState === 'SCANNING_PAUSED' || isPaused) {
+        setWorkflowStateWithLog('SCANNING_PAUSED');
+      } else if (currentPhase === 'students' && studentIdentityModal.visible) {
+        setWorkflowStateWithLog('CHANGING_STUDENT');
+      } else {
+        setWorkflowStateWithLog('SCANNING_ACTIVE');
+      }
+    }, 1500);
+  }, [workflowState, isPaused, currentPhase, studentIdentityModal.visible, setWorkflowStateWithLog]);
+
+  /**
+   * Central Safe Live Capture Pipeline
+   */
+  const handleLiveCapture = useCallback(async () => {
+    console.log(`[CAPTURE] Initiating capture. isCapturingRef: ${isCapturingRef.current}, captureCooldownRef: ${captureCooldownRef.current}, workflowState: ${workflowState}`);
+    
+    // Check hard locks
+    if (isCapturingRef.current) {
+      console.log('[CAPTURE] Aborted: already capturing (hard lock active)');
+      return;
+    }
+    if (captureCooldownRef.current) {
+      console.log('[CAPTURE] Aborted: in cooldown');
+      return;
+    }
+    if (!cameraRef.current) {
+      console.log('[CAPTURE] Aborted: cameraRef is null');
+      return;
+    }
+    if (
+      workflowStateRef.current !== 'SCANNING_ACTIVE' &&
+      workflowStateRef.current !== 'SCANNING_PAUSED'
+    ) {
+      console.warn(`[CAPTURE] blocked invalid workflow state: ${workflowStateRef.current}`);
+      return;
+    }
+
+    // Set hard lock and workflowState
+    isCapturingRef.current = true;
+    setWorkflowStateWithLog('CAPTURING');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    let capturedUri: string | null = null;
     try {
-      const { scannedImages } = await DocumentScanner.scanDocument({
-        maxNumDocuments: 1,
-        croppedImageQuality: 85,
+      const frozenQuad = lastQuadRef.current;
+      capturedQuadRef.current = frozenQuad;
+      console.log('[QUAD] Frozen capture quad saved');
+
+      console.log('[CAPTURE] Calling takePictureAsync with exact low-impact configuration');
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: 0.7,
+        base64: false,
+        exif: false,
+        skipProcessing: true,
+        shutterSound: false,
       });
 
-      if (scannedImages && scannedImages.length > 0) {
-        await processScannedImage(scannedImages[0]);
+      if (!photo || !photo.uri) {
+        throw new Error('takePictureAsync returned null or invalid photo uri');
       }
-    } catch (error: any) {
-      console.error('Native scan error:', error);
-      Alert.alert('Scan Failed', 'Could not open native scanner. Please ensure you are using a Dev Build.');
-    }
-  }, []);
+      
+      capturedUri = photo.uri;
+      console.log(`[CAPTURE] Completed takePictureAsync. Path: ${capturedUri}`);
 
-  const { captureState, resetCooldown } = useCVAutoCapture({
+      setWorkflowStateWithLog('PROCESSING_CAPTURE');
+
+      // Capture snapshot state synchronously
+      const snapshotQuad = capturedQuadRef.current;
+      console.log('[QUAD] Using frozen quad for normalization');
+      const previewDims = cvResultRef.current?.dimensions || { width: 480, height: 640 };
+
+      // Process quality checks and session additions
+      await processScannedImage(capturedUri, snapshotQuad, previewDims);
+      
+    } catch (error) {
+      console.error('[CAPTURE] Error during capture pipeline:', error);
+      reportCaptureFailure('Live Capture Failed', error);
+    } finally {
+      // Always release hard lock
+      isCapturingRef.current = false;
+      console.log('[CAPTURE] Hard lock released');
+      
+      // Always transition through cooldown
+      startCooldown();
+    }
+  }, [workflowState, setWorkflowStateWithLog, startCooldown]);
+
+  /**
+   * Manual capture button routing
+   */
+  const handleManualCapture = useCallback(async () => {
+    console.log('[CAPTURE] Manual capture button triggered');
+    await handleLiveCapture();
+  }, [handleLiveCapture]);
+
+  const { captureState, canAutoCapture } = useCVAutoCapture({
     enabled: autoCaptureEnabled && !isPaused && isCameraReady && currentPhase !== 'students',
-    onCapture: handleManualCapture,
     cvResult,
+    cooldownInactive: !captureCooldownRef.current,
+    workflowStateActive: workflowState === 'SCANNING_ACTIVE',
   });
+
+  // Auto-capture reaction effect — requires 2+ consecutive stable frames (≥3 frames at 2 s/frame)
+  useEffect(() => {
+    if (canAutoCapture && stabilityFrameCountRef.current >= 2) {
+      console.log(`[CAPTURE] Auto-capture triggered. Stability count: ${stabilityFrameCountRef.current}.`);
+      void handleLiveCapture();
+    }
+  }, [canAutoCapture, cvResult, handleLiveCapture]);
+
+  // Derive LiveScanStatus from workflow state + CV result
+  useEffect(() => {
+    if (workflowState === 'CAPTURING' || workflowState === 'PROCESSING_CAPTURE') {
+      setLiveScanStatus('capturing');
+      return;
+    }
+    if (workflowState === 'SCANNING_PAUSED' || workflowState === 'CHANGING_STUDENT') {
+      setLiveScanStatus('searching');
+      return;
+    }
+    if (!cvResult?.isDocumentDetected) {
+      // Preserve 'saved' flash — its own timer handles the reset
+      setLiveScanStatus(prev => (prev === 'saved' ? prev : 'searching'));
+      return;
+    }
+    if (cvResult.captureReadiness >= 80) {
+      setLiveScanStatus('holding');
+    } else {
+      setLiveScanStatus('detected');
+    }
+  }, [cvResult, workflowState]);
 
   const handleFrameEvent = useCallback((result: CVProcessingResult) => {
     setCvResult(result);
@@ -402,7 +702,12 @@ export default function ScannerScreen() {
   // frame processor removed for expo-camera
 
   const togglePause = () => {
-    setIsPaused(!isPaused);
+    const nextPaused = !isPaused;
+    if (nextPaused) {
+      setWorkflowStateWithLog('SCANNING_PAUSED');
+    } else {
+      setWorkflowStateWithLog('SCANNING_ACTIVE');
+    }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
   };
 
@@ -417,6 +722,7 @@ export default function ScannerScreen() {
 
   const handleNextStudent = () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setWorkflowStateWithLog('CHANGING_STUDENT');
     
     // Open identity modal before moving to next student
     setStudentIdentityModal({
@@ -430,14 +736,25 @@ export default function ScannerScreen() {
     if (skip) {
       nextStudent();
     } else {
-      nextStudent({
+      // Cast required: store type declares nextStudent() => void but implementation
+      // accepts optional metadata — phase 1A does not modify the store interface.
+      (nextStudent as any)({
         name: studentIdentityModal.name.trim(),
         roll_number: studentIdentityModal.rollNumber.trim(),
       });
     }
     
     setStudentIdentityModal({ visible: false, name: '', rollNumber: '' });
-    resetCooldown();
+    
+    // Clear cooldown ref and timeout
+    captureCooldownRef.current = false;
+    if (cooldownTimeoutRef.current) {
+      clearTimeout(cooldownTimeoutRef.current);
+      cooldownTimeoutRef.current = null;
+    }
+    
+    // Restore active scanning state instantly without camera remounts
+    setWorkflowStateWithLog('SCANNING_ACTIVE');
   };
 
   const handleNextPhase = () => {
@@ -531,7 +848,8 @@ export default function ScannerScreen() {
   // Blur Check Modal - Accept or Retake
   const handleAcceptBlurryImage = () => {
     if (blurCheckModal.imageUri && blurCheckModal.blurResult) {
-      void addImageToSession(blurCheckModal.imageUri, blurCheckModal.blurResult).catch((err) =>
+      // Pass null quad and zero dims — normalizer will safely fallback to raw capture
+      void addImageToSession(blurCheckModal.imageUri, blurCheckModal.blurResult, null, { width: 0, height: 0 }).catch((err) =>
         reportCaptureFailure('addImageToSession (accept blurry)', err)
       );
     }
@@ -586,7 +904,10 @@ export default function ScannerScreen() {
       visible={studentIdentityModal.visible}
       transparent
       animationType="slide"
-      onRequestClose={() => setStudentIdentityModal({ ...studentIdentityModal, visible: false })}
+      onRequestClose={() => {
+        setStudentIdentityModal({ ...studentIdentityModal, visible: false });
+        setWorkflowStateWithLog('SCANNING_ACTIVE');
+      }}
     >
       <View style={styles.identityOverlay}>
         <View style={styles.identityContent}>
@@ -825,24 +1146,14 @@ export default function ScannerScreen() {
           </View>
         )}
 
-        {ENABLE_LIVE_DETECTION && cvResult?.quadrilateral && cvResult?.dimensions && !isPaused && (
-           <View style={StyleSheet.absoluteFill} pointerEvents="none">
-               <Svg 
-                 height="100%" 
-                 width="100%" 
-                 style={StyleSheet.absoluteFill}
-                 viewBox={`0 0 ${cvResult.dimensions.width} ${cvResult.dimensions.height}`}
-                 preserveAspectRatio="xMidYMid slice"
-               >
-                  <Polygon
-                    points={`${cvResult.quadrilateral.topLeft.x},${cvResult.quadrilateral.topLeft.y} ${cvResult.quadrilateral.topRight.x},${cvResult.quadrilateral.topRight.y} ${cvResult.quadrilateral.bottomRight.x},${cvResult.quadrilateral.bottomRight.y} ${cvResult.quadrilateral.bottomLeft.x},${cvResult.quadrilateral.bottomLeft.y}`}
-                    fill="rgba(46, 204, 113, 0.2)"
-                    stroke={COLORS.success}
-                    strokeWidth="8"
-                    strokeLinejoin="round"
-                  />
-               </Svg>
-           </View>
+        {ENABLE_LIVE_DETECTION && (
+          <DocumentContourOverlay
+            quadrilateral={cvResult?.quadrilateral ?? null}
+            dimensions={cvResult?.dimensions}
+            captureReadiness={cvResult?.captureReadiness ?? 0}
+            isStable={cvResult?.isStable ?? false}
+            isPaused={isPaused}
+          />
         )}
 
         {!cvResult?.quadrilateral && (
@@ -864,7 +1175,10 @@ export default function ScannerScreen() {
 
       {/* Status Bar */}
       <View style={styles.statusContainer}>
-        <StatusIndicator captureState={{ ...captureState, isStable: captureState.isStable && !isPaused }} />
+        <StatusIndicator
+          captureState={{ ...captureState, isStable: captureState.isStable && !isPaused }}
+          liveScanStatus={liveScanStatus}
+        />
       </View>
 
       {/* Thumbnails */}
@@ -1187,162 +1501,6 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.background,
     paddingVertical: 4,
   },
-  controlsSafeArea: {
-    backgroundColor: COLORS.background,
-    flex: 1,
-  },
-  controlsScrollView: {
-    flex: 1,
-  },
-  controlsContainer: {
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 16,
-  },
-  scanButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    backgroundColor: COLORS.success,
-    paddingVertical: 16,
-    borderRadius: 14,
-    marginBottom: 10,
-  },
-  scanButtonText: {
-    color: '#fff',
-    fontSize: 17,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
-  manualCaptureRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 12,
-    marginBottom: 4,
-  },
-  orText: {
-    textAlign: 'center',
-    fontSize: 11,
-    color: COLORS.textMuted,
-    marginBottom: 10,
-  },
-  pausePlayButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: COLORS.warning,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  playButton: {
-    backgroundColor: COLORS.success,
-  },
-  undoButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: COLORS.textMuted,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  undoButtonDisabled: {
-    backgroundColor: COLORS.border,
-  },
-  nextStudentButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    backgroundColor: COLORS.success,
-    paddingVertical: 14,
-    paddingHorizontal: 20,
-    borderRadius: 14,
-    marginBottom: 8,
-  },
-  nextStudentText: {
-    color: '#fff',
-    fontSize: 17,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
-  nextStudentCount: {
-    color: 'rgba(255,255,255,0.8)',
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  phaseActions: {
-    flexDirection: 'row',
-    gap: 10,
-    marginBottom: 8,
-  },
-  skipButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 10,
-    backgroundColor: COLORS.backgroundDark,
-  },
-  skipButtonText: {
-    color: COLORS.textMuted,
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  nextPhaseButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: COLORS.primary,
-    paddingVertical: 12,
-    borderRadius: 10,
-  },
-  nextPhaseText: {
-    color: '#fff',
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  doneButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    backgroundColor: COLORS.primary,
-    paddingVertical: 12,
-    borderRadius: 14,
-    marginBottom: 8,
-  },
-  doneButtonText: {
-    color: '#fff',
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  settingsRow: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-  },
-  settingButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingVertical: 6,
-    paddingHorizontal: 14,
-    borderRadius: 20,
-    backgroundColor: COLORS.backgroundDark,
-  },
-  settingButtonActive: {
-    backgroundColor: COLORS.primary,
-  },
-  settingButtonText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: COLORS.textMuted,
-  },
   // Refined Controls
   controlsSafeArea: {
     backgroundColor: '#000',
@@ -1638,5 +1796,19 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '700',
+  },
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 12,
+    zIndex: 999,
+  },
+  loadingText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+    letterSpacing: 0.5,
   },
 });
