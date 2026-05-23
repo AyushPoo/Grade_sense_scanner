@@ -71,7 +71,9 @@ interface StatusIndicatorProps {
   liveScanStatus?: LiveScanStatus;
 }
 
-export const StatusIndicator: React.FC<StatusIndicatorProps> = ({
+// ── PHASE 4 FIX: React.memo wrapper — StatusIndicator will not re-render when ScannerScreen
+// re-renders for unrelated reasons. Re-renders only when liveScanStatus changes.
+const StatusIndicatorBase: React.FC<StatusIndicatorProps> = ({
   captureState: _captureState, // kept for API compatibility — UI now driven by liveScanStatus
   liveScanStatus = 'searching',
 }) => {
@@ -88,6 +90,9 @@ export const StatusIndicator: React.FC<StatusIndicatorProps> = ({
     </View>
   );
 };
+
+export const StatusIndicator = React.memo(StatusIndicatorBase);
+StatusIndicator.displayName = 'StatusIndicator';
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 

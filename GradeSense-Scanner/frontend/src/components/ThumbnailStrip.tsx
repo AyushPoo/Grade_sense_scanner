@@ -1,5 +1,6 @@
 import React from 'react';
-import { View, ScrollView, TouchableOpacity, Image, Text, StyleSheet } from 'react-native';
+import { View, TouchableOpacity, Text, StyleSheet, FlatList } from 'react-native';
+import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../config';
 import { ScannedPage } from '../types';
@@ -10,7 +11,41 @@ interface ThumbnailStripProps {
   onDeletePress?: (pageNumber: number) => void;
 }
 
-export const ThumbnailStrip: React.FC<ThumbnailStripProps> = ({ 
+const ThumbnailItem = React.memo(({ page, onPagePress }: { page: ScannedPage; onPagePress: (page: ScannedPage) => void }) => {
+  return (
+    <TouchableOpacity 
+      style={styles.thumbnail}
+      onPress={() => onPagePress(page)}
+      activeOpacity={0.7}
+    >
+      {page.file_path ? (
+        <Image 
+          source={{ uri: page.file_path }} 
+          style={styles.thumbnailImage}
+          contentFit="cover"
+          cachePolicy="memory-disk"
+          transition={0}
+        />
+      ) : (
+        <View style={styles.placeholderImage}>
+          <Ionicons name="document" size={24} color={COLORS.textMuted} />
+        </View>
+      )}
+      <View style={styles.pageNumberBadge}>
+        <Text style={styles.pageNumberText}>P{page.page_number}</Text>
+      </View>
+      {page.is_blurry && (
+        <View style={styles.blurryBadge}>
+          <Ionicons name="warning" size={12} color={COLORS.warning} />
+        </View>
+      )}
+    </TouchableOpacity>
+  );
+});
+
+// ── PHASE 4 FIX: React.memo wrapper — ThumbnailStrip will not re-render when ScannerScreen
+// re-renders for unrelated reasons. Re-renders only when pages array or callbacks change.
+const ThumbnailStripBase: React.FC<ThumbnailStripProps> = ({ 
   pages, 
   onPagePress,
   onDeletePress,
@@ -24,41 +59,25 @@ export const ThumbnailStrip: React.FC<ThumbnailStripProps> = ({
   }
 
   return (
-    <ScrollView 
-      horizontal 
+    <FlatList
+      data={pages}
+      horizontal
       showsHorizontalScrollIndicator={false}
       contentContainerStyle={styles.scrollContent}
-    >
-      {pages.map((page) => (
-        <TouchableOpacity 
-          key={page.id} 
-          style={styles.thumbnail}
-          onPress={() => onPagePress(page)}
-          activeOpacity={0.7}
-        >
-          {page.file_path ? (
-            <Image 
-              source={{ uri: page.file_path }} 
-              style={styles.thumbnailImage} 
-            />
-          ) : (
-            <View style={styles.placeholderImage}>
-              <Ionicons name="document" size={24} color={COLORS.textMuted} />
-            </View>
-          )}
-          <View style={styles.pageNumberBadge}>
-            <Text style={styles.pageNumberText}>P{page.page_number}</Text>
-          </View>
-          {page.is_blurry && (
-            <View style={styles.blurryBadge}>
-              <Ionicons name="warning" size={12} color={COLORS.warning} />
-            </View>
-          )}
-        </TouchableOpacity>
-      ))}
-    </ScrollView>
+      keyExtractor={(page) => page.id}
+      initialNumToRender={5}
+      maxToRenderPerBatch={5}
+      windowSize={3}
+      removeClippedSubviews={true}
+      renderItem={({ item: page }) => (
+        <ThumbnailItem page={page} onPagePress={onPagePress} />
+      )}
+    />
   );
 };
+
+export const ThumbnailStrip = React.memo(ThumbnailStripBase);
+ThumbnailStrip.displayName = 'ThumbnailStrip';
 
 const styles = StyleSheet.create({
   scrollContent: {
@@ -85,7 +104,6 @@ const styles = StyleSheet.create({
   thumbnailImage: {
     width: '100%',
     height: '100%',
-    resizeMode: 'cover',
   },
   placeholderImage: {
     width: '100%',

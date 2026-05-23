@@ -15,12 +15,15 @@ interface CaptureButtonProps {
   autoCaptureEnabled?: boolean;
 }
 
-export const CaptureButton: React.FC<CaptureButtonProps> = ({ 
-  onPress, 
+// ── PHASE 4 FIX: React.memo wrapper — CaptureButton will not re-render when ScannerScreen
+// re-renders for unrelated reasons (e.g. cvResult update, workflowState change).
+// Re-renders only when its own props change: onPress, stabilityProgress, disabled, autoCaptureEnabled.
+const CaptureButtonBase = ({
+  onPress,
   stabilityProgress,
   disabled,
   autoCaptureEnabled,
-}) => {
+}: CaptureButtonProps) => {
   const scale = useSharedValue(1);
 
   const handlePressIn = () => {
@@ -75,6 +78,9 @@ export const CaptureButton: React.FC<CaptureButtonProps> = ({
     </Animated.View>
   );
 };
+
+export const CaptureButton = React.memo(CaptureButtonBase);
+CaptureButton.displayName = 'CaptureButton';
 
 const styles = StyleSheet.create({
   container: {

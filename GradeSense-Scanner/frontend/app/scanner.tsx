@@ -27,6 +27,7 @@ import * as ScreenOrientation from 'expo-screen-orientation';
 import { File, Paths } from 'expo-file-system';
 import { COLORS, CONFIG } from '../src/config';
 import { useScanStore } from '../src/store/scanStore';
+import { useShallow } from 'zustand/react/shallow';
 import { useCVAutoCapture } from '../src/hooks/useCVAutoCapture';
 import { CVProcessingResult, Quadrilateral } from '../src/utils/cvProcessor';
 import { StatusIndicator, LiveScanStatus } from '../src/components/StatusIndicator';
@@ -66,25 +67,46 @@ export default function ScannerScreen() {
   const isMounted = useRef(true);
   const [permission, requestPermission] = useCameraPermissions();
   const hasPermission = permission?.granted;
-  
+
+  // ── PHASE 1 FIX: Isolated selectors — scanner only re-renders when its OWN fields change.
+  // Previously subscribed to ENTIRE store; now each field is individually selected.
+  // savedSessions, savedBatches, hasHydrated, isScanning are NOT subscribed — scanner is isolated.
+  const currentSession = useScanStore(state => state.currentSession);
+  const currentPhase = useScanStore(state => state.currentPhase);
+  const currentStudentIndex = useScanStore(state => state.currentStudentIndex);
+  const autoCaptureEnabled = useScanStore(state => state.autoCaptureEnabled);
+  const autoCropEnabled = useScanStore(state => state.autoCropEnabled);
+  const flashMode = useScanStore(state => state.flashMode);
+
+  // Actions grouped with useShallow — stable references, will not cause re-renders unless
+  // the store is recreated (which never happens with Zustand's create()).
   const {
-    currentSession,
-    currentPhase,
-    currentStudentIndex,
-    autoCaptureEnabled,
-    flashMode,
-    setCurrentPhase,
     addPage,
     nextStudent,
     undoLastPage,
     finishSession,
     saveSession,
+    setCurrentPhase,
     setFlashMode,
     setAutoCaptureEnabled,
-    autoCropEnabled,
     setAutoCropEnabled,
     clearCurrentSession,
-  } = useScanStore();
+    clearRetake,
+  } = useScanStore(
+    useShallow(state => ({
+      addPage: state.addPage,
+      nextStudent: state.nextStudent,
+      undoLastPage: state.undoLastPage,
+      finishSession: state.finishSession,
+      saveSession: state.saveSession,
+      setCurrentPhase: state.setCurrentPhase,
+      setFlashMode: state.setFlashMode,
+      setAutoCaptureEnabled: state.setAutoCaptureEnabled,
+      setAutoCropEnabled: state.setAutoCropEnabled,
+      clearCurrentSession: state.clearCurrentSession,
+      clearRetake: state.clearRetake,
+    }))
+  );
 
   const [workflowState, setWorkflowState] = useState<ScanWorkflowState>('SCANNING_ACTIVE');
   const workflowStateRef = useRef<ScanWorkflowState>('SCANNING_ACTIVE');
@@ -132,7 +154,7 @@ export default function ScannerScreen() {
       console.log(`[WORKFLOW] Transition: ${prev} -> ${nextState}`);
       return nextState;
     });
-    
+
     // Sync legacy states for UI compatibility
     setIsCapturing(nextState === 'CAPTURING' || nextState === 'PROCESSING_CAPTURE');
     setIsPaused(nextState === 'SCANNING_PAUSED');
@@ -144,7 +166,7 @@ export default function ScannerScreen() {
     width: SCREEN_WIDTH,
     height: SCREEN_HEIGHT,
   });
-  
+
   // Blur detection state
   const [blurCheckModal, setBlurCheckModal] = useState<{
     visible: boolean;
@@ -157,7 +179,7 @@ export default function ScannerScreen() {
     blurResult: null,
     isChecking: false,
   });
-  
+
   // Student Identity State
   const [studentIdentityModal, setStudentIdentityModal] = useState({
     visible: false,
@@ -191,7 +213,7 @@ export default function ScannerScreen() {
     const subscription = ScreenOrientation.addOrientationChangeListener((event) => {
       const { width, height } = Dimensions.get('window');
       setScreenDimensions({ width, height });
-      
+
       if (
         event.orientationInfo.orientation === ScreenOrientation.Orientation.LANDSCAPE_LEFT ||
         event.orientationInfo.orientation === ScreenOrientation.Orientation.LANDSCAPE_RIGHT
@@ -331,7 +353,7 @@ export default function ScannerScreen() {
         lastQuadRef.current = result.quadrilateral;
 
         const isCaptureReady = isDocumentLockedRef.current && result.confidence >= 0.8 && stabilityFrameCountRef.current >= 3;
-        
+
         // Pass derived states down
         result.isDocumentDetected = isDocumentLockedRef.current;
         result.captureReadiness = isCaptureReady ? 100 : (isDocumentLockedRef.current ? 50 : 0);
@@ -423,7 +445,7 @@ export default function ScannerScreen() {
    */
   const processScannedImage = async (imageUri: string, snapshotQuad: Quadrilateral | null, previewDims: { width: number, height: number }) => {
     console.log(`[CAPTURE] processScannedImage: START for ${imageUri}`);
-    
+
     // Check for blur in background (non-blocking)
     console.log('[CAPTURE] detectBlur: START');
     const blurResult = await detectBlur(imageUri);
@@ -485,13 +507,13 @@ export default function ScannerScreen() {
           finalUri = processed.uri;
         }
       }
-      
+
       // 2. Move to permanent storage
       console.log('[CAPTURE] File.copy: START');
       const filename = `scanned_${Date.now()}.jpg`;
       const destFile = new File(Paths.document, filename);
       const destinationUri = destFile.uri;
-      
+
       new File(finalUri).copy(destFile);
       console.log('[CAPTURE] File.copy: SUCCESS', destinationUri);
 
@@ -500,7 +522,7 @@ export default function ScannerScreen() {
       console.log('[CAPTURE] File.size: SUCCESS', fileSizeBytes);
 
       const processedUri = destinationUri;
-      
+
       const scannedPage: ScannedPage = {
         id: generateUUID(),
         ui_id: '',           // Normalised by store on addPage
@@ -519,7 +541,7 @@ export default function ScannerScreen() {
       setLiveScanStatus('saved');
       if (savedStatusTimerRef.current) clearTimeout(savedStatusTimerRef.current);
       savedStatusTimerRef.current = setTimeout(() => setLiveScanStatus('searching'), 2500);
-      
+
       // 4. Memory Safety: Cleanup raw and intermediate temporary files
       try {
         new File(imageUri).delete();
@@ -549,11 +571,15 @@ export default function ScannerScreen() {
   /**
    * Cooldown Engine - transition back to Scanning or active state after 1500ms
    */
+  // ── PHASE 2 FIX: startCooldown stabilized — no longer depends on workflowState/isPaused.
+  // Previously reading workflowState/isPaused/currentPhase from stale closure.
+  // Now reads from refs at execution time (timeout fires 1500ms later — closure values would be stale).
+  // BEHAVIOR UNCHANGED: same 1500ms cooldown, same state transitions.
   const startCooldown = useCallback(() => {
     if (cooldownTimeoutRef.current) {
       clearTimeout(cooldownTimeoutRef.current);
     }
-    
+
     console.log('[COOLDOWN] Entering capture cooldown for 1500ms');
     captureCooldownRef.current = true;
     setWorkflowStateWithLog('CAPTURE_COOLDOWN');
@@ -561,24 +587,25 @@ export default function ScannerScreen() {
     cooldownTimeoutRef.current = setTimeout(() => {
       captureCooldownRef.current = false;
       console.log('[COOLDOWN] Capture cooldown finished');
-      
-      // If the scanner isn't paused or transitioning student, resume active scanning
-      if (workflowState === 'SCANNING_PAUSED' || isPaused) {
+
+      // Read refs at execution time — avoids stale closure values from 1500ms ago.
+      if (workflowStateRef.current === 'SCANNING_PAUSED' || isPausedRef.current) {
         setWorkflowStateWithLog('SCANNING_PAUSED');
-      } else if (currentPhase === 'students' && studentIdentityModal.visible) {
-        setWorkflowStateWithLog('CHANGING_STUDENT');
+      } else if (workflowStateRef.current === 'CHANGING_STUDENT') {
+        // User pressed Next Student during cooldown — do not override that transition.
+        // submitStudentIdentity() will transition to SCANNING_ACTIVE when ready.
       } else {
         setWorkflowStateWithLog('SCANNING_ACTIVE');
       }
     }, 1500);
-  }, [workflowState, isPaused, currentPhase, studentIdentityModal.visible, setWorkflowStateWithLog]);
+  }, [setWorkflowStateWithLog]);
 
   /**
    * Central Safe Live Capture Pipeline
    */
   const handleLiveCapture = useCallback(async () => {
-    console.log(`[CAPTURE] Initiating capture. isCapturingRef: ${isCapturingRef.current}, captureCooldownRef: ${captureCooldownRef.current}, workflowState: ${workflowState}`);
-    
+    console.log(`[CAPTURE] Initiating capture. isCapturingRef: ${isCapturingRef.current}, captureCooldownRef: ${captureCooldownRef.current}, workflowState: ${workflowStateRef.current}`);
+
     // Check hard locks
     if (isCapturingRef.current) {
       console.log('[CAPTURE] Aborted: already capturing (hard lock active)');
@@ -594,7 +621,8 @@ export default function ScannerScreen() {
     }
     if (
       workflowStateRef.current !== 'SCANNING_ACTIVE' &&
-      workflowStateRef.current !== 'SCANNING_PAUSED'
+      workflowStateRef.current !== 'SCANNING_PAUSED' &&
+      workflowStateRef.current !== 'ANALYZING_FRAME'
     ) {
       console.warn(`[CAPTURE] blocked invalid workflow state: ${workflowStateRef.current}`);
       return;
@@ -623,7 +651,7 @@ export default function ScannerScreen() {
       if (!photo || !photo.uri) {
         throw new Error('takePictureAsync returned null or invalid photo uri');
       }
-      
+
       capturedUri = photo.uri;
       console.log(`[CAPTURE] Completed takePictureAsync. Path: ${capturedUri}`);
 
@@ -636,7 +664,7 @@ export default function ScannerScreen() {
 
       // Process quality checks and session additions
       await processScannedImage(capturedUri, snapshotQuad, previewDims);
-      
+
     } catch (error) {
       console.error('[CAPTURE] Error during capture pipeline:', error);
       reportCaptureFailure('Live Capture Failed', error);
@@ -644,11 +672,14 @@ export default function ScannerScreen() {
       // Always release hard lock
       isCapturingRef.current = false;
       console.log('[CAPTURE] Hard lock released');
-      
+
       // Always transition through cooldown
       startCooldown();
     }
-  }, [workflowState, setWorkflowStateWithLog, startCooldown]);
+  // ── PHASE 2 FIX: workflowState removed from deps — guard checks already use workflowStateRef.
+  // startCooldown is now stable (no longer recreated on workflow transitions).
+  // This breaks the startCooldown → handleLiveCapture → auto-capture effect cascade.
+  }, [setWorkflowStateWithLog, startCooldown]);
 
   /**
    * Manual capture button routing
@@ -720,10 +751,24 @@ export default function ScannerScreen() {
 
   const currentPages = getCurrentPages();
 
+  // ── PHASE 5 FIX: Memoized page press handler — stable reference prevents ThumbnailStrip
+  // from receiving a new prop on every scanner re-render (inline arrow was recreated each time).
+  const handlePagePress = useCallback((page: ScannedPage) => {
+    router.push({
+      pathname: '/page-preview',
+      params: {
+        pageNumber: page.page_number,
+        phase: currentPhase,
+        studentIndex: currentStudentIndex.toString(),
+      },
+    });
+  }, [router, currentPhase, currentStudentIndex]);
+
   const handleNextStudent = () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    clearRetake(); // Ensures no stale retake context survives a student transition
     setWorkflowStateWithLog('CHANGING_STUDENT');
-    
+
     // Open identity modal before moving to next student
     setStudentIdentityModal({
       visible: true,
@@ -743,21 +788,22 @@ export default function ScannerScreen() {
         roll_number: studentIdentityModal.rollNumber.trim(),
       });
     }
-    
+
     setStudentIdentityModal({ visible: false, name: '', rollNumber: '' });
-    
+
     // Clear cooldown ref and timeout
     captureCooldownRef.current = false;
     if (cooldownTimeoutRef.current) {
       clearTimeout(cooldownTimeoutRef.current);
       cooldownTimeoutRef.current = null;
     }
-    
+
     // Restore active scanning state instantly without camera remounts
     setWorkflowStateWithLog('SCANNING_ACTIVE');
   };
 
   const handleNextPhase = () => {
+    clearRetake(); // FIX 2: Invalidate any pending retake before changing phase
     if (currentPhase === 'question_paper') {
       if (currentSession?.settings.scan_model_answer) {
         setCurrentPhase('model_answer');
@@ -782,8 +828,9 @@ export default function ScannerScreen() {
   };
 
   const handleDone = () => {
+    clearRetake(); // Clear pending retakes on exit
     saveSession();
-    
+
     Alert.alert(
       'Done Scanning',
       `You have scanned ${currentSession?.students.filter(s => s.page_count > 0).length || 0} students. Review and finalize?`,
@@ -826,11 +873,11 @@ export default function ScannerScreen() {
     if (currentSession?.settings.scan_question_paper) phases.push('QP');
     if (currentSession?.settings.scan_model_answer) phases.push('MA');
     phases.push('Students');
-    
+
     let currentIdx = 0;
     if (currentPhase === 'model_answer') currentIdx = phases.indexOf('MA');
     else if (currentPhase === 'students') currentIdx = phases.length - 1;
-    
+
     return { phases, currentIndex: currentIdx };
   };
 
@@ -895,8 +942,8 @@ export default function ScannerScreen() {
 
   const { phases, currentIndex } = getPhaseIndicator();
   const isLandscape = orientation === 'landscape';
-  const cameraHeight = isLandscape 
-    ? screenDimensions.height * 0.65 
+  const cameraHeight = isLandscape
+    ? screenDimensions.height * 0.65
     : screenDimensions.height * 0.38;
 
   const renderStudentIdentityModal = () => (
@@ -913,7 +960,7 @@ export default function ScannerScreen() {
         <View style={styles.identityContent}>
           <Text style={styles.identityTitle}>Student Identity</Text>
           <Text style={styles.identitySubtitle}>Optionally identify the next student</Text>
-          
+
           <View style={styles.inputGroup}>
             <Text style={styles.inputLabel}>STUDENT NAME</Text>
             <View style={styles.textInputWrapper}>
@@ -942,15 +989,15 @@ export default function ScannerScreen() {
           </View>
 
           <View style={styles.identityActions}>
-            <TouchableOpacity 
-              style={styles.skipBtn} 
+            <TouchableOpacity
+              style={styles.skipBtn}
               onPress={() => submitStudentIdentity(true)}
             >
               <Text style={styles.skipBtnText}>Skip</Text>
             </TouchableOpacity>
-            
-            <TouchableOpacity 
-              style={styles.continueBtn} 
+
+            <TouchableOpacity
+              style={styles.continueBtn}
               onPress={() => submitStudentIdentity(false)}
             >
               <Text style={styles.continueBtnText}>Continue Scanning</Text>
@@ -986,7 +1033,7 @@ export default function ScannerScreen() {
                   style={styles.blurPreviewImage}
                   resizeMode="contain"
                 />
-                
+
                 {blurCheckModal.blurResult && (
                   <View style={styles.blurResultContainer}>
                     <View style={[
@@ -1047,60 +1094,60 @@ export default function ScannerScreen() {
             </Text>
           </View>
           <View style={styles.pageModeBadge}>
-            <Ionicons 
-              name={currentSession?.settings.page_mode === 'double' ? 'documents' : 'document'} 
-              size={14} 
-              color="#fff" 
+            <Ionicons
+              name={currentSession?.settings.page_mode === 'double' ? 'documents' : 'document'}
+              size={14}
+              color="#fff"
             />
             <Text style={styles.pageModeBadgeText}>
               {currentSession?.settings.page_mode === 'double' ? '2PG' : '1PG'}
             </Text>
           </View>
           <View style={[styles.orientationBadge, isLandscape && styles.orientationBadgeActive]}>
-            <Ionicons 
-              name={isLandscape ? 'phone-landscape' : 'phone-portrait'} 
-              size={14} 
-              color="#fff" 
+            <Ionicons
+              name={isLandscape ? 'phone-landscape' : 'phone-portrait'}
+              size={14}
+              color="#fff"
             />
           </View>
         </View>
-        
+
         {/* Secondary Header / Controls */}
         <View style={styles.secondaryHeader}>
-           <TouchableOpacity 
-             style={[styles.smallToggle, autoCropEnabled && styles.smallToggleActive]}
-             onPress={() => {
-               setAutoCropEnabled(!autoCropEnabled);
-               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-             }}
-           >
-             <Ionicons name="scan-outline" size={16} color={autoCropEnabled ? '#fff' : COLORS.textMuted} />
-             <Text style={[styles.smallToggleText, autoCropEnabled && styles.smallToggleTextActive]}>
-               AUTO-CROP
-             </Text>
-           </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.smallToggle, autoCropEnabled && styles.smallToggleActive]}
+            onPress={() => {
+              setAutoCropEnabled(!autoCropEnabled);
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            }}
+          >
+            <Ionicons name="scan-outline" size={16} color={autoCropEnabled ? '#fff' : COLORS.textMuted} />
+            <Text style={[styles.smallToggleText, autoCropEnabled && styles.smallToggleTextActive]}>
+              AUTO-CROP
+            </Text>
+          </TouchableOpacity>
 
-           <TouchableOpacity 
-             style={[styles.smallToggle, autoCaptureEnabled && styles.smallToggleActive]}
-             onPress={() => {
-               setAutoCaptureEnabled(!autoCaptureEnabled);
-               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-             }}
-           >
-             <Ionicons name="flash-outline" size={16} color={autoCaptureEnabled ? '#fff' : COLORS.textMuted} />
-             <Text style={[styles.smallToggleText, autoCaptureEnabled && styles.smallToggleTextActive]}>
-               AUTO-CAP
-             </Text>
-           </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.smallToggle, autoCaptureEnabled && styles.smallToggleActive]}
+            onPress={() => {
+              setAutoCaptureEnabled(!autoCaptureEnabled);
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            }}
+          >
+            <Ionicons name="flash-outline" size={16} color={autoCaptureEnabled ? '#fff' : COLORS.textMuted} />
+            <Text style={[styles.smallToggleText, autoCaptureEnabled && styles.smallToggleTextActive]}>
+              AUTO-CAP
+            </Text>
+          </TouchableOpacity>
 
-           <TouchableOpacity style={styles.smallToggle} onPress={cycleFlash}>
-             <Ionicons 
-               name={flashMode === 'on' ? 'flashlight' : flashMode === 'auto' ? 'flash' : 'flash-off'} 
-               size={16} 
-               color="#fff" 
-             />
-             <Text style={styles.smallToggleText}>{flashMode.toUpperCase()}</Text>
-           </TouchableOpacity>
+          <TouchableOpacity style={styles.smallToggle} onPress={cycleFlash}>
+            <Ionicons
+              name={flashMode === 'on' ? 'flashlight' : flashMode === 'auto' ? 'flash' : 'flash-off'}
+              size={16}
+              color="#fff"
+            />
+            <Text style={styles.smallToggleText}>{flashMode.toUpperCase()}</Text>
+          </TouchableOpacity>
         </View>
 
         {/* Phase Progress Indicator */}
@@ -1158,7 +1205,7 @@ export default function ScannerScreen() {
 
         {!cvResult?.quadrilateral && (
           <View style={styles.documentGuide}>
-             <View style={styles.guideBorder} />
+            <View style={styles.guideBorder} />
           </View>
         )}
 
@@ -1183,18 +1230,10 @@ export default function ScannerScreen() {
 
       {/* Thumbnails */}
       <View style={styles.thumbnailContainer}>
+        {/* PHASE 5 FIX: handlePagePress is memoized — no inline arrow */}
         <ThumbnailStrip
           pages={currentPages}
-          onPagePress={(page) => {
-            router.push({
-              pathname: '/page-preview',
-              params: {
-                pageNumber: page.page_number,
-                phase: currentPhase,
-                studentIndex: currentStudentIndex.toString(),
-              },
-            });
-          }}
+          onPagePress={handlePagePress}
         />
       </View>
 
@@ -1224,7 +1263,7 @@ export default function ScannerScreen() {
                 <Text style={styles.nextStudentActionLabel}>NEXT STUDENT</Text>
               </TouchableOpacity>
             ) : (
-              <TouchableOpacity 
+              <TouchableOpacity
                 style={[styles.undoButton, currentPages.length === 0 && styles.undoButtonDisabled]}
                 onPress={handleUndo}
                 disabled={currentPages.length === 0}
@@ -1249,8 +1288,8 @@ export default function ScannerScreen() {
             ) : (
               <View style={styles.studentStatsRow}>
                 <TouchableOpacity style={styles.undoStudentBtn} onPress={handleUndo}>
-                   <Ionicons name="arrow-undo" size={16} color="rgba(255,255,255,0.6)" />
-                   <Text style={styles.undoStudentBtnText}>Undo Last Page</Text>
+                  <Ionicons name="arrow-undo" size={16} color="rgba(255,255,255,0.6)" />
+                  <Text style={styles.undoStudentBtnText}>Undo Last Page</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.finishSessionBtn} onPress={handleDone}>
                   <Text style={styles.finishSessionBtnText}>FINISH SESSION</Text>

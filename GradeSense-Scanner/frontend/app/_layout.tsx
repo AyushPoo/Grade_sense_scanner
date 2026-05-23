@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Stack, useRouter, useSegments, useRootNavigationState } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -10,7 +10,7 @@ export default function RootLayout() {
   const segments = useSegments();
   const router = useRouter();
   const navigationState = useRootNavigationState();
-  
+
   // Combine hydration states from both stores
   const authHasHydrated = useAuthStore(state => state.hasHydrated);
   const isAuthenticated = useAuthStore(state => state.isAuthenticated);
@@ -26,7 +26,7 @@ export default function RootLayout() {
   useEffect(() => {
     if (authHasHydrated && scanHasHydrated) {
       console.log(`[TRACE] RootLayout: Starting Bootstrap Lifecycle at ${Date.now()}`);
-      
+
       // Execute post-hydration cleanup (integrity check, stuck session reset)
       // This is now separated from the storage read phase to avoid write recursion
       performPostHydrationCleanup().catch(e => console.error('[Bootstrap] Cleanup failed:', e));
@@ -38,13 +38,26 @@ export default function RootLayout() {
     }
   }, [authHasHydrated, scanHasHydrated, isAuthenticated]);
 
+  // ── PHASE 3 FIX: segments stored in a ref so the redirect effect does NOT re-run
+  // on every navigation (every route change previously re-fired the guard via the dep array).
+  // The ref is always up-to-date because the sync effect runs before any useEffect.
+  const segmentsRef = useRef(segments);
+  useEffect(() => {
+    segmentsRef.current = segments;
+  });
+
   // 2. STABLE REDIRECTS: Guarded by isAppReady
+  // PHASE 3 FIX: `segments` removed from dependency array — guard only fires when auth
+  // state or app-ready state changes, not on every navigation transition.
+  // Timeout increased from 1ms → 50ms so Expo Router can commit the navigation
+  // before we evaluate the redirect condition (eliminates route bounce race condition).
   useEffect(() => {
     if (!isAppReady) return;
 
-    // Use a small delay to ensure Expo Router is stable
     const timeout = setTimeout(() => {
-      const inAuthGroup = segments[0] === '(auth)' || segments[0] === undefined;
+      // Read from ref at execution time — always current, no stale closure risk.
+      const currentSegments = segmentsRef.current;
+      const inAuthGroup = currentSegments[0] === '(auth)' || currentSegments[0] === undefined;
 
       if (!isAuthenticated && !inAuthGroup) {
         console.log(`[TRACE] RootLayout: Redirecting to login at ${Date.now()}`);
@@ -53,10 +66,10 @@ export default function RootLayout() {
         console.log(`[TRACE] RootLayout: Redirecting to home at ${Date.now()}`);
         router.replace('/(tabs)/home');
       }
-    }, 1);
+    }, 50);
 
     return () => clearTimeout(timeout);
-  }, [isAppReady, isAuthenticated, segments]);
+  }, [isAppReady, isAuthenticated]);
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>

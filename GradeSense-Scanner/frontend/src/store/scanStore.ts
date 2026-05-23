@@ -13,36 +13,52 @@ export const generateUUID = () => {
   });
 };
 
+export interface PendingRetake {
+  pageId: string;
+  studentIndex?: number;
+  phase: ScanPhase;
+  replaceIndex: number;
+  originalPageNumber: number;
+  originalFilePath: string;
+}
+
 interface ScanState {
   // Current session
   currentSession: ScanSession | null;
   currentPhase: ScanPhase;
   currentStudentIndex: number;
-  
+
   // All saved sessions
   savedSessions: ScanSession[];
-  
+
   // Saved batches
   savedBatches: Batch[];
-  
+
   // Scanner state
   isScanning: boolean;
   flashMode: 'off' | 'on' | 'auto';
   autoCaptureEnabled: boolean;
   autoCropEnabled: boolean;
-  
+  pendingRetake: PendingRetake | null;
+  hasHydrated: boolean;
+
   // Actions
   addPage: (page: ScannedPage) => void;
-  removePage: (phase: string, pageNumber: number, studentIndex?: number) => void;
+  removePage: (pageNumber: number, phase?: string, studentIndex?: number) => void;
   undoLastPage: () => void;
   setCurrentPhase: (phase: 'question_paper' | 'model_answer' | 'students') => void;
   nextStudent: () => void;
+  previousStudent: () => void;
   finishSession: () => void;
   saveSession: () => void;
   clearCurrentSession: () => void;
+  deleteSession: (sessionId: string) => void;
+  loadSession: (sessionId: string) => void;
   updateSessionStatus: (sessionId: string, status: ScanSession['status'], progress: number) => void;
   fetchSessions: () => Promise<void>;
-  syncCurrentMetadata: (currentPhase: 'question_paper' | 'model_answer' | 'student', studentIndex?: number) => Promise<void>;
+  createSession: (name: string, batchId: string, batchName: string, settings: ScanSessionSettings) => Promise<void>;
+  syncCurrentMetadata: (currentPhase?: 'question_paper' | 'model_answer' | 'student', studentIndex?: number) => Promise<void>;
+  updateStudentBarcode: (studentIndex: number, barcodeData: { type: string; data: string; matched_name?: string }) => void;
   setFlashMode: (mode: 'off' | 'on' | 'auto') => void;
   setAutoCaptureEnabled: (enabled: boolean) => void;
   setAutoCropEnabled: (enabled: boolean) => void;
@@ -52,6 +68,8 @@ interface ScanState {
   // Batch actions
   addBatch: (batch: Batch) => void;
   deleteBatch: (batchId: string) => void;
+  startRetake: (page: ScannedPage, phase: ScanPhase, studentIndex?: number) => void;
+  clearRetake: () => void;
 }
 
 const createEmptySession = (): Partial<ScanSession> => ({
@@ -72,7 +90,7 @@ export const recomputeStats = (session: ScanSession): ScanSession['stats'] => {
   const qpPages = session.question_paper?.pages?.length || 0;
   const maPages = session.model_answer?.pages?.length || 0;
   const studentsWithPages = (session.students || []).filter(s => (s.pages || []).length > 0);
-  
+
   let totalPages = qpPages + maPages;
   let totalSizeBytes = 0;
   let blurryPages = 0;
@@ -121,15 +139,16 @@ export const useScanStore = create<ScanState>()(
       flashMode: 'auto',
       autoCaptureEnabled: true,
       autoCropEnabled: true,
+      pendingRetake: null,
       hasHydrated: false,
 
       setHasHydrated: (val) => set({ hasHydrated: val }),
 
-      createSession: async (name, batchId, batchName, settings) => {
+      createSession: async (name: string, batchId: string, batchName: string, settings: ScanSessionSettings) => {
         try {
           const { useAuthStore } = await import('./authStore');
           const token = useAuthStore.getState().sessionToken;
-          
+
           // Call backend to create real session
           const response = await fetch(`${process.env.EXPO_PUBLIC_BACKEND_URL}/api/scan-sessions/create`, {
             method: 'POST',
@@ -143,11 +162,11 @@ export const useScanStore = create<ScanState>()(
               settings: settings
             })
           });
-          
+
           if (!response.ok) {
             throw new Error(`Failed to create session on backend: ${response.status}`);
           }
-          
+
           const data = await response.json();
           const backendSessionId = data.session_id;
 
@@ -162,7 +181,7 @@ export const useScanStore = create<ScanState>()(
             settings,
             ...createEmptySession() as any,
           };
-          
+
           // Initialize first student
           session.students = [{
             id: generateUUID(),
@@ -172,12 +191,12 @@ export const useScanStore = create<ScanState>()(
             has_blurry_pages: false,
             pages: [],
           }];
-          
-          set({ 
-            currentSession: session, 
+
+          set({
+            currentSession: session,
             savedSessions: [session, ...get().savedSessions],
-            currentPhase: settings.scan_question_paper ? 'question_paper' : 
-                          settings.scan_model_answer ? 'model_answer' : 'students',
+            currentPhase: settings.scan_question_paper ? 'question_paper' :
+              settings.scan_model_answer ? 'model_answer' : 'students',
             currentStudentIndex: 0,
             isScanning: true,
             autoCaptureEnabled: settings.auto_capture,
@@ -191,43 +210,119 @@ export const useScanStore = create<ScanState>()(
 
       setCurrentPhase: (phase) => set({ currentPhase: phase }),
 
+      clearRetake: () => set({ pendingRetake: null }),
+
+      startRetake: (page, phase, studentIndex) => {
+        const { currentSession, currentStudentIndex } = get();
+        if (!currentSession) return;
+
+        let pagesArray: ScannedPage[] = [];
+        if (phase === 'question_paper') {
+          pagesArray = currentSession.question_paper.pages || [];
+        } else if (phase === 'model_answer') {
+          pagesArray = currentSession.model_answer.pages || [];
+        } else {
+          const idx = studentIndex !== undefined ? studentIndex : currentStudentIndex;
+          pagesArray = currentSession.students[idx]?.pages || [];
+        }
+
+        const replaceIndex = pagesArray.findIndex(p => p.page_number === page.page_number);
+        if (replaceIndex > -1) {
+          set({
+            pendingRetake: {
+              pageId: page.id,
+              studentIndex: studentIndex !== undefined ? studentIndex : currentStudentIndex,
+              phase,
+              replaceIndex,
+              originalPageNumber: page.page_number,
+              originalFilePath: page.file_path,
+            }
+          });
+        }
+      },
+
       addPage: (page) => {
-        const { currentSession, currentPhase, currentStudentIndex, savedSessions } = get();
+        const { currentSession, currentPhase, currentStudentIndex, savedSessions, pendingRetake } = get();
         if (!currentSession) return;
 
         // IDENTITY PROTECTION: Prevent duplicate page insertions by ID
         const isDuplicate = (pages: ScannedPage[]) => (pages || []).some(p => p.id === page.id);
-        
+
         const updatedSession = { ...currentSession };
-        
-        // DETERMINISTIC NUMBERING: Calculate page_number inside the store to avoid rapid-fire duplicates
-        if (currentPhase === 'question_paper') {
-          if (!updatedSession.question_paper.pages) updatedSession.question_paper.pages = [];
-          if (isDuplicate(updatedSession.question_paper.pages)) return;
-          page.page_number = updatedSession.question_paper.pages.length + 1;
-          page.ui_id = `${updatedSession.session_id}_qp_${page.file_path}`;
-          updatedSession.question_paper.pages = [...updatedSession.question_paper.pages, page];
-          updatedSession.question_paper.page_count = updatedSession.question_paper.pages.length;
-        } else if (currentPhase === 'model_answer') {
-          if (!updatedSession.model_answer.pages) updatedSession.model_answer.pages = [];
-          if (isDuplicate(updatedSession.model_answer.pages)) return;
-          page.page_number = updatedSession.model_answer.pages.length + 1;
-          page.ui_id = `${updatedSession.session_id}_ma_${page.file_path}`;
-          updatedSession.model_answer.pages = [...updatedSession.model_answer.pages, page];
-          updatedSession.model_answer.page_count = updatedSession.model_answer.pages.length;
-        } else {
-          const updatedStudents = [...(updatedSession.students || [])];
-          const student = { ...updatedStudents[currentStudentIndex] };
-          if (student) {
-            if (!student.pages) student.pages = [];
-            if (isDuplicate(student.pages)) return;
-            page.page_number = student.pages.length + 1;
+
+        if (pendingRetake) {
+          // ==========================================
+          // ATOMIC RECAPTURE REPLACEMENT FLOW
+          // ==========================================
+          page.id = pendingRetake.pageId;
+          page.page_number = pendingRetake.originalPageNumber;
+          
+          if (pendingRetake.phase === 'question_paper') {
+            const pages = [...updatedSession.question_paper.pages];
+            page.ui_id = `${updatedSession.session_id}_qp_${page.file_path}`;
+            pages[pendingRetake.replaceIndex] = page;
+            updatedSession.question_paper.pages = pages;
+          } else if (pendingRetake.phase === 'model_answer') {
+            const pages = [...updatedSession.model_answer.pages];
+            page.ui_id = `${updatedSession.session_id}_ma_${page.file_path}`;
+            pages[pendingRetake.replaceIndex] = page;
+            updatedSession.model_answer.pages = pages;
+          } else {
+            const studentIdx = pendingRetake.studentIndex ?? currentStudentIndex;
+            const updatedStudents = [...(updatedSession.students || [])];
+            const student = { ...updatedStudents[studentIdx] };
+            const pages = [...(student.pages || [])];
+            
             page.ui_id = `${updatedSession.session_id}_${student.student_index}_${page.file_path}`;
-            student.pages = [...student.pages, page];
-            student.page_count = student.pages.length;
+            pages[pendingRetake.replaceIndex] = page;
+            
+            student.pages = pages;
             if (page.is_blurry) student.has_blurry_pages = true;
-            updatedStudents[currentStudentIndex] = student;
+            else student.has_blurry_pages = pages.some(p => p.is_blurry);
+            
+            updatedStudents[studentIdx] = student;
             updatedSession.students = updatedStudents;
+          }
+
+          // Trigger background file deletion for the old retaken image
+          FileSystem.deleteAsync(pendingRetake.originalFilePath, { idempotent: true }).catch(e => {
+            console.warn('[Recapture] Failed to delete original file:', e);
+          });
+
+          // Clear retake context since replacement is complete
+          set({ pendingRetake: null });
+        } else {
+          // ==========================================
+          // NORMAL APPEND FLOW
+          // ==========================================
+          if (currentPhase === 'question_paper') {
+            if (!updatedSession.question_paper.pages) updatedSession.question_paper.pages = [];
+            if (isDuplicate(updatedSession.question_paper.pages)) return;
+            page.page_number = updatedSession.question_paper.pages.length + 1;
+            page.ui_id = `${updatedSession.session_id}_qp_${page.file_path}`;
+            updatedSession.question_paper.pages = [...updatedSession.question_paper.pages, page];
+            updatedSession.question_paper.page_count = updatedSession.question_paper.pages.length;
+          } else if (currentPhase === 'model_answer') {
+            if (!updatedSession.model_answer.pages) updatedSession.model_answer.pages = [];
+            if (isDuplicate(updatedSession.model_answer.pages)) return;
+            page.page_number = updatedSession.model_answer.pages.length + 1;
+            page.ui_id = `${updatedSession.session_id}_ma_${page.file_path}`;
+            updatedSession.model_answer.pages = [...updatedSession.model_answer.pages, page];
+            updatedSession.model_answer.page_count = updatedSession.model_answer.pages.length;
+          } else {
+            const updatedStudents = [...(updatedSession.students || [])];
+            const student = { ...updatedStudents[currentStudentIndex] };
+            if (student) {
+              if (!student.pages) student.pages = [];
+              if (isDuplicate(student.pages)) return;
+              page.page_number = student.pages.length + 1;
+              page.ui_id = `${updatedSession.session_id}_${student.student_index}_${page.file_path}`;
+              student.pages = [...student.pages, page];
+              student.page_count = student.pages.length;
+              if (page.is_blurry) student.has_blurry_pages = true;
+              updatedStudents[currentStudentIndex] = student;
+              updatedSession.students = updatedStudents;
+            }
           }
         }
 
@@ -242,24 +337,24 @@ export const useScanStore = create<ScanState>()(
           newSavedSessions.unshift(updatedSession);
         }
 
-        set({ 
+        set({
           currentSession: updatedSession,
-          savedSessions: newSavedSessions 
+          savedSessions: newSavedSessions
         });
-        
-        get().syncCurrentMetadata().catch(err => 
+
+        get().syncCurrentMetadata().catch(err =>
           console.error("[Persistence] Failed to sync new page:", err)
         );
       },
 
-      removePage: (pageNumber, phaseOverride, studentIndexOverride) => {
+      removePage: (pageNumber: number, phaseOverride?: string, studentIndexOverride?: number) => {
         const { currentSession, currentPhase, currentStudentIndex, savedSessions } = get();
         if (!currentSession) return;
 
         const updatedSession = { ...currentSession };
         const phaseToUse = phaseOverride || currentPhase;
         let removed: ScannedPage | undefined;
-        
+
         if (phaseToUse === 'question_paper') {
           const pageIndex = updatedSession.question_paper.pages.findIndex(p => p.page_number === pageNumber);
           if (pageIndex > -1) {
@@ -307,13 +402,13 @@ export const useScanStore = create<ScanState>()(
           newSavedSessions[existingIndex] = updatedSession;
         }
 
-        set({ 
+        set({
           currentSession: updatedSession,
-          savedSessions: newSavedSessions 
+          savedSessions: newSavedSessions
         });
-        
+
         // Realtime Persistence: Sync removal
-        get().syncCurrentMetadata().catch(err => 
+        get().syncCurrentMetadata().catch(err =>
           console.error("[Persistence] Failed to sync page removal:", err)
         );
       },
@@ -324,15 +419,15 @@ export const useScanStore = create<ScanState>()(
 
         const updatedSession = { ...currentSession };
         const nextIndex = currentStudentIndex + 1;
-        
+
         // Finalize label for current student if they were just created and had no metadata
         // Actually, it's better to set metadata on the *new* student.
-        
+
         // Ensure student exists and has an ID
         if (nextIndex >= updatedSession.students.length) {
           const name = metadata?.name || null;
           const roll = metadata?.roll_number || null;
-          
+
           updatedSession.students = [
             ...updatedSession.students,
             {
@@ -369,8 +464,8 @@ export const useScanStore = create<ScanState>()(
           currentStudentIndex: nextIndex,
           currentPhase: 'students',
         });
-        
-        get().syncCurrentMetadata('student', nextIndex).catch(err => 
+
+        get().syncCurrentMetadata('student', nextIndex).catch(err =>
           console.error("[Persistence] Failed to sync next student:", err)
         );
       },
@@ -386,19 +481,19 @@ export const useScanStore = create<ScanState>()(
           student.roll_number = rollNumber || null;
           student.label = generateStudentLabel(student.student_index, student.name, student.roll_number);
           updatedSession.students[studentIndex] = student;
-          
+
           const existingIndex = savedSessions.findIndex(s => s.session_id === updatedSession.session_id);
           const newSavedSessions = [...savedSessions];
           if (existingIndex > -1) {
             newSavedSessions[existingIndex] = updatedSession;
           }
 
-          set({ 
+          set({
             currentSession: updatedSession,
             savedSessions: newSavedSessions
           });
-          
-          get().syncCurrentMetadata('student', studentIndex).catch(err => 
+
+          get().syncCurrentMetadata('student', studentIndex).catch(err =>
             console.error("[Persistence] Failed to sync student metadata:", err)
           );
         }
@@ -411,7 +506,7 @@ export const useScanStore = create<ScanState>()(
         }
       },
 
-      updateStudentBarcode: (studentIndex, barcodeData) => {
+      updateStudentBarcode: (studentIndex: number, barcodeData: { type: string; data: string; matched_name?: string }) => {
         const { currentSession } = get();
         if (!currentSession) return;
 
@@ -434,23 +529,23 @@ export const useScanStore = create<ScanState>()(
         if (!currentSession) return;
 
         const updatedSession = { ...currentSession, status: 'ready' as const };
-        
+
         // Filter out empty students
         updatedSession.students = updatedSession.students.filter(s => s.page_count > 0);
         updatedSession.stats.total_students = updatedSession.students.length;
-        
+
         // Update saved sessions
         const existingIndex = savedSessions.findIndex(s => s.session_id === updatedSession.session_id);
         const newSavedSessions = [...savedSessions];
-        
+
         if (existingIndex > -1) {
           newSavedSessions[existingIndex] = updatedSession;
         } else {
           newSavedSessions.unshift(updatedSession);
         }
 
-        set({ 
-          currentSession: null, 
+        set({
+          currentSession: null,
           savedSessions: newSavedSessions,
           isScanning: false,
           currentStudentIndex: 0,
@@ -469,27 +564,27 @@ export const useScanStore = create<ScanState>()(
 
         const existingIndex = savedSessions.findIndex(s => s.session_id === updatedSession.session_id);
         const newSavedSessions = [...savedSessions];
-        
+
         if (existingIndex > -1) {
           newSavedSessions[existingIndex] = updatedSession;
         } else {
           newSavedSessions.unshift(updatedSession);
         }
 
-        set({ 
+        set({
           currentSession: updatedSession,
-          savedSessions: newSavedSessions 
+          savedSessions: newSavedSessions
         });
       },
 
-      deleteSession: (sessionId) => {
+      deleteSession: (sessionId: string) => {
         const { savedSessions } = get();
-        set({ 
-          savedSessions: savedSessions.filter(s => s.session_id !== sessionId) 
+        set({
+          savedSessions: savedSessions.filter(s => s.session_id !== sessionId)
         });
       },
 
-      loadSession: (sessionId) => {
+      loadSession: (sessionId: string) => {
         const { savedSessions } = get();
         const session = savedSessions.find(s => s.session_id === sessionId);
         if (session) {
@@ -499,14 +594,14 @@ export const useScanStore = create<ScanState>()(
 
       updateSessionStatus: (sessionId, status, progress = 0) => {
         const { savedSessions, currentSession } = get();
-        
-        const newSavedSessions = savedSessions.map(s => 
+
+        const newSavedSessions = savedSessions.map(s =>
           s.session_id === sessionId ? { ...s, status, upload_progress: progress } : s
         );
-        
-        set({ 
+
+        set({
           savedSessions: newSavedSessions,
-          currentSession: currentSession?.session_id === sessionId 
+          currentSession: currentSession?.session_id === sessionId
             ? { ...currentSession, status, upload_progress: progress }
             : currentSession,
         });
@@ -515,9 +610,9 @@ export const useScanStore = create<ScanState>()(
       setFlashMode: (mode) => set({ flashMode: mode }),
       setAutoCaptureEnabled: (enabled) => set({ autoCaptureEnabled: enabled }),
       setAutoCropEnabled: (enabled) => set({ autoCropEnabled: enabled }),
-      
-      clearCurrentSession: () => set({ 
-        currentSession: null, 
+
+      clearCurrentSession: () => set({
+        currentSession: null,
         isScanning: false,
         currentStudentIndex: 0,
         currentPhase: 'question_paper',
@@ -529,7 +624,7 @@ export const useScanStore = create<ScanState>()(
 
         const updatedSession = { ...currentSession };
         let lastPage: ScannedPage | undefined;
-        
+
         if (currentPhase === 'question_paper' && updatedSession.question_paper.pages.length > 0) {
           const pages = [...updatedSession.question_paper.pages];
           lastPage = pages.pop();
@@ -567,13 +662,13 @@ export const useScanStore = create<ScanState>()(
           newSavedSessions[existingIndex] = updatedSession;
         }
 
-        set({ 
+        set({
           currentSession: updatedSession,
-          savedSessions: newSavedSessions 
+          savedSessions: newSavedSessions
         });
-        
+
         // Realtime Persistence: Sync undo
-        get().syncCurrentMetadata().catch(err => 
+        get().syncCurrentMetadata().catch(err =>
           console.error("[Persistence] Failed to sync undo:", err)
         );
       },
@@ -609,7 +704,7 @@ export const useScanStore = create<ScanState>()(
 
           const data = await response.json();
           const fetchedSessions = data.sessions || [];
-          
+
           // NORMALIZATION: Ensure all fetched sessions have accurate derived stats and ui_ids
           const normalizedSessions = fetchedSessions.map((s: ScanSession) => {
             // Apply ui_ids to all pages
@@ -643,15 +738,18 @@ export const useScanStore = create<ScanState>()(
         }
       },
 
-      syncCurrentMetadata: async () => {
+      syncCurrentMetadata: async (phaseOverride?: 'question_paper' | 'model_answer' | 'student', studentIndexOverride?: number) => {
         const { currentSession, currentPhase, currentStudentIndex } = get();
         if (!currentSession) return;
+
+        const phaseToUse = phaseOverride || currentPhase;
+        const studentIndexToUse = studentIndexOverride !== undefined ? studentIndexOverride : currentStudentIndex;
 
         try {
           const { useAuthStore } = await import('./authStore');
           const token = useAuthStore.getState().sessionToken;
           const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
-          
+
           if (!backendUrl) throw new Error("Missing EXPO_PUBLIC_BACKEND_URL");
 
           const authHeaders = {
@@ -662,21 +760,21 @@ export const useScanStore = create<ScanState>()(
           let endpoint = '';
           let body = {};
 
-          if (currentPhase === 'question_paper') {
+          if (phaseToUse === 'question_paper') {
             endpoint = `${backendUrl}/api/scan-sessions/${currentSession.session_id}/upload-qp`;
             body = { pages: currentSession.question_paper.pages };
-          } else if (currentPhase === 'model_answer') {
+          } else if (phaseToUse === 'model_answer') {
             endpoint = `${backendUrl}/api/scan-sessions/${currentSession.session_id}/upload-model`;
             body = { pages: currentSession.model_answer.pages };
           } else {
-            const student = currentSession.students[currentStudentIndex];
+            const student = currentSession.students[studentIndexToUse];
             if (!student) return;
             endpoint = `${backendUrl}/api/scan-sessions/${currentSession.session_id}/upload-student`;
             body = { student: student };
           }
 
           console.log(`[TRACE] syncCurrentMetadata: start for ${currentPhase} at ${Date.now()}...`);
-          
+
           const response = await fetch(endpoint, {
             method: 'POST',
             headers: authHeaders,
@@ -686,7 +784,7 @@ export const useScanStore = create<ScanState>()(
           if (!response.ok) {
             throw new Error(`Sync failed with status ${response.status}`);
           }
-          
+
           console.log(`[TRACE] syncCurrentMetadata: SUCCESS for ${currentPhase} at ${Date.now()}`);
         } catch (error) {
           console.error(`[TRACE] syncCurrentMetadata: FAILED for ${currentPhase} at ${Date.now()} with error:`, error);
@@ -701,7 +799,7 @@ export const useScanStore = create<ScanState>()(
         const qpPages = session.question_paper.pages;
         const maPages = session.model_answer.pages;
         const studentPages = session.students.flatMap(s => s.pages);
-        
+
         const allPages = [...qpPages, ...maPages, ...studentPages];
         let missingCount = 0;
 
@@ -723,7 +821,7 @@ export const useScanStore = create<ScanState>()(
       performPostHydrationCleanup: async () => {
         const state = get();
         console.log(`[TRACE] performPostHydrationCleanup: START at ${Date.now()}`);
-        
+
         // 1. Hardening: Reset interrupted uploads (moved from hydration callback)
         if (state.currentSession?.status === 'uploading') {
           console.log('[Persistence] Resetting stuck "uploading" session status');
@@ -732,7 +830,7 @@ export const useScanStore = create<ScanState>()(
 
         // 2. Scheduled Integrity Check
         await state.checkFileSystemIntegrity();
-        
+
         console.log(`[TRACE] performPostHydrationCleanup: FINISHED at ${Date.now()}`);
       },
     }),
@@ -749,7 +847,7 @@ export const useScanStore = create<ScanState>()(
           return new Promise<void>((resolve) => {
             const timeoutId = (global as any)[`debounce_${name}`];
             if (timeoutId) clearTimeout(timeoutId);
-            
+
             (global as any)[`debounce_${name}`] = setTimeout(async () => {
               try {
                 const writeStart = Date.now();
@@ -770,14 +868,14 @@ export const useScanStore = create<ScanState>()(
         },
       })),
       partialize: (state) => {
-        // HYDRATION ISOLATION: Do not persist hydration or transient UI flags
-        const { hasHydrated, isScanning, ...persistentState } = state;
-        
+        // HYDRATION ISOLATION: Do not persist hydration, transient UI flags, or retake context
+        const { hasHydrated, isScanning, pendingRetake, ...persistentState } = state;
+
         // Deeply strip base64 from sessions before persisting
         const cleanupSession = (session: any) => {
           if (!session) return null;
           const clean = { ...session };
-          
+
           if (clean.question_paper?.pages) {
             clean.question_paper.pages = clean.question_paper.pages.map(({ base64, ...p }: any) => p);
           }
@@ -808,19 +906,19 @@ export const useScanStore = create<ScanState>()(
           // setting it to true will NOT trigger a persistence write.
           const cleanupSession = (session: any) => {
             if (!session) return;
-            
+
             // BACKWARD COMPATIBILITY: Assign IDs if missing
             if (session.question_paper?.pages) {
-              session.question_paper.pages.forEach((p: any) => { 
-                delete p.base64; 
-                if (!p.id) p.id = generateUUID(); 
+              session.question_paper.pages.forEach((p: any) => {
+                delete p.base64;
+                if (!p.id) p.id = generateUUID();
                 p.ui_id = `${session.session_id}_qp_${p.file_path}`;
               });
             }
             if (session.model_answer?.pages) {
-              session.model_answer.pages.forEach((p: any) => { 
-                delete p.base64; 
-                if (!p.id) p.id = generateUUID(); 
+              session.model_answer.pages.forEach((p: any) => {
+                delete p.base64;
+                if (!p.id) p.id = generateUUID();
                 p.ui_id = `${session.session_id}_ma_${p.file_path}`;
               });
             }
@@ -828,8 +926,8 @@ export const useScanStore = create<ScanState>()(
               session.students.forEach((s: any) => {
                 if (!s.id) s.id = generateUUID();
                 if (s.pages) {
-                  s.pages.forEach((p: any) => { 
-                    delete p.base64; 
+                  s.pages.forEach((p: any) => {
+                    delete p.base64;
                     if (!p.id) p.id = generateUUID();
                     p.ui_id = `${session.session_id}_${s.student_index}_${p.file_path}`;
                   });
@@ -843,7 +941,7 @@ export const useScanStore = create<ScanState>()(
 
           state.savedSessions?.forEach(cleanupSession);
           cleanupSession(state.currentSession);
-          
+
           // HYDRATION ISOLATION: Mark hydration complete without triggering setItem
           state.setHasHydrated(true);
         }

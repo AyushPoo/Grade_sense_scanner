@@ -4,12 +4,12 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  Image,
   Dimensions,
   FlatList,
   Alert,
   ActivityIndicator,
 } from 'react-native';
+import { Image } from 'expo-image';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -27,7 +27,7 @@ export default function PagePreviewScreen() {
     studentIndex?: string;
   }>();
 
-  const { currentSession, removePage, currentPhase, currentStudentIndex } = useScanStore();
+  const { currentSession, removePage, startRetake, currentPhase, currentStudentIndex } = useScanStore();
   const flatListRef = useRef<FlatList>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [imageLoading, setImageLoading] = useState(true);
@@ -109,12 +109,12 @@ export default function PagePreviewScreen() {
         {
           text: 'Retake',
           onPress: () => {
-            // Delete current page and go back to scanner
+            // Initiate transactional retake instead of immediate deletion
             const currentPage = pages[currentIndex];
             if (currentPage) {
               const phaseToUse = phase || currentPhase;
               const studentIdx = studentIndex ? parseInt(studentIndex) : undefined;
-              removePage(currentPage.page_number, phaseToUse as ScanPhase, studentIdx);
+              startRetake(currentPage, phaseToUse as ScanPhase, studentIdx);
             }
             router.back();
           },
@@ -137,7 +137,9 @@ export default function PagePreviewScreen() {
           <Image
             source={{ uri: item.file_path }}
             style={styles.image}
-            resizeMode="contain"
+            contentFit="contain"
+            cachePolicy="memory-disk"
+            transition={0}
             onLoadStart={() => setImageLoading(true)}
             onLoadEnd={() => setImageLoading(false)}
           />
@@ -211,7 +213,7 @@ export default function PagePreviewScreen() {
         ref={flatListRef}
         data={pages}
         renderItem={renderPage}
-        keyExtractor={(item) => `page-${item.page_number}`}
+        keyExtractor={(item) => item.id}
         horizontal
         pagingEnabled
         showsHorizontalScrollIndicator={false}

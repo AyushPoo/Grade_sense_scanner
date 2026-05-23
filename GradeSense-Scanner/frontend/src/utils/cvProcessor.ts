@@ -383,8 +383,8 @@ export async function nativeProcessImage(
           if (data.enhanced_image) {
             console.log('[ISOLATION] FileSystem.writeAsString: START');
             const enhancedFile = new File(Paths.document, `proc_${Date.now()}.jpg`);
-            // write() accepts a string; for base64, we write the raw base64 data string
-            enhancedFile.write(data.enhanced_image);
+            // write() accepts a string; for base64, we write the raw base64 data string with correct encoding
+            enhancedFile.write(data.enhanced_image, { encoding: 'base64' });
             
             // CLEANUP: Delete the intermediate resized image to save space
             try {
