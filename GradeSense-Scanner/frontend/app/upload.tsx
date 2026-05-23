@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { COLORS } from '../src/config';
 import { useScanStore } from '../src/store/scanStore';
+import { useShallow } from 'zustand/react/shallow';
 import { ScanSession } from '../src/types';
 import { uploadSessionToWebApp } from '../src/api/export';
 
@@ -39,7 +40,20 @@ const progressStyles = StyleSheet.create({
 export default function UploadScreen() {
   const router = useRouter();
   const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
-  const { savedSessions, updateSessionStatus } = useScanStore();
+
+  // ── DEV INSTRUMENTATION (Phase 1) ──────────────────────────────────────────
+  const renderCountRef = useRef(0);
+  renderCountRef.current++;
+  if (__DEV__) {
+    console.log(`[RENDER] UploadScreen: count=${renderCountRef.current}`);
+  }
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // ── PHASE 1 FIX: Granular selectors — UploadScreen is now isolated from broad store changes.
+  const updateSessionStatus = useScanStore(state => state.updateSessionStatus);
+  const sessionDataFromStore = useScanStore(useShallow(state => 
+    state.savedSessions.find(s => s.session_id === sessionId) || null
+  ));
   
   const [session, setSession] = useState<ScanSession | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -49,7 +63,7 @@ export default function UploadScreen() {
 
   useEffect(() => {
     if (sessionId) {
-      const found = savedSessions.find(s => s.session_id === sessionId);
+      const found = sessionDataFromStore;
       if (found) {
         setSession(found);
         if (found.status === 'uploaded') {
@@ -58,7 +72,7 @@ export default function UploadScreen() {
         }
       }
     }
-  }, [sessionId, savedSessions]);
+  }, [sessionId, sessionDataFromStore]);
 
   const simulateUpload = async () => {
     if (!session) return;

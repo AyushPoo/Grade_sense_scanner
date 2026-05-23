@@ -22,6 +22,15 @@ export interface PendingRetake {
   originalFilePath: string;
 }
 
+export type QualityLevel = 'green' | 'yellow' | 'red';
+
+export function qualityScore(sharpnessScore: number, isBlurry: boolean): QualityLevel {
+  // sharpnessScore is a 0–100 value from blurDetection
+  if (!isBlurry && sharpnessScore >= 60) return 'green';
+  if (sharpnessScore >= 30) return 'yellow';
+  return 'red';
+}
+
 interface ScanState {
   // Current session
   currentSession: ScanSession | null;
@@ -70,6 +79,10 @@ interface ScanState {
   deleteBatch: (batchId: string) => void;
   startRetake: (page: ScannedPage, phase: ScanPhase, studentIndex?: number) => void;
   clearRetake: () => void;
+  setRetake: (retake: PendingRetake) => void;
+  silentNextStudent: () => void;
+  renameStudent: (studentIndex: number, newLabel: string) => void;
+  deletePage: (studentIndex: number, pageIndex: number, phase?: string) => void;
 }
 
 const createEmptySession = (): Partial<ScanSession> => ({
@@ -185,7 +198,7 @@ export const useScanStore = create<ScanState>()(
           // Initialize first student
           session.students = [{
             id: generateUUID(),
-            student_index: 1,
+            student_index: 0,
             label: 'Student #1',
             page_count: 0,
             has_blurry_pages: false,
@@ -249,6 +262,22 @@ export const useScanStore = create<ScanState>()(
         const isDuplicate = (pages: ScannedPage[]) => (pages || []).some(p => p.id === page.id);
 
         const updatedSession = { ...currentSession };
+
+        // GUARD: ensure the current student slot exists
+        if (currentPhase === 'students' && !updatedSession.students[currentStudentIndex]) {
+          const students = [...updatedSession.students];
+          while (students.length <= currentStudentIndex) {
+            students.push({
+              id: generateUUID(),
+              student_index: students.length,
+              label: `Student #${students.length + 1}`,
+              pages: [],
+              page_count: 0,
+              has_blurry_pages: false,
+            });
+          }
+          updatedSession.students = students;
+        }
 
         if (pendingRetake) {
           // ==========================================
@@ -832,6 +861,113 @@ export const useScanStore = create<ScanState>()(
         await state.checkFileSystemIntegrity();
 
         console.log(`[TRACE] performPostHydrationCleanup: FINISHED at ${Date.now()}`);
+      },
+
+      setRetake: (retake: PendingRetake) => {
+        // Called from review screen when teacher taps "Recapture" on a page.
+        // Scanner reads pendingRetake on next addPage and replaces instead of appending.
+        set({ pendingRetake: retake });
+      },
+
+      silentNextStudent: () => {
+        // No modal. Auto-advance. Teacher names students later in review.
+        const { currentSession, currentStudentIndex, savedSessions } = get();
+        if (!currentSession) return;
+
+        const nextIdx = currentStudentIndex + 1;
+        const updatedSession = { ...currentSession };
+        const students = [...updatedSession.students];
+
+        // Ensure current slot exists before advancing
+        if (students.length === 0) {
+          students.push({
+            id: generateUUID(),
+            student_index: 0,
+            label: 'Student #1',
+            pages: [],
+            page_count: 0,
+            has_blurry_pages: false,
+          });
+        }
+
+        // Add next student slot
+        if (nextIdx >= students.length) {
+          students.push({
+            id: generateUUID(),
+            student_index: nextIdx,
+            label: `Student #${nextIdx + 1}`,
+            pages: [],
+            page_count: 0,
+            has_blurry_pages: false,
+          });
+        }
+
+        updatedSession.students = students;
+        updatedSession.stats = recomputeStats(updatedSession);
+
+        const newSavedSessions = [...savedSessions];
+        const existingIndex = newSavedSessions.findIndex(s => s.session_id === updatedSession.session_id);
+        if (existingIndex > -1) {
+          newSavedSessions[existingIndex] = updatedSession;
+        }
+
+        set({
+          currentSession: updatedSession,
+          currentStudentIndex: nextIdx,
+          currentPhase: 'students',
+          savedSessions: newSavedSessions,
+        });
+      },
+
+      // ── Rename studentLabel inline from review ────────────────────────────────
+      renameStudent: (studentIndex: number, newLabel: string) => {
+        const { currentSession, savedSessions } = get();
+        if (!currentSession) return;
+        const updatedSession = { ...currentSession };
+        const student = { ...updatedSession.students[studentIndex] };
+        student.label = newLabel.trim() || student.label;
+        updatedSession.students[studentIndex] = student;
+        
+        const newSavedSessions = [...savedSessions];
+        const existingIndex = newSavedSessions.findIndex(s => s.session_id === updatedSession.session_id);
+        if (existingIndex > -1) {
+          newSavedSessions[existingIndex] = updatedSession;
+        }
+
+        set({
+          currentSession: updatedSession,
+          savedSessions: newSavedSessions,
+        });
+      },
+
+      // ── Delete a single page (for review screen "remove" action) ─────────────
+      deletePage: (studentIndex: number, pageIndex: number, phase?: string) => {
+        const { currentSession, savedSessions } = get();
+        if (!currentSession) return;
+        const updatedSession = { ...currentSession };
+
+        if (phase === 'students') {
+          const student = { ...updatedSession.students[studentIndex] };
+          const pages = [...student.pages];
+          pages.splice(pageIndex, 1);
+          // Re-number
+          student.pages = pages.map((p, i) => ({ ...p, page_number: i + 1 }));
+          student.page_count = student.pages.length;
+          updatedSession.students[studentIndex] = student;
+        }
+
+        updatedSession.stats = recomputeStats(updatedSession);
+        
+        const newSavedSessions = [...savedSessions];
+        const existingIndex = newSavedSessions.findIndex(s => s.session_id === updatedSession.session_id);
+        if (existingIndex > -1) {
+          newSavedSessions[existingIndex] = updatedSession;
+        }
+
+        set({
+          currentSession: updatedSession,
+          savedSessions: newSavedSessions,
+        });
       },
     }),
     {

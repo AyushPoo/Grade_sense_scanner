@@ -55,6 +55,14 @@ export const DocumentContourOverlay = React.memo<DocumentContourOverlayProps>(
     const [displayDimensions, setDisplayDimensions] = useState<{ width: number; height: number } | null>(null);
     const [displayReadiness, setDisplayReadiness] = useState<number>(0);
 
+    // ── RENDER INSTRUMENTATION (Phase 2) ──────────────────────────────────────
+    const renderCountRef = useRef(0);
+    renderCountRef.current++;
+    if (__DEV__) {
+      console.log(`[RENDER] DocumentContourOverlay: count=${renderCountRef.current}, detection=${quadrilateral ? 'YES' : 'NO'}`);
+    }
+    // ─────────────────────────────────────────────────────────────────────────────
+
     useEffect(() => {
       if (isPaused) {
         setDisplayQuad(null);

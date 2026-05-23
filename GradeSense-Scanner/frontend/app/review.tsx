@@ -5,133 +5,161 @@ import {
   StyleSheet,
   TouchableOpacity,
   ScrollView,
-  Alert,
-  Modal,
   FlatList,
+  TextInput,
   Dimensions,
+  Alert,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { COLORS } from '../src/config';
-import { useScanStore } from '../src/store/scanStore';
+import { useScanStore, qualityScore, QualityLevel, PendingRetake } from '../src/store/scanStore';
+import { useShallow } from 'zustand/react/shallow';
 import { ScannedStudent, ScannedPage } from '../src/types';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
-// ─────────────────────────────────────────────────────────────────────────────
-// LEVEL 1: Atomic thumbnail cell.
-// React.memo at this level ensures the cell never rerenders unless page data
-// or onPress reference changes. Memoized at module level — not inside any
-// render function — so React preserves the fiber identity permanently.
-// ─────────────────────────────────────────────────────────────────────────────
-interface ReviewThumbnailItemProps {
+// ── Quality badge colours ─────────────────────────────────────────────────────
+const QUALITY_COLORS: Record<QualityLevel, { bg: string; text: string; label: string }> = {
+  green:  { bg: '#1D9E75', text: '#fff', label: 'Clear' },
+  yellow: { bg: '#EF9F27', text: '#fff', label: 'Fair' },
+  red:    { bg: '#E24B4A', text: '#fff', label: 'Blurry' },
+};
+
+// ── Page thumbnail with quality badge + actions ───────────────────────────────
+const PageThumb = memo(({
+  page,
+  pageIndex,
+  student,
+  onRetake,
+  onDelete,
+  onPreview,
+}: {
   page: ScannedPage;
   pageIndex: number;
-  onPress: (pageIndex: number) => void;
-}
-
-const ReviewThumbnailItem = memo(({ page, pageIndex, onPress }: ReviewThumbnailItemProps) => {
-  // Stable press handler — only recreated if onPress or pageIndex change.
-  const handlePress = useCallback(() => onPress(pageIndex), [onPress, pageIndex]);
+  student: ScannedStudent;
+  onRetake: (student: ScannedStudent, page: ScannedPage, pageIndex: number) => void;
+  onDelete: (studentIndex: number, pageIndex: number) => void;
+  onPreview: (student: ScannedStudent, pageIndex: number) => void;
+}) => {
+  const quality = qualityScore(page.sharpness_score ?? 0, page.is_blurry ?? false);
+  const qc      = QUALITY_COLORS[quality];
 
   return (
-    <TouchableOpacity
-      style={styles.pageThumb}
-      onPress={handlePress}
-      activeOpacity={0.8}
-    >
-      {page.file_path ? (
+    <View style={styles.thumbContainer}>
+      <TouchableOpacity onPress={() => onPreview(student, pageIndex)} activeOpacity={0.8}>
         <Image
           source={{ uri: page.file_path }}
-          style={styles.pageThumbImage}
+          style={styles.thumbImage}
           contentFit="cover"
-          cachePolicy="memory-disk"
-          transition={0}
         />
-      ) : (
-        <View style={styles.pageThumbPlaceholder}>
-          <Ionicons name="document" size={24} color={COLORS.textMuted} />
+
+        {/* Page number badge */}
+        <View style={styles.pageNumBadge}>
+          <Text style={styles.pageNumText}>P{page.page_number}</Text>
         </View>
-      )}
-      <View style={styles.pageThumbBadge}>
-        <Text style={styles.pageThumbBadgeText}>P{page.page_number}</Text>
+
+        {/* Quality badge */}
+        <View style={[styles.qualityBadge, { backgroundColor: qc.bg }]}>
+          <Text style={[styles.qualityText, { color: qc.text }]}>{qc.label}</Text>
+        </View>
+      </TouchableOpacity>
+
+      {/* Actions row */}
+      <View style={styles.thumbActions}>
+        <TouchableOpacity
+          style={styles.thumbActionBtn}
+          onPress={() => onRetake(student, page, pageIndex)}
+        >
+          <Ionicons name="camera-outline" size={14} color={COLORS.primary} />
+          <Text style={styles.thumbActionLabel}>Retake</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.thumbActionBtn}
+          onPress={() => {
+            Alert.alert('Delete page', 'Remove this scan?', [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Delete', style: 'destructive', onPress: () => onDelete(student.student_index, pageIndex) },
+            ]);
+          }}
+        >
+          <Ionicons name="trash-outline" size={14} color={COLORS.danger ?? '#E24B4A'} />
+        </TouchableOpacity>
       </View>
-      {page.is_blurry && (
-        <View style={styles.blurryIndicator}>
-          <Ionicons name="warning" size={12} color={COLORS.warning} />
-        </View>
-      )}
-    </TouchableOpacity>
+    </View>
   );
 });
-ReviewThumbnailItem.displayName = 'ReviewThumbnailItem';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// LEVEL 2: Student card with its own thumbnail FlatList.
-// React.memo boundary here is the primary fix: when `previewModal` state
-// updates in ReviewScreen, StudentCard will NOT rerender because its props
-// (student, isExpanded, onToggle, onPagePress) remain referentially stable.
-// ─────────────────────────────────────────────────────────────────────────────
-interface StudentCardProps {
-  student: ScannedStudent;
-  isExpanded: boolean;
-  onToggle: (studentIndex: number) => void;
-  onPagePress: (student: ScannedStudent, pageIndex: number) => void;
-}
+// ── Student card ──────────────────────────────────────────────────────────────
+const StudentCard = memo(({
+  student,
+  isExpanded,
+  onToggle,
+  onRetake,
+  onDelete,
+  onPreview,
+  onRename,
+}: any) => {
+  const [editingName, setEditingName] = useState(false);
+  const [nameInput, setNameInput]     = useState(student.label);
+  const inputRef = useRef<TextInput>(null);
 
-const StudentCard = memo(({ student, isExpanded, onToggle, onPagePress }: StudentCardProps) => {
-  // Stable toggle handler — derived from stable parent `onToggle` callback.
-  const handleToggle = useCallback(
-    () => onToggle(student.student_index),
-    [onToggle, student.student_index]
-  );
+  const startEdit = () => {
+    setEditingName(true);
+    setTimeout(() => inputRef.current?.focus(), 50);
+  };
 
-  // Stable page-press handler scoped to this student.
-  const handlePagePress = useCallback(
-    (pageIndex: number) => onPagePress(student, pageIndex),
-    [onPagePress, student]
-  );
+  const commitName = () => {
+    setEditingName(false);
+    if (nameInput.trim() && nameInput.trim() !== student.label) {
+      onRename(student.student_index, nameInput.trim());
+    }
+  };
 
-  // Stable renderItem for the thumbnail FlatList.
-  // Only recreated when handlePagePress changes (which requires store update).
-  const renderThumbnailItem = useCallback(
-    ({ item: page, index: pageIdx }: { item: ScannedPage; index: number }) => (
-      <ReviewThumbnailItem
-        page={page}
-        pageIndex={pageIdx}
-        onPress={handlePagePress}
-      />
-    ),
-    [handlePagePress]
-  );
+  // Aggregate quality for header dot
+  const worstQuality: QualityLevel = student.pages.some(
+    (p: ScannedPage) => qualityScore(p.sharpness_score ?? 0, p.is_blurry ?? false) === 'red'
+  ) ? 'red'
+    : student.pages.some(
+    (p: ScannedPage) => qualityScore(p.sharpness_score ?? 0, p.is_blurry ?? false) === 'yellow'
+  ) ? 'yellow'
+    : 'green';
+
+  const showDot = student.page_count > 0;
 
   return (
     <View style={styles.studentCard}>
-      <TouchableOpacity
-        style={styles.studentHeader}
-        onPress={handleToggle}
-        activeOpacity={0.7}
-      >
-        <View style={styles.studentIcon}>
-          <Ionicons name="person" size={20} color={COLORS.primary} />
-        </View>
+      <TouchableOpacity style={styles.studentHeader} onPress={() => onToggle(student.student_index)}>
+        {/* Quality dot */}
+        {showDot && (
+          <View style={[styles.qualityDot, { backgroundColor: QUALITY_COLORS[worstQuality].bg }]} />
+        )}
+
         <View style={styles.studentInfo}>
-          <Text style={styles.studentName}>{student.label}</Text>
+          {editingName ? (
+            <TextInput
+              ref={inputRef}
+              style={styles.studentNameInput}
+              value={nameInput}
+              onChangeText={setNameInput}
+              onBlur={commitName}
+              onSubmitEditing={commitName}
+              returnKeyType="done"
+              selectTextOnFocus
+            />
+          ) : (
+            <TouchableOpacity onPress={startEdit} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Text style={styles.studentName}>{student.label}</Text>
+            </TouchableOpacity>
+          )}
           <Text style={styles.studentMeta}>
-            {student.page_count} pages
-            {(student.roll_number || student.barcode_data?.data) &&
-              ` • Roll: ${student.roll_number || student.barcode_data?.data}`}
+            {student.page_count > 0 ? `${student.page_count} page${student.page_count !== 1 ? 's' : ''}` : 'No pages yet'}
           </Text>
         </View>
-        <View style={styles.studentStatus}>
-          {student.has_blurry_pages ? (
-            <Ionicons name="warning" size={18} color={COLORS.warning} />
-          ) : (
-            <Ionicons name="checkmark-circle" size={18} color={COLORS.success} />
-          )}
-        </View>
+
         <Ionicons
           name={isExpanded ? 'chevron-up' : 'chevron-down'}
           size={20}
@@ -140,768 +168,241 @@ const StudentCard = memo(({ student, isExpanded, onToggle, onPagePress }: Studen
       </TouchableOpacity>
 
       {isExpanded && (
-        <View style={styles.pagesGrid}>
-          {student.pages.length === 0 ? (
-            <Text style={styles.noPagesText}>No pages scanned</Text>
-          ) : (
+        <View style={styles.pagesRow}>
+          {student.pages.length > 0 ? (
             <FlatList
               data={student.pages}
               horizontal
               showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.pagesScrollContent}
-              keyExtractor={(page) => page.id}
-              initialNumToRender={6}
-              maxToRenderPerBatch={6}
-              windowSize={3}
-              // removeClippedSubviews disabled: horizontal strips have few items.
-              // Enabling it can cause blank-cell layout bugs on cell recycle.
-              removeClippedSubviews={false}
-              renderItem={renderThumbnailItem}
+              keyExtractor={(item) => item.id}
+              contentContainerStyle={{ paddingHorizontal: 12, gap: 10 }}
+              renderItem={({ item, index }) => (
+                <PageThumb
+                  page={item}
+                  pageIndex={index}
+                  student={student}
+                  onRetake={onRetake}
+                  onDelete={onDelete}
+                  onPreview={onPreview}
+                />
+              )}
             />
+          ) : (
+            <Text style={styles.emptyLabel}>No pages scanned yet</Text>
           )}
         </View>
       )}
     </View>
   );
 });
-StudentCard.displayName = 'StudentCard';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// LEVEL 3: Fullscreen preview modal — completely isolated in its own component.
-// Moving the preview FlatList into its own component fiber means React will
-// NEVER co-reconcile it with the thumbnail FlatLists. Any state change inside
-// PreviewModal stays inside PreviewModal.
-// ─────────────────────────────────────────────────────────────────────────────
-interface PreviewModalState {
-  visible: boolean;
-  pages: ScannedPage[];
-  currentIndex: number;
-  studentLabel: string;
-}
-
-interface PreviewModalProps {
-  state: PreviewModalState;
-  flatListRef: React.RefObject<FlatList | null>;
-  onClose: () => void;
-  onIndexChange: (index: number) => void;
-}
-
-const PreviewModal = memo(({ state, flatListRef, onClose, onIndexChange }: PreviewModalProps) => {
-  // Stable renderItem for the full-screen swipe FlatList.
-  const renderPreviewItem = useCallback(
-    ({ item }: { item: ScannedPage }) => (
-      <View style={styles.modalImageContainer}>
-        {item.file_path ? (
-          <Image
-            source={{ uri: item.file_path }}
-            style={styles.modalImage}
-            contentFit="contain"
-            cachePolicy="memory-disk"
-            transition={0}
-          />
-        ) : (
-          <View style={styles.modalNoImage}>
-            <Ionicons name="image-outline" size={64} color={COLORS.textMuted} />
-            <Text style={styles.modalNoImageText}>No preview</Text>
-          </View>
-        )}
-      </View>
-    ),
-    []
-  );
-
-  // Stable renderItem for the pagination dot strip.
-  // Depends on currentIndex to highlight the active dot.
-  const renderPaginationDot = useCallback(
-    ({ item, index }: { item: ScannedPage; index: number }) => (
-      <TouchableOpacity
-        onPress={() => {
-          onIndexChange(index);
-          flatListRef.current?.scrollToIndex({ index, animated: true });
-        }}
-        style={[
-          styles.paginationDot,
-          state.currentIndex === index && styles.paginationDotActive,
-        ]}
-      />
-    ),
-    [state.currentIndex, onIndexChange, flatListRef]
-  );
-
-  const handleMomentumScrollEnd = useCallback(
-    (e: any) => {
-      const index = Math.round(e.nativeEvent.contentOffset.x / SCREEN_WIDTH);
-      onIndexChange(index);
-    },
-    [onIndexChange]
-  );
-
-  return (
-    <Modal
-      visible={state.visible}
-      animationType="fade"
-      transparent={false}
-      onRequestClose={onClose}
-    >
-      <SafeAreaView style={styles.modalContainer}>
-        <View style={styles.modalHeader}>
-          <TouchableOpacity onPress={onClose} style={styles.modalCloseBtn}>
-            <Ionicons name="close" size={28} color={COLORS.text} />
-          </TouchableOpacity>
-          <View style={styles.modalHeaderInfo}>
-            <Text style={styles.modalTitle}>
-              {state.studentLabel} - Page {state.pages[state.currentIndex]?.page_number}
-            </Text>
-            <Text style={styles.modalSubtitle}>
-              {state.currentIndex + 1} of {state.pages.length}
-            </Text>
-          </View>
-          <View style={{ width: 44 }} />
-        </View>
-
-        {state.pages.length > 1 && (
-          <FlatList
-            horizontal
-            data={state.pages}
-            // FIX: Use item.id (UUID) — same key strategy as thumbnail FlatList.
-            // Previously used item.ui_id which is regenerated after retakes,
-            // causing asymmetric React reconciliation between the two FlatLists.
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={styles.modalPagination}
-            showsHorizontalScrollIndicator={false}
-            renderItem={renderPaginationDot}
-          />
-        )}
-
-        <FlatList
-          ref={flatListRef}
-          data={state.pages}
-          horizontal
-          pagingEnabled
-          showsHorizontalScrollIndicator={false}
-          initialScrollIndex={state.currentIndex}
-          getItemLayout={(_, index) => ({
-            length: SCREEN_WIDTH,
-            offset: SCREEN_WIDTH * index,
-            index,
-          })}
-          onMomentumScrollEnd={handleMomentumScrollEnd}
-          renderItem={renderPreviewItem}
-          keyExtractor={(item) => item.id}
-        />
-
-        {state.pages.length > 1 && (
-          <View style={styles.swipeHint}>
-            <Ionicons name="swap-horizontal" size={16} color={COLORS.textMuted} />
-            <Text style={styles.swipeHintText}>Swipe to view other pages</Text>
-          </View>
-        )}
-      </SafeAreaView>
-    </Modal>
-  );
-});
-PreviewModal.displayName = 'PreviewModal';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ROOT: ReviewScreen
-// Only owns: session data subscription, expand state, preview modal state.
-// Student rendering is fully delegated to StudentCard (memoized).
-// Preview rendering is fully delegated to PreviewModal (memoized).
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Main ReviewScreen ─────────────────────────────────────────────────────────
 export default function ReviewScreen() {
   const router = useRouter();
   const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
-  const savedSessions = useScanStore(state => state.savedSessions);
-  const currentSession = useScanStore(state => state.currentSession);
 
-  const session = sessionId
-    ? savedSessions.find(s => s.session_id === sessionId) || null
-    : currentSession;
+  const session = useScanStore(useShallow(state => {
+    const sId = sessionId || state.currentSession?.session_id;
+    return state.savedSessions.find(s => s.session_id === sId) || state.currentSession;
+  }));
 
-  const flatListRef = useRef<FlatList>(null);
-  const [expandedStudents, setExpandedStudents] = useState<Set<number>>(new Set());
-  const [previewModal, setPreviewModal] = useState<PreviewModalState>({
-    visible: false,
-    pages: [],
-    currentIndex: 0,
-    studentLabel: '',
+  const { setRetake, deletePage, renameStudent } = useScanStore(useShallow(state => ({
+    setRetake:     state.setRetake,
+    deletePage:    state.deletePage,
+    renameStudent: state.renameStudent,
+  })));
+
+  const [expandedStudents, setExpandedStudents] = useState<Set<number>>(() => {
+    // Auto-expand students that have quality issues
+    const initial = new Set<number>();
+    session?.students.forEach(s => {
+      if (s.pages.some(p => qualityScore(p.sharpness_score ?? 0, p.is_blurry ?? false) !== 'green')) {
+        initial.add(s.student_index);
+      }
+    });
+    return initial;
   });
 
-  // ── Stable handlers ────────────────────────────────────────────────────────
-
-  const handleUpload = useCallback(() => {
-    if (session) {
-      router.push({ pathname: '/upload', params: { sessionId: session.session_id } });
-    }
-  }, [session, router]);
-
-  // Uses functional updater — does not capture `expandedStudents` in closure.
-  const handleToggleStudent = useCallback((studentIndex: number) => {
+  const handleToggle = useCallback((studentIndex: number) => {
     setExpandedStudents(prev => {
       const next = new Set(prev);
-      if (next.has(studentIndex)) {
-        next.delete(studentIndex);
-      } else {
-        next.add(studentIndex);
-      }
+      next.has(studentIndex) ? next.delete(studentIndex) : next.add(studentIndex);
       return next;
     });
   }, []);
 
-  // Opens preview for a given student + page. Stable: no deps on other state.
-  const handleOpenPagePreview = useCallback((student: ScannedStudent, pageIndex: number) => {
-    setPreviewModal({
-      visible: true,
-      pages: student.pages,
-      currentIndex: pageIndex,
-      studentLabel: student.label,
+  const handleRetake = useCallback((
+    student: ScannedStudent,
+    page: ScannedPage,
+    pageIndex: number,
+  ) => {
+    setRetake({
+      pageId:              page.id,
+      studentIndex:        student.student_index,
+      phase:               'students',
+      replaceIndex:        pageIndex,
+      originalPageNumber:  page.page_number,
+      originalFilePath:    page.file_path,
     });
-  }, []);
+    // Push back to scanner — it will show the retake banner automatically
+    router.push('/scanner');
+  }, [setRetake, router]);
 
-  // Uses functional updater — does not capture `previewModal` in closure.
-  const handleClosePreview = useCallback(() => {
-    setPreviewModal(prev => ({ ...prev, visible: false }));
-  }, []);
+  const handleDelete = useCallback((studentIndex: number, pageIndex: number) => {
+    deletePage(studentIndex, pageIndex, 'students');
+  }, [deletePage]);
 
-  // Uses functional updater — does not capture `previewModal` in closure.
-  const handlePreviewIndexChange = useCallback((index: number) => {
-    setPreviewModal(prev => ({ ...prev, currentIndex: index }));
-  }, []);
+  const handlePreview = useCallback((student: ScannedStudent, pageIndex: number) => {
+    // Navigate to a full-screen preview — implement as a modal route
+    router.push({
+      pathname: '/page-preview',
+      params: {
+        studentIndex: student.student_index,
+        pageNumber: student.pages[pageIndex]?.page_number.toString(),
+        phase: 'students',
+      },
+    });
+  }, [router, session]);
 
-  // ── Utility ────────────────────────────────────────────────────────────────
+  const handleRename = useCallback((studentIndex: number, newLabel: string) => {
+    renameStudent(studentIndex, newLabel);
+  }, [renameStudent]);
 
-  const formatBytes = (bytes: number) => {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
-
-  // ── Empty state guard ──────────────────────────────────────────────────────
+  // ── Summary stats ─────────────────────────────────────────────────────────
+  const stats = React.useMemo(() => {
+    if (!session) return { total: 0, green: 0, yellow: 0, red: 0 };
+    let green = 0, yellow = 0, red = 0;
+    session.students.forEach(s => {
+      s.pages.forEach(p => {
+        const q = qualityScore(p.sharpness_score ?? 0, p.is_blurry ?? false);
+        if (q === 'green') green++;
+        else if (q === 'yellow') yellow++;
+        else red++;
+      });
+    });
+    return { total: green + yellow + red, green, yellow, red };
+  }, [session]);
 
   if (!session) {
     return (
       <SafeAreaView style={styles.container}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-            <Ionicons name="arrow-back" size={24} color={COLORS.text} />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>Review Session</Text>
-          <View style={{ width: 40 }} />
-        </View>
-        <View style={styles.emptyState}>
-          <Ionicons name="document-text-outline" size={64} color={COLORS.textMuted} />
-          <Text style={styles.emptyText}>Session not found</Text>
-          <TouchableOpacity style={styles.goBackBtn} onPress={() => router.back()}>
-            <Text style={styles.goBackBtnText}>Go Back</Text>
-          </TouchableOpacity>
-        </View>
+        <Text style={styles.emptyLabel}>No session found</Text>
       </SafeAreaView>
     );
   }
 
-  const studentsWithPages = session.students.filter(s => s.page_count > 0);
-
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.container}>
+      {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <Ionicons name="arrow-back" size={24} color={COLORS.text} />
+        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+          <Ionicons name="arrow-back" size={22} color={COLORS.textPrimary} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Review Session</Text>
-        <View style={{ width: 40 }} />
-      </View>
-
-      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-        {/* Session Info */}
-        <View style={styles.sessionInfo}>
-          <Ionicons name="document-text" size={36} color={COLORS.primary} />
+        <View style={{ flex: 1 }}>
           <Text style={styles.sessionName}>{session.session_name}</Text>
           <Text style={styles.batchName}>{session.batch_name}</Text>
         </View>
+        <TouchableOpacity onPress={() => router.push('/scanner')} style={styles.scanMoreBtn}>
+          <Ionicons name="camera-outline" size={18} color={COLORS.primary} />
+          <Text style={styles.scanMoreText}>Scan more</Text>
+        </TouchableOpacity>
+      </View>
 
-        {/* Quick Stats */}
-        <View style={styles.statsRow}>
-          <View style={styles.statBox}>
-            <Text style={styles.statValue}>{studentsWithPages.length}</Text>
-            <Text style={styles.statLabel}>Students</Text>
-          </View>
-          <View style={styles.statBox}>
-            <Text style={styles.statValue}>{session.stats.total_pages}</Text>
-            <Text style={styles.statLabel}>Pages</Text>
-          </View>
-          <View style={styles.statBox}>
-            <Text style={styles.statValue}>{formatBytes(session.stats.total_size_bytes)}</Text>
-            <Text style={styles.statLabel}>Size</Text>
-          </View>
+      {/* Quality summary bar */}
+      <View style={styles.summaryBar}>
+        <View style={styles.summaryItem}>
+          <View style={[styles.summaryDot, { backgroundColor: QUALITY_COLORS.green.bg }]} />
+          <Text style={styles.summaryCount}>{stats.green}</Text>
+          <Text style={styles.summaryLabel}>clear</Text>
         </View>
-
-        {/* Optional: Question Paper & Model Answer */}
-        {(session.question_paper.page_count > 0 || session.model_answer.page_count > 0) && (
-          <View style={styles.optionalSection}>
-            {session.question_paper.page_count > 0 && (
-              <TouchableOpacity style={styles.optionalItem}>
-                <Ionicons name="document-text" size={20} color={COLORS.primary} />
-                <Text style={styles.optionalText}>
-                  Question Paper: {session.question_paper.page_count} pages
-                </Text>
-                <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
-              </TouchableOpacity>
-            )}
-            {session.model_answer.page_count > 0 && (
-              <TouchableOpacity style={styles.optionalItem}>
-                <Ionicons name="clipboard" size={20} color={COLORS.success} />
-                <Text style={styles.optionalText}>
-                  Model Answer: {session.model_answer.page_count} pages
-                </Text>
-                <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
-              </TouchableOpacity>
-            )}
-          </View>
-        )}
-
-        {/* Students Section */}
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>STUDENTS ({studentsWithPages.length})</Text>
-          <Text style={styles.sectionHint}>Tap to expand & view pages</Text>
+        <View style={styles.summaryItem}>
+          <View style={[styles.summaryDot, { backgroundColor: QUALITY_COLORS.yellow.bg }]} />
+          <Text style={styles.summaryCount}>{stats.yellow}</Text>
+          <Text style={styles.summaryLabel}>fair</Text>
         </View>
-
-        {studentsWithPages.length === 0 ? (
-          <View style={styles.noStudents}>
-            <Ionicons name="people-outline" size={48} color={COLORS.textMuted} />
-            <Text style={styles.noStudentsText}>No student papers scanned</Text>
-          </View>
-        ) : (
-          studentsWithPages.map((student) => (
-            // StudentCard is React.memo. It will NOT rerender when previewModal
-            // state changes, because onToggle and onPagePress are stable callbacks.
-            <StudentCard
-              key={`student-card-${student.student_index}`}
-              student={student}
-              isExpanded={expandedStudents.has(student.student_index)}
-              onToggle={handleToggleStudent}
-              onPagePress={handleOpenPagePreview}
-            />
-          ))
-        )}
-
-        {/* Blurry Pages Warning */}
-        {session.stats.blurry_pages > 0 && (
-          <View style={styles.warningBox}>
-            <Ionicons name="warning" size={20} color={COLORS.warning} />
-            <Text style={styles.warningText}>
-              {session.stats.blurry_pages} potentially blurry pages detected
-            </Text>
-          </View>
-        )}
-
-        {/* Action Buttons */}
-        <View style={styles.actionsContainer}>
-          {(session.status === 'ready' || session.status === 'failed') && (
-            <TouchableOpacity style={styles.uploadButton} onPress={handleUpload}>
-              <Ionicons name="cloud-upload" size={24} color="#fff" />
-              <Text style={styles.uploadButtonText}>UPLOAD TO GRADESENSE</Text>
-            </TouchableOpacity>
-          )}
-
-          {session.status === 'uploaded' && (
-            <View style={styles.uploadedBadge}>
-              <Ionicons name="checkmark-circle" size={24} color={COLORS.success} />
-              <Text style={styles.uploadedText}>Already Uploaded</Text>
-            </View>
-          )}
-
-          <TouchableOpacity
-            style={styles.homeButton}
-            onPress={() => router.replace('/(tabs)/home')}
-          >
-            <Ionicons name="home" size={20} color={COLORS.primary} />
-            <Text style={styles.homeButtonText}>Back to Home</Text>
-          </TouchableOpacity>
+        <View style={styles.summaryItem}>
+          <View style={[styles.summaryDot, { backgroundColor: QUALITY_COLORS.red.bg }]} />
+          <Text style={styles.summaryCount}>{stats.red}</Text>
+          <Text style={styles.summaryLabel}>blurry</Text>
         </View>
+        <Text style={styles.summaryTotal}>{stats.total} pages total</Text>
+      </View>
 
-        <View style={{ height: 40 }} />
+      {/* Student list */}
+      <ScrollView style={styles.list} contentContainerStyle={{ paddingBottom: 100 }}>
+        <Text style={styles.sectionTitle}>STUDENTS ({session.students.length})</Text>
+        {session.students.filter(s => s.page_count > 0 || (s.student_index === 0 && session.students.length === 1)).map(student => (
+          <StudentCard
+            key={student.id}
+            student={student}
+            isExpanded={expandedStudents.has(student.student_index)}
+            onToggle={handleToggle}
+            onRetake={handleRetake}
+            onDelete={handleDelete}
+            onPreview={handlePreview}
+            onRename={handleRename}
+          />
+        ))}
       </ScrollView>
 
-      {/* PreviewModal is a React.memo component with its own fiber.
-          State changes inside PreviewModal (e.g. currentIndex during swipe)
-          are fully isolated — they will NEVER trigger StudentCard rerenders. */}
-      <PreviewModal
-        state={previewModal}
-        flatListRef={flatListRef}
-        onClose={handleClosePreview}
-        onIndexChange={handlePreviewIndexChange}
-      />
+      {/* Upload CTA */}
+      <View style={styles.footer}>
+        <TouchableOpacity
+          style={styles.uploadButton}
+          onPress={() => router.push({ pathname: '/upload', params: { sessionId: session.session_id } })}
+        >
+          <Text style={styles.uploadButtonText}>Upload to GradeSense</Text>
+        </TouchableOpacity>
+      </View>
     </SafeAreaView>
   );
 }
 
+// ── Styles ────────────────────────────────────────────────────────────────────
+const THUMB_W = 90;
+const THUMB_H = 120;
+
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.backgroundDark,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: COLORS.background,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-  },
-  backButton: {
-    padding: 8,
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: COLORS.text,
-  },
-  content: {
-    flex: 1,
-    padding: 16,
-  },
-  emptyState: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 24,
-  },
-  emptyText: {
-    fontSize: 16,
-    color: COLORS.textMuted,
-    marginTop: 16,
-  },
-  goBackBtn: {
-    marginTop: 20,
-    backgroundColor: COLORS.primary,
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 10,
-  },
-  goBackBtnText: {
-    color: '#fff',
-    fontWeight: '600',
-  },
-  sessionInfo: {
-    alignItems: 'center',
-    paddingVertical: 20,
-  },
-  sessionName: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: COLORS.text,
-    marginTop: 12,
-    textAlign: 'center',
-  },
-  batchName: {
-    fontSize: 14,
-    color: COLORS.textLight,
-    marginTop: 4,
-  },
-  statsRow: {
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 20,
-  },
-  statBox: {
-    flex: 1,
-    backgroundColor: COLORS.cardBg,
-    borderRadius: 12,
-    padding: 14,
-    alignItems: 'center',
-  },
-  statValue: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: COLORS.primary,
-  },
-  statLabel: {
-    fontSize: 11,
-    color: COLORS.textMuted,
-    marginTop: 4,
-  },
-  optionalSection: {
-    backgroundColor: COLORS.cardBg,
-    borderRadius: 12,
-    marginBottom: 20,
-    overflow: 'hidden',
-  },
-  optionalItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 14,
-    gap: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-  },
-  optionalText: {
-    flex: 1,
-    fontSize: 14,
-    color: COLORS.text,
-  },
-  sectionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  sectionTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: COLORS.textMuted,
-    letterSpacing: 1,
-  },
-  sectionHint: {
-    fontSize: 11,
-    color: COLORS.textMuted,
-  },
-  noStudents: {
-    alignItems: 'center',
-    paddingVertical: 40,
-    backgroundColor: COLORS.cardBg,
-    borderRadius: 12,
-    marginBottom: 20,
-  },
-  noStudentsText: {
-    fontSize: 14,
-    color: COLORS.textMuted,
-    marginTop: 12,
-  },
-  studentCard: {
-    backgroundColor: COLORS.cardBg,
-    borderRadius: 12,
-    marginBottom: 10,
-    overflow: 'hidden',
-  },
-  studentHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 14,
-  },
-  studentIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: COLORS.backgroundDark,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
-  },
-  studentInfo: {
-    flex: 1,
-  },
-  studentName: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: COLORS.text,
-  },
-  studentMeta: {
-    fontSize: 12,
-    color: COLORS.textLight,
-    marginTop: 2,
-  },
-  studentStatus: {
-    marginRight: 8,
-  },
-  pagesGrid: {
-    borderTopWidth: 1,
-    borderTopColor: COLORS.border,
-    padding: 12,
-    backgroundColor: COLORS.backgroundDark,
-  },
-  pagesScrollContent: {
-    gap: 10,
-  },
-  noPagesText: {
-    fontSize: 13,
-    color: COLORS.textMuted,
-    textAlign: 'center',
-    paddingVertical: 8,
-  },
-  pageThumb: {
-    width: 60,
-    height: 80,
-    borderRadius: 8,
-    overflow: 'hidden',
-    backgroundColor: COLORS.cardBg,
-    position: 'relative',
-  },
-  pageThumbImage: {
-    width: '100%',
-    height: '100%',
-  },
-  pageThumbPlaceholder: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  pageThumbBadge: {
-    position: 'absolute',
-    bottom: 4,
-    right: 4,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  pageThumbBadgeText: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: '#fff',
-  },
-  blurryIndicator: {
-    position: 'absolute',
-    top: 4,
-    right: 4,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    padding: 3,
-    borderRadius: 4,
-  },
-  warningBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    backgroundColor: `${COLORS.warning}20`,
-    padding: 14,
-    borderRadius: 12,
-    marginTop: 10,
-    marginBottom: 20,
-  },
-  warningText: {
-    flex: 1,
-    fontSize: 13,
-    color: COLORS.text,
-  },
-  actionsContainer: {
-    marginTop: 10,
-    gap: 12,
-  },
-  uploadButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 12,
-    backgroundColor: COLORS.primary,
-    paddingVertical: 18,
-    borderRadius: 14,
-  },
-  uploadButtonText: {
-    color: '#fff',
-    fontSize: 17,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
-  uploadedBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: `${COLORS.success}15`,
-    paddingVertical: 16,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: COLORS.success,
-  },
-  uploadedText: {
-    color: COLORS.success,
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  homeButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: COLORS.cardBg,
-    paddingVertical: 14,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  homeButtonText: {
-    color: COLORS.primary,
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  // Modal styles
-  modalContainer: {
-    flex: 1,
-    backgroundColor: '#000',
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: COLORS.background,
-  },
-  modalCloseBtn: {
-    padding: 8,
-  },
-  modalHeaderInfo: {
-    alignItems: 'center',
-  },
-  modalTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: COLORS.text,
-  },
-  modalSubtitle: {
-    fontSize: 12,
-    color: COLORS.textLight,
-    marginTop: 2,
-  },
-  modalPagination: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingVertical: 8,
-    backgroundColor: COLORS.background,
-    gap: 6,
-  },
-  paginationDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: COLORS.border,
-  },
-  paginationDotActive: {
-    backgroundColor: COLORS.primary,
-    width: 20,
-  },
-  modalImageContainer: {
-    width: SCREEN_WIDTH,
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  modalImage: {
-    width: SCREEN_WIDTH,
-    height: '100%',
-  },
-  modalNoImage: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modalNoImageText: {
-    color: COLORS.textMuted,
-    marginTop: 12,
-  },
-  swipeHint: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 10,
-    backgroundColor: 'rgba(0, 0, 0, 0.8)',
-  },
-  swipeHintText: {
-    fontSize: 12,
-    color: COLORS.textMuted,
-  },
+  container:        { flex: 1, backgroundColor: COLORS.backgroundDark },
+  header:           { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, gap: 10 },
+  backBtn:          { padding: 4 },
+  sessionName:      { fontSize: 16, fontWeight: '600', color: COLORS.textPrimary },
+  batchName:        { fontSize: 13, color: COLORS.textMuted, marginTop: 1 },
+  scanMoreBtn:      { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: COLORS.primary },
+  scanMoreText:     { fontSize: 13, color: COLORS.primary, fontWeight: '500' },
+
+  summaryBar:       { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, gap: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border },
+  summaryItem:      { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  summaryDot:       { width: 8, height: 8, borderRadius: 4 },
+  summaryCount:     { fontSize: 15, fontWeight: '600', color: COLORS.textPrimary },
+  summaryLabel:     { fontSize: 12, color: COLORS.textMuted },
+  summaryTotal:     { marginLeft: 'auto', fontSize: 12, color: COLORS.textMuted },
+
+  list:             { flex: 1 },
+  sectionTitle:     { fontSize: 11, fontWeight: '600', color: COLORS.textMuted, letterSpacing: 1, marginHorizontal: 16, marginTop: 16, marginBottom: 8 },
+
+  studentCard:      { marginHorizontal: 12, marginBottom: 8, backgroundColor: COLORS.card, borderRadius: 12, overflow: 'hidden' },
+  studentHeader:    { flexDirection: 'row', alignItems: 'center', padding: 14, gap: 10 },
+  qualityDot:       { width: 10, height: 10, borderRadius: 5 },
+  studentInfo:      { flex: 1 },
+  studentName:      { fontSize: 15, fontWeight: '600', color: COLORS.textPrimary },
+  studentNameInput: { fontSize: 15, fontWeight: '600', color: COLORS.textPrimary, padding: 0, borderBottomWidth: 1, borderColor: COLORS.primary },
+  studentMeta:      { fontSize: 12, color: COLORS.textMuted, marginTop: 2 },
+
+  pagesRow:         { paddingVertical: 10 },
+  emptyLabel:       { fontSize: 13, color: COLORS.textMuted, textAlign: 'center', padding: 16 },
+
+  thumbContainer:   { width: THUMB_W, alignItems: 'center' },
+  thumbImage:       { width: THUMB_W, height: THUMB_H, borderRadius: 6 },
+  pageNumBadge:     { position: 'absolute', top: 4, left: 4, backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1 },
+  pageNumText:      { color: '#fff', fontSize: 10, fontWeight: '600' },
+  qualityBadge:     { position: 'absolute', bottom: 4, left: 4, right: 4, borderRadius: 4, paddingVertical: 2, alignItems: 'center' },
+  qualityText:      { fontSize: 10, fontWeight: '700' },
+  thumbActions:     { flexDirection: 'row', justifyContent: 'space-between', width: THUMB_W, marginTop: 4 },
+  thumbActionBtn:   { flexDirection: 'row', alignItems: 'center', gap: 2, padding: 4 },
+  thumbActionLabel: { fontSize: 11, color: COLORS.primary },
+
+  footer:           { padding: 16, borderTopWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border },
+  uploadButton:     { backgroundColor: COLORS.primary, borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
+  uploadButtonText: { color: '#fff', fontSize: 16, fontWeight: '700' },
 });

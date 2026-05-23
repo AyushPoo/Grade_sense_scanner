@@ -55,8 +55,11 @@ export const COLORS = {
   success: '#4CAF50',
   warning: '#FFC107',
   error: '#F44336',
+  danger: '#E24B4A',
   border: '#E0E0E0',
   cardBg: '#FFFFFF',
+  card: '#FFFFFF',
+  textPrimary: '#1A1A1A',
   overlay: 'rgba(0, 0, 0, 0.5)',
 };
 
