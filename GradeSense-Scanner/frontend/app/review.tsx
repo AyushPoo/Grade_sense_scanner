@@ -174,7 +174,7 @@ const StudentCard = memo(({
               data={student.pages}
               horizontal
               showsHorizontalScrollIndicator={false}
-              keyExtractor={(item) => item.id}
+              keyExtractor={(item, index) => item.id || `page-${index}`}
               contentContainerStyle={{ paddingHorizontal: 12, gap: 10 }}
               renderItem={({ item, index }) => (
                 <PageThumb
@@ -333,7 +333,7 @@ export default function ReviewScreen() {
         <Text style={styles.sectionTitle}>STUDENTS ({session.students.length})</Text>
         {session.students.filter(s => s.page_count > 0 || (s.student_index === 0 && session.students.length === 1)).map(student => (
           <StudentCard
-            key={student.id}
+            key={student.id || `student-${student.student_index}`}
             student={student}
             isExpanded={expandedStudents.has(student.student_index)}
             onToggle={handleToggle}
