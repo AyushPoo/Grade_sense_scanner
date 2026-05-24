@@ -808,3 +808,4 @@ const styles = StyleSheet.create({
   filterBtn: { alignItems: 'center', gap: 6, padding: 10 },
   filterLabel: { color: '#fff', fontSize: 12, fontWeight: '600' },
 });
+// added again
