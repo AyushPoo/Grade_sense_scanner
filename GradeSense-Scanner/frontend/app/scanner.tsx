@@ -41,7 +41,7 @@ import { Ionicons } from '@expo/vector-icons';
 const FRAME_INTERVAL_MS     = 1200;  // reduced from 500ms — less flicker, still responsive
 const CAPTURE_COOLDOWN_MS   = 1500;
 const STABILITY_LOCK_FRAMES = 3;
-const STABILITY_LOST_FRAMES = 5;
+const STABILITY_LOST_FRAMES = 3;
 const ENABLE_LIVE_DETECTION = true;
 
 type FilterMode = 'original' | 'enhanced' | 'bw' | 'high_contrast';
@@ -182,10 +182,10 @@ export default function ScannerScreen() {
         isProcessingFrame.current = true;
         // FIX: quality 0.1 destroyed paper/desk edge contrast → Canny found only noise.
         // At quality 0.4 the boundary survives. 640px gives better edge continuity.
-        const photo = await cameraRef.current.takePictureAsync({ quality: 0.4, skipProcessing: true, base64: false });
+        const photo = await cameraRef.current.takePictureAsync({ quality: 0.1, skipProcessing: true, base64: false });
         if (!photo?.uri) return;
 
-        const resized = await ImageManipulator.manipulateAsync(photo.uri, [{ resize: { width: 640 } }], { base64: true, format: ImageManipulator.SaveFormat.JPEG, compress: 0.7 });
+        const resized = await ImageManipulator.manipulateAsync(photo.uri, [{ resize: { width: 480 } }], { base64: true, format: ImageManipulator.SaveFormat.JPEG });
         if (!resized?.base64) return;
 
         const result = await detectDocumentInFrame(resized.base64, resized.width, resized.height);
@@ -194,7 +194,7 @@ export default function ScannerScreen() {
           stableCountRef.current = Math.min(stableCountRef.current + 1, 10);
           lostCountRef.current = 0;
           if (stableCountRef.current >= STABILITY_LOCK_FRAMES) isLockedRef.current = true;
-        } else if (result.confidence <= 0.35) {
+        } else if (result.confidence <= 0.10) {
           lostCountRef.current++;
           stableCountRef.current = 0;
           if (lostCountRef.current >= STABILITY_LOST_FRAMES) isLockedRef.current = false;
@@ -213,6 +213,8 @@ export default function ScannerScreen() {
         }
 
         if (autoCaptureRef.current && isLockedRef.current && result.isStable && !cooldownRef.current && !isCapturingRef.current) {
+          // Only auto-capture when we have a quad — ensures normalizeCapturedDocument runs
+          // lastQuadRef is set from the previous frame so it's valid even if current frame lost the quad
           triggerCapture();
         }
 
@@ -235,7 +237,6 @@ export default function ScannerScreen() {
     cooldownRef.current    = true;
     setIsCapturing(true);
     setLiveScanStatus('capturing');
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     try {
       // 1. Temporarily activate flash if enabled in the store
@@ -248,6 +249,7 @@ export default function ScannerScreen() {
 
       const photo = await cameraRef.current.takePictureAsync({ quality: 0.8, skipProcessing: true, shutterSound: false });
       if (!photo?.uri) throw new Error('No URI');
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); // fires when shutter actually fires
 
       const blur = await detectBlur(photo.uri);
       if (blur.level === 'very_blurry') {
@@ -322,7 +324,7 @@ export default function ScannerScreen() {
         await new Promise(resolve => setTimeout(resolve, 50));
       }
       if (!verified) {
-        console.warn('[commitCapture] File copy timed out:', dest.uri);
+        console.warn('[commitCapture] file not found after copy:', dest.uri);
         return;
       }
 

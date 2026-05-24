@@ -153,8 +153,8 @@ export async function detectDocumentInFrame(
     const estimatedPixels = width * height;
     const actualBytes = base64Image.length * 0.75;
     const bpp = actualBytes / estimatedPixels;
-    const BPP_FLOOR   = 0.05;  // floor: very blurry / empty frame at quality:0.4
-    const BPP_CEILING = 0.40;  // ceiling: sharp document edge at quality:0.4
+    const BPP_FLOOR   = 0.04;  // floor: empty frame at quality:0.1, 480px
+    const BPP_CEILING = 0.22;  // ceiling: sharp document edge at quality:0.1, 480px
     const normalized = (bpp - BPP_FLOOR) / (BPP_CEILING - BPP_FLOOR) * 100;
     sharpnessScore = Math.max(0, Math.min(100, normalized));
     if (__DEV__) {
@@ -259,7 +259,7 @@ export async function detectDocumentInFrame(
   const areaRatio = maxArea / frameArea;
   // Lowered isSharp threshold — entropy heuristic scores differently from Laplacian
   const isSharp   = sharpnessScore > 30;
-  const isStable  = motionLevel < 25;
+  const isStable  = motionLevel < 60;
   const isLarge   = areaRatio > 0.08;
 
   let captureReadiness = 0;
@@ -305,7 +305,7 @@ export async function detectDocumentInFrame(
   }
 
   // Synthetic isStable for the no-quad fallback path (can't measure motion without points)
-  const syntheticStable = !bestQuad && sharpnessScore > 15;
+  const syntheticStable = !bestQuad && sharpnessScore > 20;
 
   return {
     isDocumentDetected: !!bestQuad,
