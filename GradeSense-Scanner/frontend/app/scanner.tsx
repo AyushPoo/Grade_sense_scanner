@@ -24,7 +24,6 @@ import { COLORS } from '../src/config';
 import { useShallow } from 'zustand/react/shallow';
 import { CVProcessingResult, Quadrilateral } from '../src/utils/cvProcessor';
 import { LiveScanStatus } from '../src/components/StatusIndicator';
-import { DocumentContourOverlay } from '../src/components/DocumentContourOverlay';
 import { ScannerHeader } from '../src/components/ScannerHeader';
 import { ProtectedCameraView } from '../src/components/ProtectedCameraView';
 import { ScannerBottomBar } from '../src/components/ScannerBottomBar';
@@ -32,14 +31,8 @@ import { detectBlur, BlurDetectionResult } from '../src/utils/blurDetection';
 import { Ionicons } from '@expo/vector-icons';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const FRAME_INTERVAL_MS = 600;
 const CAPTURE_COOLDOWN_MS = 2500;
-const STABILITY_LOCK_FRAMES = 5;
-const STABILITY_LOST_FRAMES = 3;
-const MOTION_RESET_FRAMES = 2;
-const CONFIDENCE_LOCK_MIN = 0.55;
-const CONFIDENCE_LOST_MAX = 0.40;
-const ENABLE_LIVE_DETECTION = true;
+const ENABLE_LIVE_DETECTION = false;
 
 // ─── Scanner State Machine ────────────────────────────────────────────────────
 type ScannerPhase =
@@ -69,31 +62,11 @@ interface PendingCapture {
 function phaseToLiveStatus(phase: ScannerPhase): LiveScanStatus {
   switch (phase) {
     case 'SEARCHING': return 'searching';
-    case 'DETECTED': return 'searching';
-    case 'STABILIZING': return 'searching';
-    case 'READY': return 'locked';
     case 'CAPTURING': return 'capturing';
     case 'COOLDOWN': return 'saved';
     default: return 'searching';
   }
 }
-
-// ─── Overlay state: only what DocumentContourOverlay actually needs ───────────
-// Kept separate from CVProcessingResult so we only re-render the overlay
-// when the quad / readiness meaningfully changes, not on every CV frame.
-interface OverlayState {
-  quadrilateral: Quadrilateral | null;
-  dimensions: { width: number; height: number } | undefined;
-  captureReadiness: number;
-  isStable: boolean;
-}
-
-const EMPTY_OVERLAY: OverlayState = {
-  quadrilateral: null,
-  dimensions: undefined,
-  captureReadiness: 0,
-  isStable: false,
-};
 
 export default function ScannerScreen() {
   const router = useRouter();
@@ -143,8 +116,6 @@ export default function ScannerScreen() {
   })));
 
   // ── Refs ───────────────────────────────────────────────────────────────────
-  const isProcessingFrame = useRef(false);
-  const frameLoopRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const normalizingRef = useRef(false);
   const lastQuadRef = useRef<Quadrilateral | null>(null);
   const cvResultRef = useRef<CVProcessingResult | null>(null);
@@ -154,22 +125,13 @@ export default function ScannerScreen() {
 
   // State machine refs
   const scannerPhaseRef = useRef<ScannerPhase>('SEARCHING');
-  const stableCountRef = useRef(0);
-  const lostCountRef = useRef(0);
-  const motionCountRef = useRef(0);
   const cooldownEndRef = useRef(0);
-
-  // ── Overlay ref — tracks last pushed overlay so we can skip identical updates ──
-  // This is the KEY flicker fix: DocumentContourOverlay only re-renders when
-  // detection status actually changes, not on every CV frame.
-  const lastOverlayRef = useRef<OverlayState>(EMPTY_OVERLAY);
 
   // ── React state ────────────────────────────────────────────────────────────
   const [isCameraReady, setIsCameraReady] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
   const [liveScanStatus, setLiveScanStatus] = useState<LiveScanStatus>('searching');
-  const [overlayState, setOverlayState] = useState<OverlayState>(EMPTY_OVERLAY);
   const [stabilityProgress, setStabilityProgress] = useState(0);
   const [liveFlashMode, setLiveFlashMode] = useState<'off' | 'on' | 'auto'>('off');
   const [filterPicker, setFilterPicker] = useState<{
@@ -201,14 +163,12 @@ export default function ScannerScreen() {
     ScreenOrientation.unlockAsync();
     return () => {
       isMounted.current = false;
-      if (frameLoopRef.current) clearTimeout(frameLoopRef.current);
       ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     };
   }, []);
 
   const onCameraReady = useCallback(() => setIsCameraReady(true), []);
 
-  // ── Transition helper ──────────────────────────────────────────────────────
   const transitionTo = useCallback((phase: ScannerPhase) => {
     if (scannerPhaseRef.current === phase) return;
     scannerPhaseRef.current = phase;
@@ -216,42 +176,6 @@ export default function ScannerScreen() {
     if (phase === 'CAPTURING') setIsCapturing(true);
     else if (phase === 'COOLDOWN' || phase === 'SEARCHING') setIsCapturing(false);
   }, []);
-
-  // ── Overlay update — gated to prevent flicker ─────────────────────────────
-  // Only calls setOverlayState when something the overlay actually renders has changed.
-  // Specifically: whether a quad exists, and the readiness band (none/partial/ready).
-  const pushOverlay = useCallback((next: OverlayState) => {
-    const prev = lastOverlayRef.current;
-
-    const quadChanged = (next.quadrilateral === null) !== (prev.quadrilateral === null);
-    // Readiness band: 0 = no doc, 1 = found, 2 = ready. Only re-render on band change.
-    const band = (r: number) => r >= 80 ? 2 : r > 0 ? 1 : 0;
-    const readinessChanged = band(next.captureReadiness) !== band(prev.captureReadiness);
-    const stableChanged = next.isStable !== prev.isStable;
-
-    if (quadChanged || readinessChanged || stableChanged) {
-      lastOverlayRef.current = next;
-      setOverlayState(next);
-    } else if (next.quadrilateral !== null) {
-      // Quad exists and band didn't change — still update the coordinates
-      // so the outline tracks the paper smoothly, but DON'T update readiness/stable
-      // (avoids triggering color/stroke re-renders in the SVG).
-      lastOverlayRef.current = next;
-      setOverlayState(next);
-    }
-  }, []);
-
-  // Ref to runFrameLoopRef so triggerCapture can restart the loop
-  const runFrameLoopRef = useRef<(() => Promise<void>) | null>(null);
-
-  // ── scheduleFrameLoop — called by triggerCapture after COOLDOWN starts ────
-  const scheduleFrameLoop = useCallback(() => {
-    if (frameLoopRef.current) clearTimeout(frameLoopRef.current);
-    if (!isCameraReady || !permission?.granted || !isMounted.current) return;
-    if (runFrameLoopRef.current) {
-      frameLoopRef.current = setTimeout(runFrameLoopRef.current, FRAME_INTERVAL_MS);
-    }
-  }, [isCameraReady, permission?.granted]);
 
   // ── triggerCapture ─────────────────────────────────────────────────────────
   const triggerCapture = useCallback(async () => {
@@ -299,199 +223,11 @@ export default function ScannerScreen() {
     } finally {
       setLiveFlashMode('off');
 
-      // Reset state machine — CRITICAL to prevent immediate re-lock
-      cooldownEndRef.current = Date.now() + CAPTURE_COOLDOWN_MS;
-      stableCountRef.current = 0;
-      lostCountRef.current = 0;
-      motionCountRef.current = 0;
-
-      // Clear overlay during cooldown so the outline disappears
-      const cleared = { ...EMPTY_OVERLAY };
-      lastOverlayRef.current = cleared;
-      setOverlayState(cleared);
-
+      // Transition logic removed for live detection.
       transitionTo('COOLDOWN');
-      scheduleFrameLoop();
+      setTimeout(() => transitionTo('SEARCHING'), CAPTURE_COOLDOWN_MS);
     }
-  }, [transitionTo, scheduleFrameLoop]);
-
-  // ── SINGLE frame loop useEffect ────────────────────────────────────────────
-  // FIX: There was previously a DUPLICATE useEffect also running a frame loop.
-  // That caused takePictureAsync to fire twice per interval, doubling renders.
-  // Now there is exactly ONE useEffect managing the frame loop.
-  useEffect(() => {
-    if (!ENABLE_LIVE_DETECTION || !isCameraReady || !permission?.granted) return;
-
-    const processFrame = async () => {
-      const phase = scannerPhaseRef.current;
-
-      if (
-        isProcessingFrame.current ||
-        !cameraRef.current ||
-        isPausedRef.current ||
-        phase === 'CAPTURING'
-      ) {
-        frameLoopRef.current = setTimeout(processFrame, FRAME_INTERVAL_MS);
-        return;
-      }
-
-      // ── COOLDOWN: poll for motion only ────────────────────────────────────
-      if (phase === 'COOLDOWN') {
-        const now = Date.now();
-        if (now < cooldownEndRef.current) {
-          frameLoopRef.current = setTimeout(processFrame, FRAME_INTERVAL_MS);
-          return;
-        }
-
-        try {
-          isProcessingFrame.current = true;
-          const photo = await cameraRef.current.takePictureAsync({
-            quality: 0.4,
-            skipProcessing: true,
-            base64: false,
-          });
-          if (!photo?.uri) return;
-
-          const resized = await ImageManipulator.manipulateAsync(
-            photo.uri,
-            [{ resize: { width: 480 } }],
-            { base64: true, format: ImageManipulator.SaveFormat.JPEG }
-          );
-
-          try { new File(photo.uri).delete(); } catch (_) { }
-          if (!resized?.base64) return;
-
-          const result = await detectDocumentInFrame(
-            resized.base64,
-            resized.width,
-            resized.height,
-          );
-
-          const motionDetected =
-            result.confidence < CONFIDENCE_LOST_MAX || result.motionLevel > 50;
-
-          motionDetected
-            ? motionCountRef.current++
-            : (motionCountRef.current = 0);
-
-          if (motionCountRef.current >= MOTION_RESET_FRAMES) {
-            motionCountRef.current = 0;
-            stableCountRef.current = 0;
-            lostCountRef.current = 0;
-            lastQuadRef.current = null;
-            cvResultRef.current = null;
-            // Clear overlay — no setState call needed, already cleared in triggerCapture
-            setStabilityProgress(0);
-            transitionTo('SEARCHING');
-          }
-        } catch (_) {
-        } finally {
-          isProcessingFrame.current = false;
-          frameLoopRef.current = setTimeout(processFrame, FRAME_INTERVAL_MS);
-        }
-        return;
-      }
-
-      // ── Normal frame: SEARCHING / DETECTED / STABILIZING / READY ──────────
-      try {
-        isProcessingFrame.current = true;
-
-        const photo = await cameraRef.current.takePictureAsync({
-          quality: 0.4,
-          skipProcessing: true,
-          base64: false,
-        });
-        if (!photo?.uri) return;
-
-        const resized = await ImageManipulator.manipulateAsync(
-          photo.uri,
-          [{ resize: { width: 480 } }],
-          { base64: true, format: ImageManipulator.SaveFormat.JPEG }
-        );
-
-        try { new File(photo.uri).delete(); } catch (_) { }
-        if (!resized?.base64) return;
-
-        const result = await detectDocumentInFrame(
-          resized.base64,
-          resized.width,
-          resized.height,
-        );
-
-        if (__DEV__) {
-          console.log(
-            `[CV PROCESS] confidence=${result.confidence.toFixed(2)},` +
-            ` stable=${stableCountRef.current}, phase=${scannerPhaseRef.current}`
-          );
-        }
-
-        // Store result in ref — NO setState here, so no render triggered
-        cvResultRef.current = result;
-        lastQuadRef.current = result.quadrilateral;
-
-        if (result.confidence >= CONFIDENCE_LOCK_MIN) {
-          lostCountRef.current = 0;
-          stableCountRef.current = Math.min(
-            stableCountRef.current + 1,
-            STABILITY_LOCK_FRAMES + 2,
-          );
-
-          // Update overlay via gated pushOverlay — renders only on meaningful change
-          pushOverlay({
-            quadrilateral: result.quadrilateral,
-            dimensions: result.dimensions,
-            captureReadiness: result.captureReadiness,
-            isStable: result.isStable,
-          });
-
-          const progress = Math.min(stableCountRef.current / STABILITY_LOCK_FRAMES, 1);
-          setStabilityProgress(progress);
-
-          if (stableCountRef.current === 1) {
-            transitionTo('DETECTED');
-          } else if (stableCountRef.current < STABILITY_LOCK_FRAMES) {
-            transitionTo('STABILIZING');
-          } else {
-            transitionTo('READY');
-
-            if (autoCaptureRef.current) {
-              isProcessingFrame.current = false;
-              await triggerCapture();
-              return;
-            }
-          }
-        } else if (result.confidence < CONFIDENCE_LOST_MAX) {
-          stableCountRef.current = 0;
-          lostCountRef.current = Math.min(
-            lostCountRef.current + 1,
-            STABILITY_LOST_FRAMES + 2,
-          );
-          setStabilityProgress(0);
-
-          if (lostCountRef.current >= STABILITY_LOST_FRAMES) {
-            lastQuadRef.current = null;
-            // Clear overlay only when fully lost — not on every low-conf frame
-            pushOverlay(EMPTY_OVERLAY);
-            transitionTo('SEARCHING');
-          }
-        }
-        // Band between LOST_MAX and LOCK_MIN: hold state, no overlay update
-      } catch (_) {
-      } finally {
-        isProcessingFrame.current = false;
-        if (scannerPhaseRef.current !== 'CAPTURING' && isMounted.current) {
-          frameLoopRef.current = setTimeout(processFrame, FRAME_INTERVAL_MS);
-        }
-      }
-    };
-
-    runFrameLoopRef.current = processFrame;
-    frameLoopRef.current = setTimeout(processFrame, 800);
-
-    return () => {
-      if (frameLoopRef.current) clearTimeout(frameLoopRef.current);
-    };
-  }, [isCameraReady, permission?.granted, transitionTo, triggerCapture, pushOverlay]);
+  }, [transitionTo]);
 
   // ── commitCapture ──────────────────────────────────────────────────────────
   const commitCapture = useCallback(async (
@@ -572,7 +308,6 @@ export default function ScannerScreen() {
         file_size: dest.size || 0,
         is_blurry: pending.blur.isBlurry,
         sharpness_score: pending.blur.sharpnessScore,
-        filter_mode: 'bw',
         captured_at: new Date().toISOString(),
       });
     } catch (e) {
@@ -626,13 +361,13 @@ export default function ScannerScreen() {
       <ScannerHeader
         phaseTitle={phaseLabel()}
         pageCount={currentPages.length}
-        studentsCount={studentsCount}
+        studentsWithPagesCount={studentsCount}
+        showStudentCount={studentsCount > 0}
+        pageMode="single"
+        isLandscape={false}
+        onBack={() => router.back()}
         isPaused={isPaused}
         onTogglePause={handleTogglePause}
-        flashMode={flashMode}
-        onToggleFlash={() => setFlashMode(flashMode === 'on' ? 'off' : 'on')}
-        autoCaptureEnabled={autoCaptureEnabled}
-        onToggleAutoCapture={() => setAutoCaptureEnabled(!autoCaptureEnabled)}
       />
 
       <View style={styles.cameraWrapper}>
@@ -644,16 +379,6 @@ export default function ScannerScreen() {
           flashMode={liveFlashMode}
           style={StyleSheet.absoluteFill}
         />
-
-        {ENABLE_LIVE_DETECTION && (
-          <DocumentContourOverlay
-            quadrilateral={overlayState.quadrilateral}
-            dimensions={overlayState.dimensions}
-            captureReadiness={overlayState.captureReadiness}
-            isStable={overlayState.isStable}
-            isPaused={isPaused}
-          />
-        )}
 
         {pendingRetake && (
           <View style={styles.retakeBanner}>
@@ -671,13 +396,13 @@ export default function ScannerScreen() {
             styles.statusDot,
             {
               backgroundColor:
-                liveScanStatus === 'locked' ? '#4CAF50' :
+                liveScanStatus === 'holding' ? '#4CAF50' :
                   liveScanStatus === 'capturing' ? '#FF9800' :
                     liveScanStatus === 'saved' ? '#2196F3' : '#9E9E9E',
             },
           ]} />
           <Text style={styles.statusText}>
-            {liveScanStatus === 'locked' ? 'Ready' :
+            {liveScanStatus === 'holding' ? 'Ready' :
               liveScanStatus === 'capturing' ? 'Capturing…' :
                 liveScanStatus === 'saved' ? 'Saved ✓ — move to next page' :
                   'Searching…'}

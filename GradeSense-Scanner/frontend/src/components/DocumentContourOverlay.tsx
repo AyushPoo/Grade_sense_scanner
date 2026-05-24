@@ -4,28 +4,31 @@
  * Renders an Adobe Scan-style document outline above the live camera feed.
  *
  * Design choices:
- *  - React.memo: only re-renders when CV props change (every ~2 s), not per frame
+ *  - React.forwardRef: State is kept internal and updated imperatively to prevent ScannerScreen from re-rendering
  *  - SVG Polygon: document outline, color-coded by capture readiness
  *  - SVG Line pairs: corner bracket anchors at each corner (L-shaped)
  *  - pointerEvents="none" on outer View: never blocks touch
- *  - Coordinate system: quad coordinates are in the downscaled CV frame
- *    (480 px wide). The SVG viewBox + preserveAspectRatio handles scaling
- *    to the actual container size automatically — no manual math needed.
  */
-import React, { useEffect, useRef, useState } from 'react';
-import { StyleSheet, View, Animated } from 'react-native';
+import React, { useRef, useState, useImperativeHandle, forwardRef } from 'react';
+import { StyleSheet, View } from 'react-native';
 import Svg, { Polygon, Line } from 'react-native-svg';
 import { Quadrilateral, Point } from '../utils/cvProcessor';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface DocumentContourOverlayProps {
+  isPaused: boolean;
+}
+
+export interface OverlayState {
   quadrilateral: Quadrilateral | null;
   dimensions: { width: number; height: number } | undefined;
-  /** 0-100 capture readiness score from CV pipeline */
   captureReadiness: number;
   isStable: boolean;
-  isPaused: boolean;
+}
+
+export interface DocumentContourOverlayRef {
+  pushOverlay: (next: OverlayState) => void;
 }
 
 // ─── Color helpers ────────────────────────────────────────────────────────────
@@ -46,8 +49,8 @@ function getFillColor(readiness: number): string {
 
 const OVERLAY_GRACE_MS = 1200;
 
-export const DocumentContourOverlay = React.memo<DocumentContourOverlayProps>(
-  ({ quadrilateral, dimensions, captureReadiness, isPaused }) => {
+export const DocumentContourOverlay = forwardRef<DocumentContourOverlayRef, DocumentContourOverlayProps>(
+  ({ isPaused }, ref) => {
     const previousCornersRef = useRef<Quadrilateral | null>(null);
     const graceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     
@@ -55,56 +58,50 @@ export const DocumentContourOverlay = React.memo<DocumentContourOverlayProps>(
     const [displayDimensions, setDisplayDimensions] = useState<{ width: number; height: number } | null>(null);
     const [displayReadiness, setDisplayReadiness] = useState<number>(0);
 
-    // ── RENDER INSTRUMENTATION (Phase 2) ──────────────────────────────────────
-    const renderCountRef = useRef(0);
-    renderCountRef.current++;
-    if (__DEV__) {
-      console.log(`[RENDER] DocumentContourOverlay: count=${renderCountRef.current}, detection=${quadrilateral ? 'YES' : 'NO'}`);
-    }
-    // ─────────────────────────────────────────────────────────────────────────────
-
-    useEffect(() => {
-      if (isPaused) {
-        setDisplayQuad(null);
-        previousCornersRef.current = null;
-        return;
-      }
-
-      if (quadrilateral && dimensions) {
-        if (graceTimerRef.current) {
-          clearTimeout(graceTimerRef.current);
-          graceTimerRef.current = null;
-        }
-
-        let newQuad = quadrilateral;
-        
-        // Coordinate Interpolation (Smoothing)
-        if (previousCornersRef.current) {
-          const old = previousCornersRef.current;
-          const smoothPoint = (o: Point, n: Point): Point => ({
-            x: o.x * 0.7 + n.x * 0.3,
-            y: o.y * 0.7 + n.y * 0.3
-          });
-          newQuad = {
-            topLeft: smoothPoint(old.topLeft, quadrilateral.topLeft),
-            topRight: smoothPoint(old.topRight, quadrilateral.topRight),
-            bottomRight: smoothPoint(old.bottomRight, quadrilateral.bottomRight),
-            bottomLeft: smoothPoint(old.bottomLeft, quadrilateral.bottomLeft),
-          };
-        }
-
-        previousCornersRef.current = newQuad;
-        setDisplayQuad(newQuad);
-        setDisplayDimensions(dimensions);
-        setDisplayReadiness(captureReadiness);
-      } else if (displayQuad && !graceTimerRef.current) {
-        // Start grace period
-        graceTimerRef.current = setTimeout(() => {
+    useImperativeHandle(ref, () => ({
+      pushOverlay: (next) => {
+        if (isPaused) {
           setDisplayQuad(null);
           previousCornersRef.current = null;
-        }, OVERLAY_GRACE_MS);
+          return;
+        }
+
+        if (next.quadrilateral && next.dimensions) {
+          if (graceTimerRef.current) {
+            clearTimeout(graceTimerRef.current);
+            graceTimerRef.current = null;
+          }
+
+          let newQuad = next.quadrilateral;
+          
+          // Coordinate Interpolation (Smoothing)
+          if (previousCornersRef.current) {
+            const old = previousCornersRef.current;
+            const smoothPoint = (o: Point, n: Point): Point => ({
+              x: o.x * 0.7 + n.x * 0.3,
+              y: o.y * 0.7 + n.y * 0.3
+            });
+            newQuad = {
+              topLeft: smoothPoint(old.topLeft, next.quadrilateral.topLeft),
+              topRight: smoothPoint(old.topRight, next.quadrilateral.topRight),
+              bottomRight: smoothPoint(old.bottomRight, next.quadrilateral.bottomRight),
+              bottomLeft: smoothPoint(old.bottomLeft, next.quadrilateral.bottomLeft),
+            };
+          }
+
+          previousCornersRef.current = newQuad;
+          setDisplayQuad(newQuad);
+          setDisplayDimensions(next.dimensions);
+          setDisplayReadiness(next.captureReadiness);
+        } else if (displayQuad && !graceTimerRef.current) {
+          // Start grace period
+          graceTimerRef.current = setTimeout(() => {
+            setDisplayQuad(null);
+            previousCornersRef.current = null;
+          }, OVERLAY_GRACE_MS);
+        }
       }
-    }, [quadrilateral, dimensions, captureReadiness, isPaused]);
+    }), [displayQuad, isPaused]);
 
     // Nothing to show if no active or graceful quad
     if (!displayQuad || !displayDimensions || isPaused) return null;
