@@ -229,6 +229,11 @@ export default function ScannerScreen() {
     const readinessChanged = band(next.captureReadiness) !== band(prev.captureReadiness);
     const stableChanged = next.isStable !== prev.isStable;
 
+    console.log(
+      `[PUSH OVERLAY] calling setState, prev_band=${band(lastOverlayRef.current.captureReadiness)}, ` +
+      `next_band=${band(next.captureReadiness)}`
+    );
+
     if (quadChanged || readinessChanged || stableChanged) {
       lastOverlayRef.current = next;
       setOverlayState(next);
@@ -416,6 +421,14 @@ export default function ScannerScreen() {
           resized.base64,
           resized.width,
           resized.height,
+        );
+
+        console.log(
+          `[FRAME LOOP] ` +
+          `confidence=${result.confidence.toFixed(2)}, ` +
+          `motionLevel=${result.motionLevel}, ` +
+          `quad=${result.quadrilateral ? 'YES' : 'NO'}, ` +
+          `readiness=${result.captureReadiness}`
         );
 
         if (__DEV__) {
