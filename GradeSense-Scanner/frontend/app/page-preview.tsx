@@ -16,6 +16,8 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { COLORS } from '../src/config';
 import { useScanStore } from '../src/store/scanStore';
 import { ScannedPage, ScanPhase } from '../src/types';
+import { applyFilter, FilterMode } from '../src/utils/cvProcessor';
+import { File, Paths } from 'expo-file-system';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -27,9 +29,17 @@ export default function PagePreviewScreen() {
     studentIndex?: string;
   }>();
 
-  const { currentSession, removePage, startRetake, currentPhase, currentStudentIndex } = useScanStore();
+  const { currentSession, removePage, startRetake, currentPhase, currentStudentIndex, updatePagePathAndFilter } = useScanStore();
   const flatListRef = useRef<FlatList>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [isApplyingFilter, setIsApplyingFilter] = useState(false);
+
+  const FILTERS: { id: FilterMode; label: string; icon: string }[] = [
+    { id: 'original', label: 'Original', icon: 'image-outline' },
+    { id: 'bw', label: 'B&W', icon: 'contrast-outline' },
+    { id: 'enhanced', label: 'Enhanced', icon: 'sunny-outline' },
+    { id: 'high_contrast', label: 'High Contrast', icon: 'options-outline' },
+  ];
   const [imageLoading, setImageLoading] = useState(true);
 
   // Get pages based on phase
@@ -100,6 +110,43 @@ export default function PagePreviewScreen() {
     );
   };
 
+  const handleApplyFilter = async (filter: FilterMode) => {
+    const currentPage = getPages()[currentIndex];
+    if (!currentPage || isApplyingFilter) return;
+    if (currentPage.filter_mode === filter) return;
+
+    // Use original if available, else current (though without original, non-destructive is hard)
+    const sourceUri = currentPage.original_file_path || currentPage.file_path;
+
+    setIsApplyingFilter(true);
+    try {
+      const filteredUri = await applyFilter(sourceUri, filter);
+      
+      const filename = `scanned_filtered_${Date.now()}.jpg`;
+      const dest = new File(Paths.document, filename);
+      new File(filteredUri).copy(dest);
+
+      let verified = false;
+      for (let i = 0; i < 10; i++) {
+        if (dest.exists) { verified = true; break; }
+        await new Promise(r => setTimeout(r, 50));
+      }
+
+      if (verified) {
+        const phaseToUse = phase || currentPhase;
+        const studentIdx = studentIndex ? parseInt(studentIndex) : undefined;
+        updatePagePathAndFilter(currentPage.id, phaseToUse, studentIdx, dest.uri, filter);
+      } else {
+         Alert.alert('Error', 'Failed to save filtered image.');
+      }
+    } catch (e) {
+      console.warn('[ApplyFilter]', e);
+      Alert.alert('Error', 'Failed to apply filter.');
+    } finally {
+      setIsApplyingFilter(false);
+    }
+  };
+
   const handleRetake = () => {
     Alert.alert(
       'Retake Page',
@@ -143,7 +190,7 @@ export default function PagePreviewScreen() {
             onLoadStart={() => setImageLoading(true)}
             onLoadEnd={() => setImageLoading(false)}
           />
-          {imageLoading && index === currentIndex && (
+          {(imageLoading || isApplyingFilter) && index === currentIndex && (
             <View style={styles.loadingOverlay}>
               <ActivityIndicator size="large" color={COLORS.primary} />
             </View>
@@ -250,6 +297,36 @@ export default function PagePreviewScreen() {
               {currentPage?.is_blurry ? 'Blurry' : 'Sharp'}
             </Text>
           </View>
+        </View>
+
+        {/* Filter Palette */}
+        <View style={styles.filterPalette}>
+          <FlatList
+            data={FILTERS}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            keyExtractor={item => item.id}
+            contentContainerStyle={styles.filterListContainer}
+            renderItem={({ item }) => {
+              const isActive = (currentPage?.filter_mode || 'bw') === item.id;
+              return (
+                <TouchableOpacity
+                  style={[styles.filterChip, isActive && styles.filterChipActive]}
+                  onPress={() => handleApplyFilter(item.id)}
+                  disabled={isApplyingFilter}
+                >
+                  <Ionicons 
+                    name={item.icon as any} 
+                    size={16} 
+                    color={isActive ? '#000' : COLORS.primary} 
+                  />
+                  <Text style={[styles.filterChipText, isActive && styles.filterChipTextActive]}>
+                    {item.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            }}
+          />
         </View>
 
         <View style={styles.actions}>
@@ -374,6 +451,36 @@ const styles = StyleSheet.create({
   infoText: {
     fontSize: 14,
     color: COLORS.text,
+  },
+  filterPalette: {
+    marginBottom: 16,
+  },
+  filterListContainer: {
+    gap: 8,
+    paddingHorizontal: 4,
+  },
+  filterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: COLORS.backgroundDark,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  filterChipActive: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  filterChipText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  filterChipTextActive: {
+    color: '#000',
   },
   actions: {
     flexDirection: 'row',

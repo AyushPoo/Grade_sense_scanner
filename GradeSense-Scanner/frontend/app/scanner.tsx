@@ -73,13 +73,6 @@ type ScannerPhase =
 
 type FilterMode = 'original' | 'enhanced' | 'bw' | 'high_contrast';
 
-const FILTERS: { id: FilterMode; label: string; icon: string }[] = [
-    { id: 'original', label: 'Original', icon: 'image-outline' },
-    { id: 'enhanced', label: 'Enhanced', icon: 'sunny-outline' },
-    { id: 'bw', label: 'B&W', icon: 'contrast-outline' },
-    { id: 'high_contrast', label: 'High Contrast', icon: 'options-outline' },
-];
-
 interface PendingCapture {
     uri: string;
     blur: BlurDetectionResult;
@@ -163,10 +156,7 @@ export default function ScannerScreen() {
     const [stabilityProgress, setStabilityProgress] = useState(0);
     const [liveFlashMode, setLiveFlashMode] = useState<'off' | 'on' | 'auto'>('off');
     const [isStabilizing, setIsStabilizing] = useState(false);
-    const [filterPicker, setFilterPicker] = useState<{
-        visible: boolean;
-        pending: PendingCapture | null;
-    }>({ visible: false, pending: null });
+    // Filter picker removed in favor of review screen palette.
 
     const [showShutterFlash, setShowShutterFlash] = useState(false);
 
@@ -252,11 +242,8 @@ export default function ScannerScreen() {
                 dims: cvResultRef.current?.dimensions ?? { width: 480, height: 640 },
             };
 
-            if (autoCaptureRef.current) {
-                await commitCapture(pending, 'original');
-            } else {
-                setFilterPicker({ visible: true, pending });
-            }
+            // Always commit directly to 'bw' as default scanner filter.
+            await commitCapture(pending, 'bw');
         } catch (e) {
             console.warn('[triggerCapture] error:', e);
         } finally {
@@ -273,7 +260,6 @@ export default function ScannerScreen() {
     ) => {
         if (normalizingRef.current) return;
         normalizingRef.current = true;
-        setFilterPicker({ visible: false, pending: null });
 
         try {
             let finalUri = pending.uri;
@@ -317,15 +303,27 @@ export default function ScannerScreen() {
                 finalUri = resized.uri;
             }
 
-            // Step 3: Grayscale via OpenCV
-            finalUri = await convertToGrayscale(finalUri);
+            // Step 3: Save original un-filtered image
+            const origFilename = `orig_${Date.now()}.jpg`;
+            const destOrig = new File(Paths.document, origFilename);
+            new File(finalUri).copy(destOrig);
 
-            // Step 4: Copy to permanent storage
+            // Poll for original
+            let origVerified = false;
+            for (let i = 0; i < 10; i++) {
+                if (destOrig.exists) { origVerified = true; break; }
+                await new Promise(r => setTimeout(r, 50));
+            }
+
+            // Step 4: Apply requested filter
+            const { applyFilter } = await import('../src/utils/cvProcessor');
+            const filteredUri = await applyFilter(destOrig.uri, filter);
+
+            // Step 5: Copy to permanent filtered storage
             const filename = `scanned_${Date.now()}.jpg`;
             const dest = new File(Paths.document, filename);
-            new File(finalUri).copy(dest);
+            new File(filteredUri).copy(dest);
 
-            // Step 5: Poll for existence
             let verified = false;
             for (let i = 0; i < 10; i++) {
                 if (dest.exists) { verified = true; break; }
@@ -342,6 +340,8 @@ export default function ScannerScreen() {
                 ui_id: '',
                 page_number: 0,
                 file_path: dest.uri,
+                original_file_path: destOrig.uri,
+                filter_mode: filter,
                 file_size: dest.size || 0,
                 is_blurry: pending.blur.isBlurry,
                 sharpness_score: pending.blur.sharpnessScore,
@@ -556,46 +556,6 @@ export default function ScannerScreen() {
                 }}
             />
 
-            <Modal
-                visible={filterPicker.visible}
-                transparent
-                animationType="slide"
-                onRequestClose={() =>
-                    filterPicker.pending && commitCapture(filterPicker.pending, 'original')
-                }
-            >
-                <Pressable
-                    style={styles.filterBackdrop}
-                    onPress={() =>
-                        filterPicker.pending && commitCapture(filterPicker.pending, 'original')
-                    }
-                >
-                    <View style={[styles.filterSheet, { paddingBottom: insets.bottom + 16 }]}>
-                        <Text style={styles.filterTitle}>Choose Filter</Text>
-                        {filterPicker.pending && (
-                            <Image
-                                source={{ uri: filterPicker.pending.uri }}
-                                style={styles.filterPreview}
-                                contentFit="contain"
-                            />
-                        )}
-                        <View style={styles.filterRow}>
-                            {FILTERS.map(f => (
-                                <TouchableOpacity
-                                    key={f.id}
-                                    style={styles.filterBtn}
-                                    onPress={() =>
-                                        filterPicker.pending && commitCapture(filterPicker.pending, f.id)
-                                    }
-                                >
-                                    <Ionicons name={f.icon as any} size={26} color={COLORS.primary} />
-                                    <Text style={styles.filterLabel}>{f.label}</Text>
-                                </TouchableOpacity>
-                            ))}
-                        </View>
-                    </View>
-                </Pressable>
-            </Modal>
         </View>
     );
 }
@@ -653,12 +613,4 @@ const styles = StyleSheet.create({
     thumbStrip: { height: 72, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'center' },
     thumbItem: { width: 52, height: 60, borderRadius: 6, overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
     thumbImage: { width: '100%', height: '100%' },
-    blurDot: { position: 'absolute', top: 4, right: 4, width: 8, height: 8, borderRadius: 4, backgroundColor: '#E24B4A' },
-    filterBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.6)' },
-    filterSheet: { backgroundColor: '#1a1a1a', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20 },
-    filterTitle: { color: '#fff', fontSize: 16, fontWeight: '700', textAlign: 'center', marginBottom: 14 },
-    filterPreview: { width: '100%', height: 180, borderRadius: 10, marginBottom: 16 },
-    filterRow: { flexDirection: 'row', justifyContent: 'space-around' },
-    filterBtn: { alignItems: 'center', gap: 6, padding: 10 },
-    filterLabel: { color: '#fff', fontSize: 12, fontWeight: '600' },
 });

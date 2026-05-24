@@ -27,6 +27,8 @@ export interface ScannedPage {
   ui_id: string; // Deterministic ID for UI reconciliation
   page_number: number;
   file_path: string;
+  original_file_path?: string; // pristine colored crop
+  filter_mode?: 'original' | 'bw' | 'enhanced' | 'high_contrast';
   file_size: number;
   is_blurry: boolean;
   sharpness_score: number;

@@ -18,6 +18,8 @@ import { COLORS } from '../src/config';
 import { useScanStore, qualityScore, QualityLevel, PendingRetake } from '../src/store/scanStore';
 import { useShallow } from 'zustand/react/shallow';
 import { ScannedStudent, ScannedPage } from '../src/types';
+import { applyFilter, FilterMode } from '../src/utils/cvProcessor';
+import { File, Paths } from 'expo-file-system';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -206,11 +208,20 @@ export default function ReviewScreen() {
     return state.savedSessions.find(s => s.session_id === sId) || state.currentSession;
   }));
 
-  const { setRetake, deletePage, renameStudent } = useScanStore(useShallow(state => ({
+  const { setRetake, deletePage, renameStudent, updatePagePathAndFilter } = useScanStore(useShallow(state => ({
     setRetake:     state.setRetake,
     deletePage:    state.deletePage,
     renameStudent: state.renameStudent,
+    updatePagePathAndFilter: state.updatePagePathAndFilter,
   })));
+
+  const FILTERS: { id: FilterMode; label: string; icon: string }[] = [
+    { id: 'original', label: 'Original', icon: 'image-outline' },
+    { id: 'bw', label: 'B&W', icon: 'contrast-outline' },
+    { id: 'enhanced', label: 'Enhanced', icon: 'sunny-outline' },
+    { id: 'high_contrast', label: 'High Contrast', icon: 'options-outline' },
+  ];
+  const [isApplyingGlobalFilter, setIsApplyingGlobalFilter] = useState(false);
 
   const [expandedStudents, setExpandedStudents] = useState<Set<number>>(() => {
     // Auto-expand students that have quality issues
@@ -267,6 +278,49 @@ export default function ReviewScreen() {
   const handleRename = useCallback((studentIndex: number, newLabel: string) => {
     renameStudent(studentIndex, newLabel);
   }, [renameStudent]);
+
+  const handleGlobalFilter = async (filter: FilterMode) => {
+    if (!session || isApplyingGlobalFilter) return;
+    setIsApplyingGlobalFilter(true);
+    let errorCount = 0;
+
+    try {
+      // Loop students and pages
+      for (const student of session.students) {
+        for (const page of student.pages) {
+          if (page.filter_mode === filter) continue;
+          const sourceUri = page.original_file_path || page.file_path;
+          
+          try {
+            const filteredUri = await applyFilter(sourceUri, filter);
+            const filename = `scanned_filtered_${Date.now()}_${Math.random().toString(36).substring(7)}.jpg`;
+            const dest = new File(Paths.document, filename);
+            new File(filteredUri).copy(dest);
+
+            let verified = false;
+            for (let i = 0; i < 10; i++) {
+              if (dest.exists) { verified = true; break; }
+              await new Promise(r => setTimeout(r, 50));
+            }
+
+            if (verified) {
+              updatePagePathAndFilter(page.id, 'students', student.student_index, dest.uri, filter);
+            } else {
+              errorCount++;
+            }
+          } catch (e) {
+            errorCount++;
+          }
+        }
+      }
+      
+      if (errorCount > 0) {
+        Alert.alert('Warning', `Failed to apply filter to ${errorCount} pages.`);
+      }
+    } finally {
+      setIsApplyingGlobalFilter(false);
+    }
+  };
 
   // ── Summary stats ─────────────────────────────────────────────────────────
   const stats = React.useMemo(() => {
@@ -326,6 +380,37 @@ export default function ReviewScreen() {
           <Text style={styles.summaryLabel}>blurry</Text>
         </View>
         <Text style={styles.summaryTotal}>{stats.total} pages total</Text>
+      </View>
+
+      {/* Global Filter Palette */}
+      <View style={styles.filterPaletteContainer}>
+        <Text style={styles.sectionTitle}>APPLY TO ALL PAGES</Text>
+        <FlatList
+          data={FILTERS}
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          keyExtractor={item => item.id}
+          contentContainerStyle={{ paddingHorizontal: 16, gap: 10, paddingBottom: 16 }}
+          renderItem={({ item }) => (
+            <TouchableOpacity
+              style={styles.filterChip}
+              onPress={() => handleGlobalFilter(item.id)}
+              disabled={isApplyingGlobalFilter}
+            >
+              <Ionicons 
+                name={item.icon as any} 
+                size={16} 
+                color={COLORS.primary} 
+              />
+              <Text style={styles.filterChipText}>{item.label}</Text>
+            </TouchableOpacity>
+          )}
+        />
+        {isApplyingGlobalFilter && (
+          <View style={styles.globalFilterOverlay}>
+            <Text style={{color: '#fff', fontSize: 13, fontWeight: 'bold'}}>Applying filter...</Text>
+          </View>
+        )}
       </View>
 
       {/* Student list */}
@@ -405,4 +490,9 @@ const styles = StyleSheet.create({
   footer:           { padding: 16, borderTopWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border },
   uploadButton:     { backgroundColor: COLORS.primary, borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
   uploadButtonText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+
+  filterPaletteContainer: { borderBottomWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border, position: 'relative' },
+  filterChip:       { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20, backgroundColor: COLORS.backgroundDark, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  filterChipText:   { fontSize: 13, fontWeight: '600', color: COLORS.textPrimary },
+  globalFilterOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' },
 });

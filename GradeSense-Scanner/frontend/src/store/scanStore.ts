@@ -83,6 +83,7 @@ interface ScanState {
   silentNextStudent: () => void;
   renameStudent: (studentIndex: number, newLabel: string) => void;
   deletePage: (studentIndex: number, pageIndex: number, phase?: string) => void;
+  updatePagePathAndFilter: (pageId: string, phase: string | undefined, studentIndex: number | undefined, newFilePath: string, filterMode: string) => void;
 }
 
 const createEmptySession = (): Partial<ScanSession> => ({
@@ -958,6 +959,47 @@ export const useScanStore = create<ScanState>()(
 
         updatedSession.stats = recomputeStats(updatedSession);
         
+        const newSavedSessions = [...savedSessions];
+        const existingIndex = newSavedSessions.findIndex(s => s.session_id === updatedSession.session_id);
+        if (existingIndex > -1) {
+          newSavedSessions[existingIndex] = updatedSession;
+        }
+
+        set({
+          currentSession: updatedSession,
+          savedSessions: newSavedSessions,
+        });
+      },
+
+      updatePagePathAndFilter: (pageId, phase, studentIndex, newFilePath, filterMode) => {
+        const { currentSession, savedSessions } = get();
+        if (!currentSession) return;
+        const updatedSession = { ...currentSession };
+
+        const updatePageInArray = (pages: ScannedPage[]) => {
+          const idx = pages.findIndex(p => p.id === pageId);
+          if (idx > -1) {
+            pages[idx] = { ...pages[idx], file_path: newFilePath, filter_mode: filterMode as any };
+          }
+        };
+
+        if (phase === 'question_paper') {
+          const pages = [...updatedSession.question_paper.pages];
+          updatePageInArray(pages);
+          updatedSession.question_paper.pages = pages;
+        } else if (phase === 'model_answer') {
+          const pages = [...updatedSession.model_answer.pages];
+          updatePageInArray(pages);
+          updatedSession.model_answer.pages = pages;
+        } else {
+          const idx = studentIndex ?? get().currentStudentIndex;
+          const student = { ...updatedSession.students[idx] };
+          const pages = [...student.pages];
+          updatePageInArray(pages);
+          student.pages = pages;
+          updatedSession.students[idx] = student;
+        }
+
         const newSavedSessions = [...savedSessions];
         const existingIndex = newSavedSessions.findIndex(s => s.session_id === updatedSession.session_id);
         if (existingIndex > -1) {

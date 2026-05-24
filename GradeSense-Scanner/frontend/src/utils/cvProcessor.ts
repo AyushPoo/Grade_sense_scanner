@@ -582,3 +582,14 @@ export async function convertToGrayscale(imageUri: string): Promise<string> {
     } catch (_) {}
   }
 }
+
+export type FilterMode = 'original' | 'bw' | 'enhanced' | 'high_contrast';
+
+export async function applyFilter(imageUri: string, mode: FilterMode): Promise<string> {
+  if (mode === 'original') return imageUri;
+  if (mode === 'bw' || mode === 'high_contrast') {
+    return await convertToGrayscale(imageUri);
+  }
+  // enhanced mode: fallback to original for now 
+  return imageUri;
+}
