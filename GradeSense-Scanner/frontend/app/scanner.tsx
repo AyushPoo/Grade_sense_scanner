@@ -168,6 +168,15 @@ export default function ScannerScreen() {
         pending: PendingCapture | null;
     }>({ visible: false, pending: null });
 
+    const [showShutterFlash, setShowShutterFlash] = useState(false);
+
+    // Toggle flash mode helper
+    const handleToggleFlash = useCallback(() => {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        const nextMode = flashMode === 'auto' ? 'on' : flashMode === 'on' ? 'off' : 'auto';
+        setFlashMode(nextMode);
+    }, [flashMode, setFlashMode]);
+
     const recentPages = currentPages.slice(-8);
 
     useEffect(() => { autoCaptureRef.current = autoCaptureEnabled; }, [autoCaptureEnabled]);
@@ -210,6 +219,12 @@ export default function ScannerScreen() {
         transitionTo('CAPTURING');
 
         try {
+            // Visual shutter flash effect
+            setShowShutterFlash(true);
+            setTimeout(() => {
+                if (isMounted.current) setShowShutterFlash(false);
+            }, 100);
+
             const activeFlash = useScanStore.getState().flashMode;
             if (activeFlash !== 'off') {
                 setLiveFlashMode(activeFlash);
@@ -448,6 +463,22 @@ export default function ScannerScreen() {
                     style={StyleSheet.absoluteFill}
                 />
 
+                {/* Shutter Flash Overlay */}
+                {showShutterFlash && <View style={styles.shutterFlashOverlay} />}
+
+                {/* Floating Flash Toggle */}
+                <TouchableOpacity 
+                    style={[styles.floatingFlashBtn, { top: insets.top + 60 }]} 
+                    onPress={handleToggleFlash}
+                >
+                    <Ionicons 
+                        name={flashMode === 'on' ? 'flash' : flashMode === 'auto' ? 'flash-outline' : 'flash-off'} 
+                        size={22} 
+                        color={flashMode === 'on' ? '#FFD700' : '#fff'} 
+                    />
+                    {flashMode === 'auto' && <Text style={styles.flashAutoText}>A</Text>}
+                </TouchableOpacity>
+
                 {pendingRetake && (
                     <View style={styles.retakeBanner}>
                         <Text style={styles.retakeText}>
@@ -594,6 +625,30 @@ const styles = StyleSheet.create({
     stabilityProgressBar: {
         height: '100%',
         backgroundColor: '#FFA500',
+    },
+    floatingFlashBtn: {
+        position: 'absolute',
+        right: 20,
+        width: 44,
+        height: 44,
+        borderRadius: 22,
+        backgroundColor: 'rgba(0,0,0,0.5)',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 10,
+    },
+    flashAutoText: {
+        position: 'absolute',
+        bottom: 4,
+        right: 6,
+        color: '#fff',
+        fontSize: 9,
+        fontWeight: 'bold',
+    },
+    shutterFlashOverlay: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: '#fff',
+        zIndex: 100,
     },
     thumbStrip: { height: 72, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'center' },
     thumbItem: { width: 52, height: 60, borderRadius: 6, overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
