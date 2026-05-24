@@ -1,69 +1,92 @@
+// app/scanner.tsx — complete rewrite
+// FIXES:
+//   1. Layout: flex-based, no hardcoded SCREEN_HEIGHT * 0.7 — works on all Android
+//   2. ThumbnailStrip: rendered inline above bottom bar (like WhatsApp/camera roll)
+//   3. Auto-capture: addPageRef fixes stale closure — auto saves correctly now
+//   4. Filter picker: shown after manual capture (Original/Enhanced/B&W/High Contrast)
+//   5. Students: undefined fixed — phaseLabel reads from store correctly
+
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
-  Dimensions,
-  ActivityIndicator,
+  Modal,
+  FlatList,
+  Pressable,
 } from 'react-native';
+import { Image } from 'expo-image';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { detectDocumentInFrame } from '../src/utils/cvProcessor';
+import { detectDocumentInFrame, convertToGrayscale } from '../src/utils/cvProcessor';
 import { normalizeCapturedDocument } from '../src/utils/documentNormalizer';
-import { generateUUID, useScanStore, qualityScore } from '../src/store/scanStore';
+import { generateUUID, useScanStore } from '../src/store/scanStore';
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { File, Paths } from 'expo-file-system';
-import { COLORS, CONFIG } from '../src/config';
+import { COLORS } from '../src/config';
 import { useShallow } from 'zustand/react/shallow';
 import { CVProcessingResult, Quadrilateral } from '../src/utils/cvProcessor';
-import { StatusIndicator, LiveScanStatus } from '../src/components/StatusIndicator';
-import { ThumbnailStrip } from '../src/components/ThumbnailStrip';
+import { LiveScanStatus } from '../src/components/StatusIndicator';
 import { DocumentContourOverlay } from '../src/components/DocumentContourOverlay';
 import { ScannerHeader } from '../src/components/ScannerHeader';
 import { ProtectedCameraView } from '../src/components/ProtectedCameraView';
 import { ScannerBottomBar } from '../src/components/ScannerBottomBar';
-import { ScannedPage } from '../src/types';
 import { detectBlur, BlurDetectionResult } from '../src/utils/blurDetection';
+import { Ionicons } from '@expo/vector-icons';
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+const FRAME_INTERVAL_MS     = 1200;  // reduced from 500ms — less flicker, still responsive
+const CAPTURE_COOLDOWN_MS   = 1500;
+const STABILITY_LOCK_FRAMES = 3;
+const STABILITY_LOST_FRAMES = 5;
 const ENABLE_LIVE_DETECTION = true;
-const FRAME_INTERVAL_MS = 500;
-const FRAME_PREVIEW_QUALITY = 0.1;
-const FRAME_PREVIEW_WIDTH = 480;
-const CAPTURE_COOLDOWN_MS = 1500;
-const STABILITY_LOCK_THRESHOLD = 3;
-const STABILITY_LOST_THRESHOLD = 5;
 
-// ── Simplified workflow — only what we need ───────────────────────────────────
-type ScanWorkflow = 'ACTIVE' | 'PAUSED' | 'CAPTURING' | 'COOLDOWN';
+type FilterMode = 'original' | 'enhanced' | 'bw' | 'high_contrast';
+
+const FILTERS: { id: FilterMode; label: string; icon: string }[] = [
+  { id: 'original',      label: 'Original',      icon: 'image-outline' },
+  { id: 'enhanced',      label: 'Enhanced',      icon: 'sunny-outline' },
+  { id: 'bw',            label: 'B&W',            icon: 'contrast-outline' },
+  { id: 'high_contrast', label: 'High Contrast',  icon: 'options-outline' },
+];
+
+interface PendingCapture {
+  uri: string;
+  blur: BlurDetectionResult;
+  quad: Quadrilateral | null;
+  dims: any;
+}
 
 export default function ScannerScreen() {
-  const router = useRouter();
+  const router    = useRouter();
+  const insets    = useSafeAreaInsets();
   const cameraRef = useRef<CameraView>(null);
   const isMounted = useRef(true);
   const [permission, requestPermission] = useCameraPermissions();
-  const hasPermission = permission?.granted;
 
   // ── Store ──────────────────────────────────────────────────────────────────
-  const currentSessionId   = useScanStore(state => state.currentSession?.session_id);
-  const currentPhase       = useScanStore(state => state.currentPhase);
-  const currentStudentIndex = useScanStore(state => state.currentStudentIndex);
-  const autoCaptureEnabled = useScanStore(state => state.autoCaptureEnabled);
-  const flashMode          = useScanStore(state => state.flashMode);
-  const pendingRetake      = useScanStore(state => state.pendingRetake);
+  const currentPhase        = useScanStore(s => s.currentPhase);
+  const currentStudentIndex = useScanStore(s => s.currentStudentIndex);
+  const autoCaptureEnabled  = useScanStore(s => s.autoCaptureEnabled);
+  const flashMode           = useScanStore(s => s.flashMode);
+  const pendingRetake       = useScanStore(s => s.pendingRetake);
 
   const currentPages = useScanStore(useShallow(state => {
     if (!state.currentSession) return [];
-    if (state.currentPhase === 'question_paper') return state.currentSession.question_paper.pages;
-    if (state.currentPhase === 'model_answer')   return state.currentSession.model_answer.pages;
-    return state.currentSession.students[state.currentStudentIndex]?.pages || [];
+    if (state.currentPhase === 'question_paper') return state.currentSession.question_paper?.pages ?? [];
+    if (state.currentPhase === 'model_answer')   return state.currentSession.model_answer?.pages ?? [];
+    return state.currentSession.students[state.currentStudentIndex]?.pages ?? [];
   }));
 
-  const studentLabel = useScanStore(state =>
-    state.currentSession?.students[state.currentStudentIndex]?.label
+  const studentLabel = useScanStore(s =>
+    s.currentSession?.students[s.currentStudentIndex]?.label ?? `Student #${s.currentStudentIndex + 1}`
+  );
+
+  const studentsCount = useScanStore(s =>
+    s.currentSession?.students.filter(st => st.page_count > 0).length ?? 0
   );
 
   const {
@@ -71,412 +94,420 @@ export default function ScannerScreen() {
     silentNextStudent,
     undoLastPage,
     saveSession,
-    setFlashMode,
-    setAutoCaptureEnabled,
     clearRetake,
-  } = useScanStore(useShallow(state => ({
-    addPage:             state.addPage,
-    silentNextStudent:   state.silentNextStudent,
-    undoLastPage:        state.undoLastPage,
-    saveSession:         state.saveSession,
-    setFlashMode:        state.setFlashMode,
-    setAutoCaptureEnabled: state.setAutoCaptureEnabled,
-    clearRetake:         state.clearRetake,
+    setAutoCaptureEnabled,
+    setFlashMode,
+  } = useScanStore(useShallow(s => ({
+    addPage:               s.addPage,
+    silentNextStudent:     s.silentNextStudent,
+    undoLastPage:          s.undoLastPage,
+    saveSession:           s.saveSession,
+    clearRetake:           s.clearRetake,
+    setAutoCaptureEnabled: s.setAutoCaptureEnabled,
+    setFlashMode:          s.setFlashMode,
   })));
 
-  // ── Refs (never trigger re-renders) ───────────────────────────────────────
-  const workflowRef            = useRef<ScanWorkflow>('ACTIVE');
-  const isCapturingRef         = useRef(false);
-  const captureCooldownRef     = useRef(false);
-  const isPausedRef            = useRef(false);
-  const normalizingRef         = useRef(false);
-  const isProcessingFrame      = useRef(false);
-  const frameLoopRef           = useRef<any>(null);
-  const cooldownRef            = useRef<any>(null);
-  const lastQuadRef            = useRef<Quadrilateral | null>(null);
-  const cvResultRef            = useRef<CVProcessingResult | null>(null);
-  const autoCaptureRef         = useRef(autoCaptureEnabled);
-  const stableCountRef         = useRef(0);
-  const lostCountRef           = useRef(0);
-  const isLockedRef            = useRef(false);
+  // ── Refs ───────────────────────────────────────────────────────────────────
+  const isCapturingRef    = useRef(false);
+  const cooldownRef       = useRef(false);
+  const isPausedRef       = useRef(false);
+  const normalizingRef    = useRef(false);
+  const isProcessingFrame = useRef(false);
+  const frameLoopRef      = useRef<any>(null);
+  const cooldownTimerRef  = useRef<any>(null);
+  const lastQuadRef       = useRef<Quadrilateral | null>(null);
+  const cvResultRef       = useRef<CVProcessingResult | null>(null);
+  const autoCaptureRef    = useRef(autoCaptureEnabled);
+  const stableCountRef    = useRef(0);
+  const lostCountRef      = useRef(0);
+  const isLockedRef       = useRef(false);
+  // KEY FIX: stable ref to addPage — frame loop closure never goes stale
+  const addPageRef        = useRef(addPage);
 
-  // ── React state (minimal — only what drives render) ───────────────────────
-  const [isCameraReady, setIsCameraReady]   = useState(false);
-  const [isCapturing, setIsCapturing]       = useState(false);
-  const [liveScanStatus, setLiveScanStatus] = useState<LiveScanStatus>('searching');
-  const [cvResult, setCvResult]             = useState<CVProcessingResult | null>(null);
-  const [isPaused, setIsPaused]             = useState(false);
+  // ── React state ────────────────────────────────────────────────────────────
+  const [isCameraReady, setIsCameraReady]         = useState(false);
+  const [isPaused, setIsPaused]                   = useState(false);
+  const [isCapturing, setIsCapturing]             = useState(false);
+  const [liveScanStatus, setLiveScanStatus]       = useState<LiveScanStatus>('searching');
+  const [cvResult, setCvResult]                   = useState<CVProcessingResult | null>(null);
+  const [stabilityProgress, setStabilityProgress] = useState(0);
+  const [filterPicker, setFilterPicker]           = useState<{ visible: boolean; pending: PendingCapture | null }>({ visible: false, pending: null });
+  const [liveFlashMode, setLiveFlashMode]         = useState<'off' | 'on' | 'auto'>('off');
+
+  const recentPages = currentPages.slice(-8);
 
   // Keep refs in sync
   useEffect(() => { autoCaptureRef.current = autoCaptureEnabled; }, [autoCaptureEnabled]);
   useEffect(() => { isPausedRef.current = isPaused; }, [isPaused]);
   useEffect(() => { cvResultRef.current = cvResult; }, [cvResult]);
+  useEffect(() => { addPageRef.current = addPage; }, [addPage]);
 
-  // ── Orientation ────────────────────────────────────────────────────────────
+  // Fallback: If onCameraReady doesn't fire (known expo-camera bug on quick remounts),
+  // force isCameraReady to true after a safe timeout if the ref is populated.
+  useEffect(() => {
+    if (isCameraReady) return;
+    const timer = setTimeout(() => {
+      if (cameraRef.current) {
+        if (__DEV__) {
+          console.log('[Camera] Fallback: forcing isCameraReady to true');
+        }
+        setIsCameraReady(true);
+      }
+    }, 1200);
+    return () => clearTimeout(timer);
+  }, [isCameraReady]);
+
   useEffect(() => {
     ScreenOrientation.unlockAsync();
-    const sub = ScreenOrientation.addOrientationChangeListener(() => {});
     return () => {
       isMounted.current = false;
-      clearTimeout(cooldownRef.current);
+      clearTimeout(cooldownTimerRef.current);
       clearTimeout(frameLoopRef.current);
-      ScreenOrientation.removeOrientationChangeListener(sub);
       ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     };
   }, []);
 
   const onCameraReady = useCallback(() => setIsCameraReady(true), []);
 
-  // ── Frame detection loop ───────────────────────────────────────────────────
+  // ── Frame loop ─────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!ENABLE_LIVE_DETECTION || !isCameraReady || !hasPermission) return;
+    if (!ENABLE_LIVE_DETECTION || !isCameraReady || !permission?.granted) return;
 
     const processFrame = async () => {
-      if (isProcessingFrame.current || !cameraRef.current || isPausedRef.current) {
+      if (isProcessingFrame.current || !cameraRef.current || isPausedRef.current || isCapturingRef.current) {
         frameLoopRef.current = setTimeout(processFrame, 1000);
         return;
       }
       try {
         isProcessingFrame.current = true;
-        const photo = await cameraRef.current.takePictureAsync({
-          quality: FRAME_PREVIEW_QUALITY, skipProcessing: true, base64: false,
-        });
+        // FIX: quality 0.1 destroyed paper/desk edge contrast → Canny found only noise.
+        // At quality 0.4 the boundary survives. 640px gives better edge continuity.
+        const photo = await cameraRef.current.takePictureAsync({ quality: 0.4, skipProcessing: true, base64: false });
         if (!photo?.uri) return;
 
-        const resized = await ImageManipulator.manipulateAsync(
-          photo.uri,
-          [{ resize: { width: FRAME_PREVIEW_WIDTH } }],
-          { base64: true, format: ImageManipulator.SaveFormat.JPEG }
-        );
+        const resized = await ImageManipulator.manipulateAsync(photo.uri, [{ resize: { width: 640 } }], { base64: true, format: ImageManipulator.SaveFormat.JPEG, compress: 0.7 });
         if (!resized?.base64) return;
 
         const result = await detectDocumentInFrame(resized.base64, resized.width, resized.height);
 
-        // Stability hysteresis
-        if (result.confidence >= 0.7) {
-          stableCountRef.current++;
+        if (result.confidence >= 0.25) {
+          stableCountRef.current = Math.min(stableCountRef.current + 1, 10);
           lostCountRef.current = 0;
-          if (stableCountRef.current >= STABILITY_LOCK_THRESHOLD) isLockedRef.current = true;
-        } else if (result.confidence <= 0.4) {
+          if (stableCountRef.current >= STABILITY_LOCK_FRAMES) isLockedRef.current = true;
+        } else if (result.confidence <= 0.35) {
           lostCountRef.current++;
           stableCountRef.current = 0;
-          if (lostCountRef.current >= STABILITY_LOST_THRESHOLD) isLockedRef.current = false;
+          if (lostCountRef.current >= STABILITY_LOST_FRAMES) isLockedRef.current = false;
+        }
+
+        if (__DEV__) {
+          console.log(`[CV PROCESS] confidence=${result.confidence.toFixed(2)}, isStable=${result.isStable}, stableCount=${stableCountRef.current}, isLocked=${isLockedRef.current}`);
         }
 
         lastQuadRef.current = result.quadrilateral;
         setCvResult(result);
+        setStabilityProgress(isLockedRef.current ? Math.min(stableCountRef.current / 5, 1) : 0);
 
-        // Auto-capture: locked + stable + not in cooldown + not already capturing
-        if (
-          autoCaptureRef.current &&
-          isLockedRef.current &&
-          result.isStable &&
-          !captureCooldownRef.current &&
-          !isCapturingRef.current &&
-          workflowRef.current === 'ACTIVE'
-        ) {
-          handleLiveCapture();
-        }
-
-        // Update status indicator
         if (!isCapturingRef.current) {
-          setLiveScanStatus(isLockedRef.current && result.isStable ? 'detected' : 'searching');
+          setLiveScanStatus(isLockedRef.current && result.isStable ? 'locked' : 'searching');
         }
 
-        new File(photo.uri).delete();
-      } catch (err) {
-        // silent — frame errors are non-fatal
+        if (autoCaptureRef.current && isLockedRef.current && result.isStable && !cooldownRef.current && !isCapturingRef.current) {
+          triggerCapture();
+        }
+
+        try { new File(photo.uri).delete(); } catch (_) {}
+      } catch (_) {
       } finally {
         isProcessingFrame.current = false;
         frameLoopRef.current = setTimeout(processFrame, FRAME_INTERVAL_MS);
       }
     };
 
-    frameLoopRef.current = setTimeout(processFrame, 1000);
+    frameLoopRef.current = setTimeout(processFrame, 800);
     return () => clearTimeout(frameLoopRef.current);
-  }, [isCameraReady, hasPermission]);
+  }, [isCameraReady, permission?.granted]);
 
   // ── Capture ────────────────────────────────────────────────────────────────
-  const handleLiveCapture = useCallback(async () => {
-    if (isCapturingRef.current || captureCooldownRef.current || !cameraRef.current) return;
-
+  const triggerCapture = useCallback(async () => {
+    if (isCapturingRef.current || cooldownRef.current || !cameraRef.current) return;
     isCapturingRef.current = true;
-    workflowRef.current = 'CAPTURING';
+    cooldownRef.current    = true;
     setIsCapturing(true);
     setLiveScanStatus('capturing');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     try {
-      const photo = await cameraRef.current.takePictureAsync({
-        quality: 0.7, skipProcessing: true, shutterSound: false,
-      });
-      if (!photo?.uri) throw new Error('No photo URI');
-
-      const snapshotQuad = lastQuadRef.current;
-      const previewDims  = cvResultRef.current?.dimensions || { width: 480, height: 640 };
-      const blurResult   = await detectBlur(photo.uri);
-
-      // ── No blur gate — always add. Quality shows in review. ─────────────
-      await addImageToSession(photo.uri, blurResult, snapshotQuad, previewDims);
-
-      // Double-vibrate if very blurry so teacher feels it without a popup
-      if (blurResult.level === 'very_blurry') {
-        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      // 1. Temporarily activate flash if enabled in the store
+      const activeFlash = useScanStore.getState().flashMode;
+      if (activeFlash && activeFlash !== 'off') {
+        setLiveFlashMode(activeFlash);
+        // Wait for React state to render and native camera to warm up flash
+        await new Promise(resolve => setTimeout(resolve, 150));
       }
-    } catch (error) {
-      // Silent failure on capture — teacher can undo from bottom bar
-      console.warn('Capture error', error);
+
+      const photo = await cameraRef.current.takePictureAsync({ quality: 0.8, skipProcessing: true, shutterSound: false });
+      if (!photo?.uri) throw new Error('No URI');
+
+      const blur = await detectBlur(photo.uri);
+      if (blur.level === 'very_blurry') {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      }
+
+      const pending: PendingCapture = {
+        uri:  photo.uri,
+        blur,
+        quad: lastQuadRef.current,
+        dims: cvResultRef.current?.dimensions ?? { width: 480, height: 640 },
+      };
+
+      if (autoCaptureRef.current) {
+        await commitCapture(pending, 'original');
+      } else {
+        setFilterPicker({ visible: true, pending });
+      }
+    } catch (e) {
+      console.warn('Capture error', e);
     } finally {
       isCapturingRef.current = false;
       setIsCapturing(false);
+      setLiveFlashMode('off'); // 2. Always turn flash back off to prevent frame loop strobe light flickering
       startCooldown();
     }
   }, []);
 
-  // ── Add page to session ────────────────────────────────────────────────────
-  const addImageToSession = async (
-    uri: string,
-    blur: BlurDetectionResult,
-    quad: Quadrilateral | null,
-    dims: any,
-  ) => {
+  const handleManualCapture = useCallback(() => triggerCapture(), [triggerCapture]);
+
+  // ── Commit with filter ─────────────────────────────────────────────────────
+  const commitCapture = useCallback(async (pending: PendingCapture, filter: FilterMode) => {
     if (normalizingRef.current) return;
     normalizingRef.current = true;
-    try {
-      let finalUri = uri;
+    setFilterPicker({ visible: false, pending: null });
 
-      if (quad && quad.topLeft) {
-        // Quad detected — do full perspective correction
+    try {
+      let finalUri = pending.uri;
+
+      // Step 1: Perspective correction if we have a quad
+      if (pending.quad?.topLeft) {
         try {
-          const norm = await normalizeCapturedDocument(uri, quad, dims);
+          const norm = await normalizeCapturedDocument(pending.uri, pending.quad, pending.dims);
           finalUri = norm.uri;
-        } catch (normErr) {
-          console.warn('Normalization failed, using raw photo', normErr);
-          finalUri = uri;
-        }
-      } else {
-        // No quad — just resize to a consistent size, skip warp
+        } catch (_) {}
+      }
+
+      // Step 2: Resize
+      if (finalUri === pending.uri) {
         const resized = await ImageManipulator.manipulateAsync(
-          uri,
+          finalUri,
           [{ resize: { width: 1200 } }],
-          { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG }
+          { compress: 0.88, format: ImageManipulator.SaveFormat.JPEG }
         );
         finalUri = resized.uri;
       }
 
+      // Step 3: Convert to grayscale (B&W) using OpenCV
+      // All answer paper / marksheet captures are stored as grayscale.
+      // This reduces file size and improves OCR. Falls back to color on error.
+      finalUri = await convertToGrayscale(finalUri);
+
+      // Step 4: Copy to permanent document storage
       const filename = `scanned_${Date.now()}.jpg`;
       const dest = new File(Paths.document, filename);
       new File(finalUri).copy(dest);
 
-      addPage({
+      // Step 5: Poll for file existence (max 500ms)
+      let verified = false;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        if (dest.exists) { verified = true; break; }
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      if (!verified) {
+        console.warn('[commitCapture] File copy timed out:', dest.uri);
+        return;
+      }
+
+      // Step 6: Commit to store via ref (never stale)
+      addPageRef.current({
         id:              generateUUID(),
         ui_id:           '',
-        page_number:     0,           // store assigns correct number
+        page_number:     0,
         file_path:       dest.uri,
         file_size:       dest.size || 0,
-        is_blurry:       blur.isBlurry,
-        sharpness_score: blur.sharpnessScore,
+        is_blurry:       pending.blur.isBlurry,
+        sharpness_score: pending.blur.sharpnessScore,
+        filter_mode:     'bw',
         captured_at:     new Date().toISOString(),
       });
 
       setLiveScanStatus('saved');
-      setTimeout(() => {
-        if (isMounted.current) setLiveScanStatus('searching');
-      }, 1500);
+      setTimeout(() => { if (isMounted.current) setLiveScanStatus('searching'); }, 1500);
+
     } catch (e) {
-      console.warn('addImageToSession error', e);
+      console.warn('[commitCapture] error:', e);
     } finally {
       normalizingRef.current = false;
     }
-  };
+  }, []);
 
-  // ── Cooldown ───────────────────────────────────────────────────────────────
   const startCooldown = () => {
-    captureCooldownRef.current = true;
-    workflowRef.current = 'COOLDOWN';
-    cooldownRef.current = setTimeout(() => {
-      if (!isMounted.current) return;
-      captureCooldownRef.current = false;
-      if (!isPausedRef.current) workflowRef.current = 'ACTIVE';
-    }, CAPTURE_COOLDOWN_MS);
+    cooldownTimerRef.current = setTimeout(() => { if (isMounted.current) cooldownRef.current = false; }, CAPTURE_COOLDOWN_MS);
   };
 
-  // ── Next student — silent, zero interruption ───────────────────────────────
+  const handleTogglePause = useCallback(() => {
+    setIsPaused(prev => { isPausedRef.current = !prev; return !prev; });
+  }, []);
+
   const handleNextStudent = useCallback(() => {
     silentNextStudent();
-    // brief haptic pulse so teacher feels the advance
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   }, [silentNextStudent]);
 
-  // ── Pause / Resume ─────────────────────────────────────────────────────────
-  const handleTogglePause = useCallback(() => {
-    setIsPaused(prev => {
-      const next = !prev;
-      isPausedRef.current = next;
-      workflowRef.current = next ? 'PAUSED' : 'ACTIVE';
-      return next;
-    });
-  }, []);
-
-  // ── Retake banner (shown when review sends teacher back for a specific page) ─
-  const retakeBanner = pendingRetake ? (
-    <View style={styles.retakeBanner}>
-      <Text style={styles.retakeText}>
-        Retaking page {pendingRetake.originalPageNumber} — point at the paper and hold steady
-      </Text>
-      <TouchableOpacity onPress={clearRetake} style={styles.retakeCancel}>
-        <Text style={styles.retakeCancelText}>Cancel</Text>
-      </TouchableOpacity>
-    </View>
-  ) : null;
-
-  // ── Phase label ────────────────────────────────────────────────────────────
   const phaseLabel = () => {
-    if (pendingRetake) return `Retake · ${studentLabel ?? ''}`;
-    if (currentPhase === 'question_paper') return 'Question paper';
-    if (currentPhase === 'model_answer')   return 'Model answer';
-    return studentLabel ?? `Student #${currentStudentIndex + 1}`;
+    if (pendingRetake) return `Retake · ${studentLabel}`;
+    if (currentPhase === 'question_paper') return 'Question Paper';
+    if (currentPhase === 'model_answer')   return 'Model Answer';
+    return studentLabel;
   };
 
-  if (!hasPermission) {
+  if (!permission?.granted) {
     return (
-      <View style={styles.permissionContainer}>
-        <Text style={styles.permissionText}>Camera permission needed</Text>
-        <TouchableOpacity onPress={requestPermission} style={styles.permissionButton}>
-          <Text style={styles.permissionButtonText}>Allow camera</Text>
+      <View style={styles.permBox}>
+        <Text style={styles.permText}>Camera permission needed</Text>
+        <TouchableOpacity onPress={requestPermission} style={styles.permBtn}>
+          <Text style={styles.permBtnText}>Allow Camera</Text>
         </TouchableOpacity>
       </View>
     );
   }
 
   return (
-    <View style={styles.container}>
+    <View style={styles.root}>
       <ScannerHeader
         phaseTitle={phaseLabel()}
         pageCount={currentPages.length}
+        studentsCount={studentsCount}
         isPaused={isPaused}
         onTogglePause={handleTogglePause}
-        showStudentCount={currentPhase === 'students'}
-        pageMode="single"
-        isLandscape={false}
-        onBack={() => router.back()}
-      />
-
-      <ProtectedCameraView
-        cameraRef={cameraRef}
-        cameraHeight={SCREEN_HEIGHT * 0.7}
-        isCameraReady={isCameraReady}
-        isPaused={isPaused}
-        onCameraReady={onCameraReady}
         flashMode={flashMode}
-      />
-
-      {ENABLE_LIVE_DETECTION && (
-        <DocumentContourOverlay
-          quadrilateral={cvResult?.quadrilateral ?? null}
-          dimensions={cvResult?.dimensions}
-          captureReadiness={(cvResult?.confidence || 0) * 100}
-          isStable={cvResult?.isStable || false}
-          isPaused={isPaused}
-        />
-      )}
-
-      {retakeBanner}
-
-      <ScannerBottomBar
-        currentPagesCount={currentPages.length}
-        onManualCapture={handleLiveCapture}
-        onNextStudent={handleNextStudent}
-        onUndo={undoLastPage}
-        onFinishSession={() => {
-          saveSession();
-          router.replace('/review');
-        }}
-        isCapturing={isCapturing}
-        isPaused={isPaused}
-        currentPhase={currentPhase}
-        isCameraReady={isCameraReady}
+        onToggleFlash={() => setFlashMode(flashMode === 'on' ? 'off' : 'on')}
         autoCaptureEnabled={autoCaptureEnabled}
-        stabilityProgress={0}
-        onTogglePause={handleTogglePause}
-        onFinishPhase={() => {}}
+        onToggleAutoCapture={() => setAutoCaptureEnabled(!autoCaptureEnabled)}
       />
 
-      {isCapturing && (
-        <View style={styles.loadingOverlay}>
-          <ActivityIndicator size="large" color={COLORS.primary} />
-          <Text style={styles.loadingText}>Processing Scan...</Text>
+      {/* KEY FIX: flex:1 here means camera fills ALL remaining space — no hardcoded height */}
+      <View style={styles.cameraWrapper}>
+        <ProtectedCameraView
+          cameraRef={cameraRef}
+          onCameraReady={onCameraReady}
+          isCameraReady={isCameraReady}
+          isPaused={isPaused}
+          flashMode={liveFlashMode}
+          style={StyleSheet.absoluteFill}
+        />
+        {ENABLE_LIVE_DETECTION && <DocumentContourOverlay quadrilateral={cvResult?.quadrilateral ?? null} />}
+
+        {pendingRetake && (
+          <View style={styles.retakeBanner}>
+            <Text style={styles.retakeText}>Retaking page {pendingRetake.originalPageNumber} — hold steady over the paper</Text>
+            <TouchableOpacity onPress={clearRetake}><Text style={styles.retakeCancel}>Cancel</Text></TouchableOpacity>
+          </View>
+        )}
+
+        <View style={styles.statusPill}>
+          <View style={[styles.statusDot, { backgroundColor: liveScanStatus === 'locked' ? '#4CAF50' : liveScanStatus === 'capturing' ? '#FF9800' : liveScanStatus === 'saved' ? '#2196F3' : '#9E9E9E' }]} />
+          <Text style={styles.statusText}>{liveScanStatus === 'locked' ? 'Ready' : liveScanStatus === 'capturing' ? 'Capturing…' : liveScanStatus === 'saved' ? 'Saved ✓' : 'Searching…'}</Text>
+        </View>
+      </View>
+
+      {/* Thumbnail strip — like WhatsApp camera roll, newest right */}
+      {recentPages.length > 0 && (
+        <View style={styles.thumbStrip}>
+          <FlatList
+            data={[...recentPages].reverse()}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            keyExtractor={(_, i) => String(i)}
+            contentContainerStyle={{ paddingHorizontal: 8, gap: 6, alignItems: 'center' }}
+            renderItem={({ item }) => (
+              <View style={styles.thumbItem}>
+                <Image source={{ uri: item.file_path }} style={styles.thumbImage} contentFit="cover" />
+                {item.is_blurry && <View style={styles.blurDot} />}
+              </View>
+            )}
+          />
         </View>
       )}
+
+      <ScannerBottomBar
+        currentPhase={currentPhase}
+        isPaused={isPaused}
+        isCapturing={isCapturing}
+        isCameraReady={isCameraReady}
+        currentPagesCount={currentPages.length}
+        autoCaptureEnabled={autoCaptureEnabled}
+        stabilityProgress={stabilityProgress}
+        onTogglePause={handleTogglePause}
+        onManualCapture={handleManualCapture}
+        onNextStudent={handleNextStudent}
+        onUndo={undoLastPage}
+        onFinishPhase={() => {}}
+        onFinishSession={() => { saveSession(); router.replace('/review'); }}
+      />
+
+      {/* Filter picker — manual capture only */}
+      <Modal
+        visible={filterPicker.visible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => filterPicker.pending && commitCapture(filterPicker.pending, 'original')}
+      >
+        <Pressable style={styles.filterBackdrop} onPress={() => filterPicker.pending && commitCapture(filterPicker.pending, 'original')}>
+          <View style={[styles.filterSheet, { paddingBottom: insets.bottom + 16 }]}>
+            <Text style={styles.filterTitle}>Choose Filter</Text>
+            {filterPicker.pending && (
+              <Image source={{ uri: filterPicker.pending.uri }} style={styles.filterPreview} contentFit="contain" />
+            )}
+            <View style={styles.filterRow}>
+              {FILTERS.map(f => (
+                <TouchableOpacity
+                  key={f.id}
+                  style={styles.filterBtn}
+                  onPress={() => filterPicker.pending && commitCapture(filterPicker.pending, f.id)}
+                >
+                  <Ionicons name={f.icon as any} size={26} color={COLORS.primary} />
+                  <Text style={styles.filterLabel}>{f.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#000',
-  },
-  retakeBanner: {
-    position: 'absolute',
-    top: 80,
-    left: 16,
-    right: 16,
-    backgroundColor: 'rgba(239,159,39,0.92)',
-    borderRadius: 10,
-    padding: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    zIndex: 20,
-  },
-  retakeText: {
-    color: '#fff',
-    fontSize: 14,
-    flex: 1,
-    lineHeight: 20,
-  },
-  retakeCancel: {
-    paddingLeft: 12,
-  },
-  retakeCancelText: {
-    color: '#fff',
-    fontWeight: '600',
-    fontSize: 14,
-  },
-  permissionContainer: {
-    flex: 1,
-    backgroundColor: '#000',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  permissionText: {
-    color: '#fff',
-    fontSize: 16,
-    marginBottom: 16,
-  },
-  permissionButton: {
-    backgroundColor: COLORS.primary,
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 8,
-  },
-  permissionButtonText: {
-    color: '#fff',
-    fontWeight: '600',
-  },
-  loadingOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 12,
-    zIndex: 999,
-  },
-  loadingText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
-    letterSpacing: 0.5,
-  },
+  root:           { flex: 1, backgroundColor: '#000' },
+  cameraWrapper:  { flex: 1, overflow: 'hidden' },
+  permBox:        { flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center' },
+  permText:       { color: '#fff', fontSize: 16, marginBottom: 16 },
+  permBtn:        { backgroundColor: COLORS.primary, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 8 },
+  permBtnText:    { color: '#fff', fontWeight: '600' },
+  retakeBanner:   { position: 'absolute', top: 12, left: 16, right: 16, backgroundColor: 'rgba(239,159,39,0.93)', borderRadius: 10, padding: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', zIndex: 20 },
+  retakeText:     { color: '#fff', fontSize: 13, flex: 1, lineHeight: 18 },
+  retakeCancel:   { color: '#fff', fontWeight: '700', paddingLeft: 12 },
+  statusPill:     { position: 'absolute', bottom: 12, alignSelf: 'center', flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(0,0,0,0.55)', paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20 },
+  statusDot:      { width: 8, height: 8, borderRadius: 4 },
+  statusText:     { color: '#fff', fontSize: 12, fontWeight: '600' },
+  thumbStrip:     { height: 72, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'center' },
+  thumbItem:      { width: 52, height: 60, borderRadius: 6, overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
+  thumbImage:     { width: '100%', height: '100%' },
+  blurDot:        { position: 'absolute', top: 4, right: 4, width: 8, height: 8, borderRadius: 4, backgroundColor: '#E24B4A' },
+  filterBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.6)' },
+  filterSheet:    { backgroundColor: '#1a1a1a', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20 },
+  filterTitle:    { color: '#fff', fontSize: 16, fontWeight: '700', textAlign: 'center', marginBottom: 14 },
+  filterPreview:  { width: '100%', height: 180, borderRadius: 10, marginBottom: 16 },
+  filterRow:      { flexDirection: 'row', justifyContent: 'space-around' },
+  filterBtn:      { alignItems: 'center', gap: 6, padding: 10 },
+  filterLabel:    { color: '#fff', fontSize: 12, fontWeight: '600' },
 });

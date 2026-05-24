@@ -7,11 +7,12 @@ import { COLORS } from '../config';
 interface ProtectedCameraViewProps {
   cameraRef: React.RefObject<any>;
   onCameraReady: () => void;
+  // Both required — scanner.tsx passes both correctly.
+  // Making them optional caused the memo to miss the isCameraReady=true update.
   isCameraReady: boolean;
   isPaused: boolean;
-  cameraHeight: number;
   flashMode?: 'off' | 'on' | 'auto';
-  // Use children to allow Overlay and Status to be placed on top
+  style?: any;
   children?: React.ReactNode;
 }
 
@@ -20,18 +21,14 @@ const ProtectedCameraViewBase: React.FC<ProtectedCameraViewProps> = ({
   onCameraReady,
   isCameraReady,
   isPaused,
-  cameraHeight,
   flashMode,
+  style,
   children,
 }) => {
-  // ── RENDER INSTRUMENTATION (Phase 2) ──────────────────────────────────────
-  if (__DEV__) {
-    console.log(`[RENDER] ProtectedCameraView: ready=${isCameraReady}, paused=${isPaused}`);
-  }
-  // ─────────────────────────────────────────────────────────────────────────────
-
   return (
-    <View style={[styles.cameraContainer, { height: cameraHeight }]}>
+    // LAYOUT: No cameraHeight prop. Parent controls size.
+    // scanner.tsx uses cameraWrapper: { flex: 1 } which fills the space correctly.
+    <View style={[styles.cameraContainer, style]}>
       <CameraView
         ref={cameraRef}
         style={StyleSheet.absoluteFill}
@@ -54,22 +51,24 @@ const ProtectedCameraViewBase: React.FC<ProtectedCameraViewProps> = ({
         </View>
       )}
 
-      {/* Children: DocumentContourOverlay, StatusIndicator, etc. */}
       {children}
     </View>
   );
 };
 
-// CRITICAL: React.memo here prevents the CameraView from reconciling 
-// even if ScannerScreen rerenders due to CV result state updates.
+// React.memo: prevents CameraView reconciliation on CV result state updates.
+// Props are primitives + stable refs, so default shallow comparison is correct.
 export const ProtectedCameraView = React.memo(ProtectedCameraViewBase);
 
 const styles = StyleSheet.create({
   cameraContainer: {
+    // LAYOUT FIX: flex:1 fills parent's available space.
+    // The old `height: cameraHeight` was what caused the black screen when
+    // scanner.tsx stopped passing cameraHeight.
+    flex: 1,
     width: '100%',
     backgroundColor: '#000',
     overflow: 'hidden',
-    position: 'relative',
   },
   pauseOverlay: {
     ...StyleSheet.absoluteFillObject,

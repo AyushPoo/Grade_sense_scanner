@@ -1,7 +1,10 @@
+// src/components/ScannerBottomBar.tsx
+// FIX: Removed fixed heights, flex-based layout, proper safe area for all Android devices
+
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CaptureButton } from './CaptureButton';
 import { COLORS } from '../config';
 
@@ -36,107 +39,117 @@ const ScannerBottomBarBase: React.FC<ScannerBottomBarProps> = ({
   onFinishPhase,
   onFinishSession,
 }) => {
-  // ── RENDER INSTRUMENTATION (Phase 2) ──────────────────────────────────────
   if (__DEV__) {
     console.log(`[RENDER] ScannerBottomBar: phase=${currentPhase}, capturing=${isCapturing}`);
   }
-  // ─────────────────────────────────────────────────────────────────────────────
+
+  // Use insets directly instead of SafeAreaView wrapper
+  // This gives us precise control over bottom padding on every device
+  const insets = useSafeAreaInsets();
+  const bottomPad = Math.max(insets.bottom, 8);
 
   const isUndoDisabled = currentPagesCount === 0;
 
   return (
-    <SafeAreaView edges={['bottom']} style={styles.controlsSafeArea}>
-      <View style={styles.controlsContainer}>
-        {/* Main Action Bar */}
-        <View style={styles.mainActionBar}>
+    <View style={[styles.container, { paddingBottom: bottomPad }]}>
+      {/* Main Action Bar: PAUSE | CAPTURE | NEXT STUDENT */}
+      <View style={styles.mainActionBar}>
+        <TouchableOpacity
+          style={[styles.miniBtn, isPaused && styles.miniBtnActive]}
+          onPress={onTogglePause}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Ionicons name={isPaused ? 'play' : 'pause'} size={22} color="#fff" />
+          <Text style={styles.miniBtnLabel}>{isPaused ? 'RESUME' : 'PAUSE'}</Text>
+        </TouchableOpacity>
+
+        <CaptureButton
+          onPress={onManualCapture}
+          stabilityProgress={isPaused ? 0 : stabilityProgress}
+          disabled={isCapturing || isPaused || !isCameraReady}
+          autoCaptureEnabled={autoCaptureEnabled && !isPaused && isCameraReady}
+        />
+
+        {currentPhase === 'students' ? (
           <TouchableOpacity
-            style={[styles.miniBtn, isPaused && styles.miniBtnActive]}
-            onPress={onTogglePause}
+            style={styles.nextStudentAction}
+            onPress={onNextStudent}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
-            <Ionicons name={isPaused ? 'play' : 'pause'} size={24} color="#fff" />
-            <Text style={styles.miniBtnLabel}>{isPaused ? 'RESUME' : 'PAUSE'}</Text>
+            <Ionicons name="person-add" size={22} color="#fff" />
+            <Text style={styles.nextStudentActionLabel}>NEXT{'\n'}STUDENT</Text>
           </TouchableOpacity>
-
-          <CaptureButton
-            onPress={onManualCapture}
-            stabilityProgress={isPaused ? 0 : stabilityProgress}
-            disabled={isCapturing || isPaused || !isCameraReady}
-            autoCaptureEnabled={autoCaptureEnabled && !isPaused && isCameraReady}
-          />
-
-          {currentPhase === 'students' ? (
-            <TouchableOpacity style={styles.nextStudentAction} onPress={onNextStudent}>
-              <Ionicons name="person-add" size={24} color="#fff" />
-              <Text style={styles.nextStudentActionLabel}>NEXT STUDENT</Text>
-            </TouchableOpacity>
-          ) : (
-            <TouchableOpacity
-              style={[styles.undoButton, isUndoDisabled && styles.undoButtonDisabled]}
-              onPress={onUndo}
-              disabled={isUndoDisabled}
-            >
-              <Ionicons
-                name="arrow-undo"
-                size={20}
-                color={!isUndoDisabled ? '#fff' : 'rgba(255,255,255,0.3)'}
-              />
-              <Text style={styles.miniBtnLabel}>UNDO</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-
-        {/* Secondary Actions Row */}
-        <View style={styles.secondaryActionsRow}>
-          {currentPhase !== 'students' ? (
-            <TouchableOpacity style={styles.donePhaseBtn} onPress={onFinishPhase}>
-              <Text style={styles.donePhaseBtnText}>
-                FINISH {currentPhase === 'question_paper' ? 'QP' : 'MODEL'}
-              </Text>
-              <Ionicons name="arrow-forward" size={16} color="#fff" />
-            </TouchableOpacity>
-          ) : (
-            <View style={styles.studentStatsRow}>
-              <TouchableOpacity style={styles.undoStudentBtn} onPress={onUndo}>
-                <Ionicons name="arrow-undo" size={16} color="rgba(255,255,255,0.6)" />
-                <Text style={styles.undoStudentBtnText}>Undo Last Page</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.finishSessionBtn} onPress={onFinishSession}>
-                <Text style={styles.finishSessionBtnText}>FINISH SESSION</Text>
-                <Ionicons name="checkmark-done" size={18} color="#fff" />
-              </TouchableOpacity>
-            </View>
-          )}
-        </View>
+        ) : (
+          <TouchableOpacity
+            style={[styles.miniBtn, isUndoDisabled && styles.undoButtonDisabled]}
+            onPress={onUndo}
+            disabled={isUndoDisabled}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <Ionicons
+              name="arrow-undo"
+              size={20}
+              color={!isUndoDisabled ? '#fff' : 'rgba(255,255,255,0.3)'}
+            />
+            <Text style={styles.miniBtnLabel}>UNDO</Text>
+          </TouchableOpacity>
+        )}
       </View>
-    </SafeAreaView>
+
+      {/* Secondary Row: UNDO LAST PAGE | FINISH SESSION */}
+      <View style={styles.secondaryRow}>
+        {currentPhase !== 'students' ? (
+          <TouchableOpacity style={styles.donePhaseBtn} onPress={onFinishPhase}>
+            <Text style={styles.donePhaseBtnText}>
+              FINISH {currentPhase === 'question_paper' ? 'QP' : 'MODEL'}
+            </Text>
+            <Ionicons name="arrow-forward" size={16} color="#fff" />
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.studentActionsRow}>
+            <TouchableOpacity
+              style={styles.undoStudentBtn}
+              onPress={onUndo}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Ionicons name="arrow-undo" size={16} color="rgba(255,255,255,0.6)" />
+              <Text style={styles.undoStudentBtnText}>Undo Last Page</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.finishSessionBtn} onPress={onFinishSession}>
+              <Text style={styles.finishSessionBtnText}>FINISH SESSION</Text>
+              <Ionicons name="checkmark-done" size={18} color="#fff" />
+            </TouchableOpacity>
+          </View>
+        )}
+      </View>
+    </View>
   );
 };
 
 export const ScannerBottomBar = React.memo(ScannerBottomBarBase);
 
 const styles = StyleSheet.create({
-  controlsSafeArea: {
+  container: {
     backgroundColor: '#000',
-  },
-  controlsContainer: {
     paddingHorizontal: 20,
-    paddingTop: 10,
-    paddingBottom: 4,
+    paddingTop: 12,
+    // No fixed height — grows with content + safe area inset
   },
   mainActionBar: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 16,
+    marginBottom: 12,
   },
   miniBtn: {
-    width: 70,
-    height: 70,
-    borderRadius: 35,
-    backgroundColor: 'rgba(255,255,255,0.1)',
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: 'rgba(255,255,255,0.12)',
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 4,
+    gap: 3,
   },
   miniBtnActive: {
     backgroundColor: COLORS.primary,
@@ -145,51 +158,42 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 9,
     fontWeight: '800',
-    letterSpacing: 1,
+    letterSpacing: 0.8,
   },
   nextStudentAction: {
-    width: 70,
-    height: 70,
-    borderRadius: 35,
-    backgroundColor: 'rgba(235, 87, 34, 0.25)', // Orange tint
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: 'rgba(235,87,34,0.22)',
     borderWidth: 1,
-    borderColor: 'rgba(235, 87, 34, 0.4)',
+    borderColor: 'rgba(235,87,34,0.45)',
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 4,
+    gap: 2,
   },
   nextStudentActionLabel: {
     color: '#FF6B35',
     fontSize: 8,
     fontWeight: '900',
     textAlign: 'center',
-    paddingHorizontal: 4,
-  },
-  undoButton: {
-    width: 70,
-    height: 70,
-    borderRadius: 35,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 4,
+    lineHeight: 11,
   },
   undoButtonDisabled: {
-    opacity: 0.5,
+    opacity: 0.4,
   },
-  secondaryActionsRow: {
+  secondaryRow: {
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-    paddingBottom: 8,
+    paddingBottom: 4,
   },
   donePhaseBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: 'rgba(255,255,255,0.15)',
     paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 25,
+    paddingVertical: 11,
+    borderRadius: 24,
     gap: 10,
   },
   donePhaseBtnText: {
@@ -198,7 +202,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 1,
   },
-  studentStatsRow: {
+  studentActionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
     width: '100%',
@@ -219,14 +223,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#2E7D32',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 25,
+    paddingHorizontal: 18,
+    paddingVertical: 11,
+    borderRadius: 24,
     gap: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 5,
     elevation: 6,
   },
   finishSessionBtnText: {
