@@ -28,7 +28,7 @@ export interface ScannedPage {
   page_number: number;
   file_path: string;
   original_file_path?: string; // pristine colored crop
-  filter_mode?: 'original' | 'bw' | 'enhanced' | 'high_contrast';
+  filter_mode?: 'original' | 'grayscale' | 'high_contrast' | 'adaptive_threshold';
   file_size: number;
   is_blurry: boolean;
   sharpness_score: number;

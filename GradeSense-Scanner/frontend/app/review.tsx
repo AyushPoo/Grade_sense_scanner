@@ -216,10 +216,10 @@ export default function ReviewScreen() {
   })));
 
   const FILTERS: { id: FilterMode; label: string; icon: string }[] = [
-    { id: 'original', label: 'Original', icon: 'image-outline' },
-    { id: 'bw', label: 'B&W', icon: 'contrast-outline' },
-    { id: 'enhanced', label: 'Enhanced', icon: 'sunny-outline' },
-    { id: 'high_contrast', label: 'High Contrast', icon: 'options-outline' },
+    { id: 'original',           label: 'Original',    icon: 'image-outline' },
+    { id: 'grayscale',          label: 'Grayscale',   icon: 'contrast-outline' },
+    { id: 'high_contrast',      label: 'Hi-Contrast', icon: 'sunny-outline' },
+    { id: 'adaptive_threshold', label: 'OCR Binarize', icon: 'scan-outline' },
   ];
   const [isApplyingGlobalFilter, setIsApplyingGlobalFilter] = useState(false);
 

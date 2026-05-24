@@ -12,7 +12,7 @@ import {
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { detectDocumentInFrame, convertToGrayscale } from '../src/utils/cvProcessor';
+import { detectDocumentInFrame, convertToGrayscale, FilterMode, applyFilter } from '../src/utils/cvProcessor';
 import { normalizeCapturedDocument } from '../src/utils/documentNormalizer';
 import { generateUUID, useScanStore } from '../src/store/scanStore';
 import { useRouter } from 'expo-router';
@@ -71,7 +71,7 @@ type ScannerPhase =
     | 'CAPTURING'
     | 'COOLDOWN';
 
-type FilterMode = 'original' | 'enhanced' | 'bw' | 'high_contrast';
+// FilterMode is imported from cvProcessor: 'original' | 'grayscale' | 'high_contrast' | 'adaptive_threshold'
 
 interface PendingCapture {
     uri: string;
@@ -242,8 +242,8 @@ export default function ScannerScreen() {
                 dims: cvResultRef.current?.dimensions ?? { width: 480, height: 640 },
             };
 
-            // Always commit directly to 'bw' as default scanner filter.
-            await commitCapture(pending, 'bw');
+            // Commit with grayscale as the default OCR-optimised filter.
+            await commitCapture(pending, 'grayscale');
         } catch (e) {
             console.warn('[triggerCapture] error:', e);
         } finally {
@@ -315,8 +315,7 @@ export default function ScannerScreen() {
                 await new Promise(r => setTimeout(r, 50));
             }
 
-            // Step 4: Apply requested filter
-            const { applyFilter } = await import('../src/utils/cvProcessor');
+            // Step 4: Apply requested OCR filter
             const filteredUri = await applyFilter(destOrig.uri, filter);
 
             // Step 5: Copy to permanent filtered storage
@@ -613,4 +612,5 @@ const styles = StyleSheet.create({
     thumbStrip: { height: 72, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'center' },
     thumbItem: { width: 52, height: 60, borderRadius: 6, overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
     thumbImage: { width: '100%', height: '100%' },
+    blurDot: { position: 'absolute', top: 4, right: 4, width: 8, height: 8, borderRadius: 4, backgroundColor: '#E24B4A' },
 });

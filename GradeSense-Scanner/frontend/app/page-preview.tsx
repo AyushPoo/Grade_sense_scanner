@@ -35,10 +35,10 @@ export default function PagePreviewScreen() {
   const [isApplyingFilter, setIsApplyingFilter] = useState(false);
 
   const FILTERS: { id: FilterMode; label: string; icon: string }[] = [
-    { id: 'original', label: 'Original', icon: 'image-outline' },
-    { id: 'bw', label: 'B&W', icon: 'contrast-outline' },
-    { id: 'enhanced', label: 'Enhanced', icon: 'sunny-outline' },
-    { id: 'high_contrast', label: 'High Contrast', icon: 'options-outline' },
+    { id: 'original',           label: 'Original',    icon: 'image-outline' },
+    { id: 'grayscale',          label: 'Grayscale',   icon: 'contrast-outline' },
+    { id: 'high_contrast',      label: 'Hi-Contrast', icon: 'sunny-outline' },
+    { id: 'adaptive_threshold', label: 'OCR Binarize', icon: 'scan-outline' },
   ];
   const [imageLoading, setImageLoading] = useState(true);
 
@@ -308,7 +308,7 @@ export default function PagePreviewScreen() {
             keyExtractor={item => item.id}
             contentContainerStyle={styles.filterListContainer}
             renderItem={({ item }) => {
-              const isActive = (currentPage?.filter_mode || 'bw') === item.id;
+              const isActive = (currentPage?.filter_mode || 'original') === item.id;
               return (
                 <TouchableOpacity
                   style={[styles.filterChip, isActive && styles.filterChipActive]}

@@ -583,13 +583,87 @@ export async function convertToGrayscale(imageUri: string): Promise<string> {
   }
 }
 
-export type FilterMode = 'original' | 'bw' | 'enhanced' | 'high_contrast';
+export type FilterMode = 'original' | 'grayscale' | 'high_contrast' | 'adaptive_threshold';
 
+/**
+ * OCR-Optimized Filters — designed for maximum text legibility in extraction pipelines.
+ *
+ * original           → No processing. Good lighting, clean background.
+ * grayscale          → Removes color noise. Better for OCR than color on most engines.
+ * high_contrast      → CLAHE-like boost: normalizes exposure + strong contrast. Best for
+ *                      faded/uneven lighting, pencil writing, or low-quality prints.
+ * adaptive_threshold → Full binarization. Converts to pure black text on white.
+ *                      Best for typed text, printed documents, and Tesseract/Google OCR.
+ */
 export async function applyFilter(imageUri: string, mode: FilterMode): Promise<string> {
   if (mode === 'original') return imageUri;
-  if (mode === 'bw' || mode === 'high_contrast') {
-    return await convertToGrayscale(imageUri);
+
+  // All non-original modes start from a grayscale base
+  const grayscaleUri = await convertToGrayscale(imageUri);
+
+  if (mode === 'grayscale') {
+    return grayscaleUri;
   }
-  // enhanced mode: fallback to original for now 
-  return imageUri;
+
+  // high_contrast & adaptive_threshold need further processing
+  let srcMat: any = null;   // 4-channel RGBA decoded from JPEG
+  let grayMat: any = null;  // 1-channel gray
+  let dstMat: any = null;   // 1-channel output
+
+  try {
+    const resized = await ImageManipulator.manipulateAsync(
+      grayscaleUri,
+      [{ resize: { width: 1200 } }],
+      { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+    );
+    if (!resized.base64) return grayscaleUri;
+
+    // Decode JPEG → always comes as 4-channel RGBA
+    srcMat = OpenCV.base64ToMat(resized.base64);
+
+    // STEP 1: RGBA → single-channel Gray (required by equalizeHist & adaptiveThreshold)
+    grayMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
+    (OpenCV as any).invoke('cvtColor', srcMat, grayMat, 6); // 6 is COLOR_RGBA2GRAY
+
+    // STEP 2: Apply the actual filter on the single-channel mat
+    dstMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
+
+    if (mode === 'high_contrast') {
+      // Note: equalizeHist is not exported by react-native-fast-opencv,
+      // so we use convertScaleAbs with alpha > 1 to stretch contrast.
+      // alpha=1.5 boosts contrast by 50%. beta=-20 darkens the shadows slightly.
+      (OpenCV as any).invoke('convertScaleAbs', grayMat, dstMat, 1.5, -20);
+    } else if (mode === 'adaptive_threshold') {
+      // Adaptive threshold: pure black/white binarization — optimal for printed text OCR
+      // blockSize=15, C=9: tuned for A4 paper at 1200px wide
+      (OpenCV as any).invoke(
+        'adaptiveThreshold',
+        grayMat, dstMat,
+        255,          // maxValue
+        1,            // ADAPTIVE_THRESH_MEAN_C = 1
+        0,            // THRESH_BINARY = 0
+        15,           // blockSize (must be odd)
+        9,            // C constant (subtract from mean)
+      );
+    }
+
+    const destFilename = `ocr_${mode}_${Date.now()}.jpg`;
+    const dest = new File(Paths.document, destFilename);
+    OpenCV.saveMatToFile(dstMat, dest.uri, 'jpeg', 0.95);
+
+    if (!dest.exists) return grayscaleUri;
+
+    // Clean up the intermediate grayscale file
+    try {
+      if (grayscaleUri !== imageUri) new File(grayscaleUri).delete();
+    } catch (_) {}
+
+    return dest.uri;
+  } catch (err) {
+    console.warn(`[CV] applyFilter(${mode}) failed, falling back to grayscale:`, err);
+    return grayscaleUri;
+  } finally {
+    cleanupMats([srcMat, grayMat, dstMat]);
+    try { OpenCV.clearBuffers(); } catch (_) {}
+  }
 }
