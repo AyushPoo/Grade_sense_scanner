@@ -230,7 +230,7 @@ export default function ScannerScreen() {
 
   // ── Capture ────────────────────────────────────────────────────────────────
   const triggerCapture = useCallback(async () => {
-    if (isCapturingRef.current || cooldownRef.current || !cameraRef.current) return;
+    if (!isMounted.current || isCapturingRef.current || cooldownRef.current || !cameraRef.current) return;
     isCapturingRef.current = true;
     cooldownRef.current    = true;
     setIsCapturing(true);
