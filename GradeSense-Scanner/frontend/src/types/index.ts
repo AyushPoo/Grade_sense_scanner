@@ -28,6 +28,13 @@ export interface ScannedPage {
   page_number: number;
   file_path: string;
   original_file_path?: string; // pristine colored crop
+  raw_file_path?: string; // absolute raw camera image (uncropped)
+  crop_quad?: {
+    topLeft: { x: number; y: number };
+    topRight: { x: number; y: number };
+    bottomRight: { x: number; y: number };
+    bottomLeft: { x: number; y: number };
+  }; // the detected points used for the crop
   filter_mode?: 'original' | 'grayscale' | 'high_contrast' | 'adaptive_threshold';
   file_size: number;
   is_blurry: boolean;

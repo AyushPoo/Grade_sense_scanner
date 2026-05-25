@@ -33,6 +33,7 @@ const GAUSSIAN_BLUR = 'GaussianBlur';
 const CANNY = 'Canny';
 const FIND_CONTOURS = 'findContours';
 const RETR_EXTERNAL = 0;
+const RETR_LIST = 1;
 const CHAIN_APPROX_SIMPLE = 2;
 
 let lastPoints: Point[] = [];
@@ -63,19 +64,35 @@ export const cleanupMats = (mats: any[]): void => {
 };
 
 /**
+ * Normalizes a file URI for safe consumption by OpenCV imread().
+ * Strips 'file://' prefix which can cause native decoding failures on some platforms.
+ */
+export const normalizeOpenCVPath = (uri: string): string => {
+  if (!uri) return '';
+  let path = uri;
+  if (path.startsWith('file://')) {
+    path = path.replace('file://', '');
+  }
+  return path;
+};
+
+/**
  * Real-time document detection using native OpenCV via JSI.
  * NEVER throws to callers — always returns a valid CVProcessingResult.
  * Each stage is isolated in its own try/catch for precise fault isolation.
  */
 export async function detectDocumentInFrame(
-  base64Image: string,
+  imageUri: string,
   width: number,
   height: number
 ): Promise<CVProcessingResult> {
+  const tStart = performance.now();
+  let tImread = 0;
+  let tContour = 0;
+
   // ── INPUT GUARDS ─────────────────────────────────────────────────────────
-  // Prevent undefined/empty strings reaching OpenCV JSI (causes HostFunction crash)
-  if (!base64Image || typeof base64Image !== 'string' || base64Image.length < 10) {
-    console.warn('[CV] detectDocumentInFrame: invalid base64 input — returning safe default');
+  if (!imageUri || typeof imageUri !== 'string') {
+    console.warn('[CV] detectDocumentInFrame: invalid URI input — returning safe default');
     return { ...SAFE_NO_DETECT_RESULT };
   }
   if (!width || !height || width <= 0 || height <= 0 || !Number.isFinite(width) || !Number.isFinite(height)) {
@@ -95,17 +112,41 @@ export async function detectDocumentInFrame(
   let ctrData: any   = null;
 
   /** Cleanup all allocated mats + clear OpenCV buffer pool */
+  let hsvMat: any    = null;
+  let maskMat: any   = null;
+  let kernelMat: any = null;
+  let maskedEdgeMat: any = null;
+  let lowerBound: any = null;
+  let upperBound: any = null;
+  let dilatedEdgeMat: any = null;
+  let closedEdgeMat: any = null;
+  let edgeKernel5: any = null;
+  let edgeKernel9: any = null;
+
   const safeCleanup = () => {
-    cleanupMats([srcMat, grayMat, lapMat, meanMat, stddevMat, blurMat, ksizeMat, edgeMat, ctrData]);
+    cleanupMats([
+      srcMat, grayMat, lapMat, meanMat, stddevMat, 
+      blurMat, ksizeMat, edgeMat, ctrData,
+      hsvMat, maskMat, kernelMat, maskedEdgeMat, lowerBound, upperBound,
+      dilatedEdgeMat, closedEdgeMat, edgeKernel5, edgeKernel9
+    ]);
     try { OpenCV.clearBuffers(); } catch { /* ignore */ }
   };
 
-  // ── STAGE 1: base64 → Mat ─────────────────────────────────────────────────────────
+  // ── STAGE 1: File → Mat ─────────────────────────────────────────────────────────
   try {
-    srcMat = OpenCV.base64ToMat(base64Image);
+    const tLoadStart = performance.now();
+    const safePath = normalizeOpenCVPath(imageUri);
+    srcMat = OpenCV.imread(safePath);
+    tImread = performance.now() - tLoadStart;
+    
+    // Check if imread failed (returns empty Mat)
+    if (!srcMat || srcMat.cols <= 0 || srcMat.rows <= 0) {
+      throw new Error(`imread returned empty Mat for path: ${safePath}`);
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error('[CV][STAGE:base64ToMat]', msg);
+    console.error('[CV][STAGE:imread]', msg);
     safeCleanup();
     return { ...SAFE_NO_DETECT_RESULT };
   }
@@ -141,24 +182,13 @@ export async function detectDocumentInFrame(
     lapMat = null; meanMat = null; stddevMat = null;
   }
 
-  // Pure-JS entropy fallback: sharp images have more high-freq detail → JPEG
-  // compresses less → larger base64. Calibrated: 0.5 bpp=0, 6.0 bpp=100.
+  // Pure-JS entropy fallback
   if (sharpnessScore === 0) {
-    // Calibrated for detection frames: quality:0.4 JPEG at 640px
-    // Old anchors (0.5–6.0) were for quality:0.8 full captures — every frame scored 0.
-    // At quality:0.4, 640px:
-    //   Empty/blurry frame: bpp ≈ 0.05–0.10
-    //   Paper in frame:     bpp ≈ 0.10–0.25
-    //   Sharp document:     bpp ≈ 0.20–0.37
-    const estimatedPixels = width * height;
-    const actualBytes = base64Image.length * 0.75;
-    const bpp = actualBytes / estimatedPixels;
-    const BPP_FLOOR   = 0.04;  // floor: empty frame at quality:0.1, 480px
-    const BPP_CEILING = 0.22;  // ceiling: sharp document edge at quality:0.1, 480px
-    const normalized = (bpp - BPP_FLOOR) / (BPP_CEILING - BPP_FLOOR) * 100;
-    sharpnessScore = Math.max(0, Math.min(100, normalized));
+    // Cannot use bpp without base64 or file size. We could stat the file,
+    // but that adds async overhead. For now, we will assign a synthetic score.
+    sharpnessScore = 20;
     if (__DEV__) {
-      console.log(`[CV SHARPNESS] bpp=${bpp.toFixed(4)}, score=${sharpnessScore.toFixed(1)}`);
+      console.log(`[CV SHARPNESS] (entropy disabled) synthetic score=${sharpnessScore}`);
     }
   }
 
@@ -185,13 +215,94 @@ export async function detectDocumentInFrame(
     return { ...SAFE_NO_DETECT_RESULT };
   }
 
+  // ── STAGE 5.1: HSV Masking ───────────────────────────────────────────
+  try {
+    hsvMat = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC3);
+    // srcMat was loaded via imread -> BGR. COLOR_BGR2HSV = 40
+    (OpenCV as any).invoke('cvtColor', srcMat, hsvMat, 40); 
+
+    maskMat = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC1);
+    lowerBound = OpenCV.createObject(ObjectType.Scalar, 0, 0, 80);
+    upperBound = OpenCV.createObject(ObjectType.Scalar, 179, 120, 255);
+    (OpenCV as any).invoke('inRange', hsvMat, lowerBound, upperBound, maskMat);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[CV][STAGE:hsvMask]', msg);
+    safeCleanup();
+    return { ...SAFE_NO_DETECT_RESULT };
+  }
+
+  // ── STAGE 5.2: Mask Morphology (MORPH_CLOSE) ──────────────────────────
+  try {
+    const ksize = OpenCV.createObject(ObjectType.Size, 9, 9);
+    kernelMat = (OpenCV as any).invoke('getStructuringElement', 0, ksize); // MORPH_RECT = 0
+    (OpenCV as any).invoke('morphologyEx', maskMat, maskMat, 3, kernelMat); // MORPH_CLOSE = 3
+
+    if (__DEV__) {
+      // DEBUG: save mask to disk
+      const maskFile = new File(Paths.cache, `debug_mask_${Date.now()}.jpg`);
+      OpenCV.saveMatToFile(maskMat, maskFile.uri, 'jpeg', 0.9);
+      console.log(`[DEBUG-AUTOCROP] Saved Mask: ${maskFile.uri}`);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[CV][STAGE:morphology]', msg);
+    safeCleanup();
+    return { ...SAFE_NO_DETECT_RESULT };
+  }
+
+  // ── STAGE 5.3: Masked Edge Filtering ──────────────────────────────────
+  try {
+    maskedEdgeMat = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC1);
+    (OpenCV as any).invoke('bitwise_and', edgeMat, maskMat, maskedEdgeMat);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[CV][STAGE:maskedEdges]', msg);
+    safeCleanup();
+    return { ...SAFE_NO_DETECT_RESULT };
+  }
+
+  // ── STAGE 5.4: Edge Dilation ──────────────────────────────────────────
+  try {
+    dilatedEdgeMat = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC1);
+    const ksize5 = OpenCV.createObject(ObjectType.Size, 5, 5);
+    edgeKernel5 = (OpenCV as any).invoke('getStructuringElement', 0, ksize5); // MORPH_RECT = 0
+    (OpenCV as any).invoke('morphologyEx', maskedEdgeMat, dilatedEdgeMat, 1, edgeKernel5); // MORPH_DILATE = 1
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[CV][STAGE:edgeDilation]', msg);
+    safeCleanup();
+    return { ...SAFE_NO_DETECT_RESULT };
+  }
+
+  // ── STAGE 5.5: Edge Closing ───────────────────────────────────────────
+  try {
+    closedEdgeMat = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC1);
+    const ksize9 = OpenCV.createObject(ObjectType.Size, 9, 9);
+    edgeKernel9 = (OpenCV as any).invoke('getStructuringElement', 0, ksize9); // MORPH_RECT = 0
+    (OpenCV as any).invoke('morphologyEx', dilatedEdgeMat, closedEdgeMat, 3, edgeKernel9); // MORPH_CLOSE = 3
+
+    if (__DEV__) {
+      // DEBUG: save closed edges to disk
+      const edgeFile = new File(Paths.cache, `debug_edges_${Date.now()}.jpg`);
+      OpenCV.saveMatToFile(closedEdgeMat, edgeFile.uri, 'jpeg', 0.9);
+      console.log(`[DEBUG-AUTOCROP] Saved Closed Edge Map: ${edgeFile.uri}`);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[CV][STAGE:edgeClosing]', msg);
+    safeCleanup();
+    return { ...SAFE_NO_DETECT_RESULT };
+  }
+
   // ── STAGE 6: Find contours ────────────────────────────────────────────────────
   // NOTE: toJSValue(PointVectorOfVectors) returns plain JS {x,y} arrays — NOT
   // native Mat handles. All subsequent contour processing must be pure JS.
   let rawContours: Point[][] = [];
+  const tContourStart = performance.now();
   try {
     ctrData = OpenCV.createObject(ObjectType.PointVectorOfVectors);
-    (OpenCV as any).invoke(FIND_CONTOURS, edgeMat, ctrData, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+    (OpenCV as any).invoke(FIND_CONTOURS, closedEdgeMat, ctrData, RETR_LIST, CHAIN_APPROX_SIMPLE);
     const ctrRaw: any = OpenCV.toJSValue(ctrData);
     const raw = ctrRaw?.array || ctrRaw || [];
     rawContours = Array.isArray(raw) ? raw : [];
@@ -206,6 +317,7 @@ export async function detectDocumentInFrame(
   }
 
   // ── Contour array guard ───────────────────────────────────────────────────
+  console.log(`[DEBUG-AUTOCROP] Stage 6 output: found ${rawContours.length} contours`);
   if (rawContours.length === 0) {
     safeCleanup();
     return {
@@ -222,32 +334,187 @@ export async function detectDocumentInFrame(
   }
 
   // ── STAGE 7: Contour processing — pure JS ────────────────────────────────────
-  // ROOT CAUSE FIX: toJSValue gave us plain JS point arrays, not native handles.
-  // Calling invoke(CONTOUR_AREA, jsArray) returned 0 silently for every contour.
-  // Fix: Shoelace formula for area, perimeter summation, Douglas-Peucker for approx.
   let bestQuad: Quadrilateral | null = null;
   let maxArea = 0;
   const frameArea = width * height;
+  const minAreaThreshold = frameArea * 0.03; // Phase 2C temporary relaxed filter
+  
+  // Telemetry variables
+  const rawContourCount = rawContours.length;
+  let filteredContourCount = 0;
+  let largestContourArea = 0;
+  let largestHullArea = 0;
+  let largestHullVertexCount = 0;
+  let acceptedCount = 0;
+  const contourAreas: number[] = [];
+
+  const rejectionReasons = {
+    TOO_SMALL: 0,
+    NOT_4_POINTS: 0,
+    INVALID_AREA_RATIO: 0,
+    NON_CONVEX: 0
+  };
 
   for (const contour of rawContours) {
-    if (!contour || !Array.isArray(contour) || contour.length < 4) continue;
+    if (!contour || !Array.isArray(contour) || contour.length < 3) continue;
 
     const area = shoelaceArea(contour);
-    if (area < frameArea * 0.08) continue;
+    contourAreas.push(area);
+    if (area > largestContourArea) largestContourArea = area;
 
-    const peri = perimeter(contour);
-    const approx = douglasPeucker(contour, 0.02 * peri);
-
-    if (approx.length < 4) continue;
-
-    if (area > maxArea) {
-      maxArea = area;
-      bestQuad = approx.length === 4 ? orderPoints(approx) : extractBestQuad(approx);
+    if (area < minAreaThreshold) {
+      rejectionReasons.TOO_SMALL++;
+      continue;
     }
+    
+    filteredContourCount++;
+
+    // 1. Convex Hull
+    const hull = convexHull(contour);
+    const hullArea = shoelaceArea(hull);
+
+    if (hullArea > largestHullArea) {
+      largestHullArea = hullArea;
+      largestHullVertexCount = hull.length;
+    }
+
+    // 2 & 3. Adaptive Approximation Sweep & Quad Validation
+    const peri = perimeter(hull);
+    let sweepSuccess = false;
+    let sweepRejectedForRatio = false;
+    let fallbackPolygon: Point[] | null = null;
+
+    for (let epsilonRatio = 0.01; epsilonRatio <= 0.06; epsilonRatio += 0.005) {
+      const approx = douglasPeucker(hull, epsilonRatio * peri);
+
+      if (__DEV__) {
+        console.log(`[ADAPTIVE-DP] epsilon=${epsilonRatio.toFixed(3)} vertices=${approx.length}`);
+      }
+
+      if (approx.length === 5 || approx.length === 6) {
+        if (!fallbackPolygon || approx.length < fallbackPolygon.length) {
+          fallbackPolygon = approx;
+        }
+      }
+
+      if (approx.length < 4) {
+        if (__DEV__) console.log(`[ADAPTIVE-DP] epsilon=${epsilonRatio.toFixed(3)} COLLAPSED GEOMETRY`);
+        break; // Stop iteration, polygon collapsed
+      }
+
+      if (approx.length === 4) {
+        const orderedQuad = orderPoints(approx);
+
+        // Edge length validation to prevent slivers/degenerate shapes
+        const pointsArr = [orderedQuad.topLeft, orderedQuad.topRight, orderedQuad.bottomRight, orderedQuad.bottomLeft];
+        const topLen = Math.hypot(pointsArr[1].x - pointsArr[0].x, pointsArr[1].y - pointsArr[0].y);
+        const rightLen = Math.hypot(pointsArr[2].x - pointsArr[1].x, pointsArr[2].y - pointsArr[1].y);
+        const bottomLen = Math.hypot(pointsArr[3].x - pointsArr[2].x, pointsArr[3].y - pointsArr[2].y);
+        const leftLen = Math.hypot(pointsArr[0].x - pointsArr[3].x, pointsArr[0].y - pointsArr[3].y);
+
+        const minEdge = Math.min(topLen, rightLen, bottomLen, leftLen);
+        const maxEdge = Math.max(topLen, rightLen, bottomLen, leftLen);
+
+        if (minEdge < 20 || maxEdge / minEdge > 10) {
+          if (__DEV__) console.log(`[ADAPTIVE-DP] epsilon=${epsilonRatio.toFixed(3)} vertices=4 REJECTED (Invalid Ratio)`);
+          sweepRejectedForRatio = true;
+          break; // If a 4-point approximation is degenerate, further epsilons will just collapse it. Stop.
+        }
+
+        if (__DEV__) {
+          console.log(`[ADAPTIVE-DP] epsilon=${epsilonRatio.toFixed(3)} vertices=4 ACCEPTED`);
+        }
+
+        acceptedCount++;
+        sweepSuccess = true;
+
+        if (hullArea > maxArea) {
+          maxArea = hullArea;
+          bestQuad = orderedQuad;
+        }
+        break;
+      }
+    }
+
+    // 4. Polygon Semantic Reduction (Phase 3 Extension)
+    if (!sweepSuccess && fallbackPolygon) {
+      let currentPoly = [...fallbackPolygon];
+      
+      while (currentPoly.length > 4) {
+        let maxAngle = -1;
+        let indexToRemove = -1;
+        for (let i = 0; i < currentPoly.length; i++) {
+          const prev = currentPoly[(i - 1 + currentPoly.length) % currentPoly.length];
+          const curr = currentPoly[i];
+          const next = currentPoly[(i + 1) % currentPoly.length];
+          const angle = getAngle(prev, curr, next);
+          if (angle > maxAngle) {
+            maxAngle = angle;
+            indexToRemove = i;
+          }
+        }
+        
+        // Remove most collinear vertex if it's flatter than 160 degrees
+        if (maxAngle > 160) {
+          currentPoly.splice(indexToRemove, 1);
+        } else {
+          break; // Cannot reduce further safely
+        }
+      }
+
+      if (currentPoly.length === 4) {
+        const orderedQuad = orderPoints(currentPoly);
+        const pointsArr = [orderedQuad.topLeft, orderedQuad.topRight, orderedQuad.bottomRight, orderedQuad.bottomLeft];
+        const topLen = Math.hypot(pointsArr[1].x - pointsArr[0].x, pointsArr[1].y - pointsArr[0].y);
+        const rightLen = Math.hypot(pointsArr[2].x - pointsArr[1].x, pointsArr[2].y - pointsArr[1].y);
+        const bottomLen = Math.hypot(pointsArr[3].x - pointsArr[2].x, pointsArr[3].y - pointsArr[2].y);
+        const leftLen = Math.hypot(pointsArr[0].x - pointsArr[3].x, pointsArr[0].y - pointsArr[3].y);
+
+        const minEdge = Math.min(topLen, rightLen, bottomLen, leftLen);
+        const maxEdge = Math.max(topLen, rightLen, bottomLen, leftLen);
+
+        if (minEdge >= 20 && maxEdge / minEdge <= 10) {
+          if (__DEV__) console.log(`[SEMANTIC-REDUCTION] Recovered 4-point quad from ${fallbackPolygon.length} vertices`);
+          acceptedCount++;
+          sweepSuccess = true;
+          const currentArea = shoelaceArea(currentPoly);
+          if (currentArea > maxArea) {
+            maxArea = currentArea;
+            bestQuad = orderedQuad;
+          }
+        } else {
+           sweepRejectedForRatio = true;
+        }
+      }
+    }
+
+    if (!sweepSuccess) {
+      if (sweepRejectedForRatio) {
+        rejectionReasons.INVALID_AREA_RATIO++;
+      } else {
+        rejectionReasons.NOT_4_POINTS++;
+      }
+      continue;
+    }
+  }
+
+  contourAreas.sort((a, b) => b - a);
+  const top5Areas = contourAreas.slice(0, 5).map(a => Math.round(a));
+
+  console.log(`[TELEMETRY] FrameArea=${frameArea} MinArea=${minAreaThreshold} LargestArea=${largestContourArea.toFixed(0)} LargestAreaRatio=${(largestContourArea / frameArea).toFixed(3)}`);
+  console.log(`[TELEMETRY] Contours: Raw=${rawContourCount} Filtered=${filteredContourCount} LargestHullArea=${largestHullArea.toFixed(0)} LargestHullVertices=${largestHullVertexCount}`);
+  console.log(`[TELEMETRY] Top5ContourAreas=[${top5Areas.join(', ')}]`);
+  console.log(`[TELEMETRY] Accepted Quads=${acceptedCount}. Rejections:`, JSON.stringify(rejectionReasons));
+  if (bestQuad && __DEV__) {
+    console.log(`[TELEMETRY] Final Quad:`, JSON.stringify(bestQuad));
   }
 
   // Release all OpenCV mats — contour work is done in JS
   safeCleanup();
+  tContour = performance.now() - tContourStart;
+
+  const tTotal = performance.now() - tStart;
+  console.log(`[TIMING] detectDocumentInFrame: Total=${tTotal.toFixed(1)}ms (imread=${tImread.toFixed(1)}ms, contour=${tContour.toFixed(1)}ms)`);
 
   // ── Motion & readiness ────────────────────────────────────────────────────────
   const currentPoints = bestQuad
@@ -505,27 +772,53 @@ export async function nativeProcessImage(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * From a polygon with > 4 points, extract the 4 most corner-like points.
- * Uses the 4 extremes: topmost, bottommost, leftmost, rightmost.
+ * Monotone Chain Convex Hull algorithm
+ * Returns the convex hull of a set of 2D points.
  */
-function extractBestQuad(points: Point[]): Quadrilateral {
-  let top    = points[0], bottom = points[0];
-  let left   = points[0], right  = points[0];
+function convexHull(points: Point[]): Point[] {
+  if (points.length <= 3) return points;
 
-  for (const p of points) {
-    if (p.y < top.y)    top    = p;
-    if (p.y > bottom.y) bottom = p;
-    if (p.x < left.x)  left   = p;
-    if (p.x > right.x)  right  = p;
+  // Sort points lexicographically
+  const sorted = [...points].sort((a, b) => {
+    if (a.x === b.x) return a.y - b.y;
+    return a.x - b.x;
+  });
+
+  const cross = (o: Point, a: Point, b: Point) => {
+    return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  };
+
+  const lower: Point[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], sorted[i]) <= 0) {
+      lower.pop();
+    }
+    lower.push(sorted[i]);
   }
 
-  // Map to quad: approximate TL/TR/BR/BL from extremes
-  return {
-    topLeft:     { x: left.x,   y: top.y    },
-    topRight:    { x: right.x,  y: top.y    },
-    bottomRight: { x: right.x,  y: bottom.y },
-    bottomLeft:  { x: left.x,   y: bottom.y },
-  };
+  const upper: Point[] = [];
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], sorted[i]) <= 0) {
+      upper.pop();
+    }
+    upper.push(sorted[i]);
+  }
+
+  lower.pop();
+  upper.pop();
+  return lower.concat(upper);
+}
+
+/** Angle between vectors BA and BC in degrees (0-180) */
+function getAngle(A: Point, B: Point, C: Point): number {
+  const ba = { x: A.x - B.x, y: A.y - B.y };
+  const bc = { x: C.x - B.x, y: C.y - B.y };
+  const dot = ba.x * bc.x + ba.y * bc.y;
+  const magA = Math.hypot(ba.x, ba.y);
+  const magC = Math.hypot(bc.x, bc.y);
+  if (magA === 0 || magC === 0) return 180;
+  const cosTheta = Math.max(-1, Math.min(1, dot / (magA * magC)));
+  return Math.acos(cosTheta) * (180 / Math.PI);
 }
 
 /**
@@ -539,18 +832,26 @@ export async function convertToGrayscale(imageUri: string): Promise<string> {
   let resizedUri: string | null = null;
 
   try {
-    // 1. Resize and get base64 in one native step
+    const tStart = performance.now();
+    // 1. Resize and save to disk
     const resized = await ImageManipulator.manipulateAsync(
       imageUri,
       [{ resize: { width: 1200 } }],
-      { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+      { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG, base64: false }
     );
+    const tResize = performance.now() - tStart;
     
-    if (!resized.base64) throw new Error('No base64 returned from image manipulator');
     resizedUri = resized.uri;
 
-    // 2. Decode base64 to Mat
-    srcMat = OpenCV.base64ToMat(resized.base64);
+    const tLoadStart = performance.now();
+    // 2. Decode native file to Mat
+    const safePath = normalizeOpenCVPath(resizedUri);
+    srcMat = OpenCV.imread(safePath);
+    const tImread = performance.now() - tLoadStart;
+
+    if (!srcMat || srcMat.cols <= 0 || srcMat.rows <= 0) {
+      throw new Error(`imread returned empty Mat for path: ${safePath}`);
+    }
 
     // 3. Grayscale conversion via color converter
     grayMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
@@ -560,6 +861,9 @@ export async function convertToGrayscale(imageUri: string): Promise<string> {
     const destFilename = `bw_${Date.now()}.jpg`;
     const dest = new File(Paths.document, destFilename);
     OpenCV.saveMatToFile(grayMat, dest.uri, 'jpeg', 0.9);
+
+    const tTotal = performance.now() - tStart;
+    console.log(`[TIMING] convertToGrayscale: Total=${tTotal.toFixed(1)}ms (resize=${tResize.toFixed(1)}ms, imread=${tImread.toFixed(1)}ms)`);
 
     // Verify file exists
     if (!dest.exists) throw new Error('Grayscale output file was not created');
@@ -611,15 +915,23 @@ export async function applyFilter(imageUri: string, mode: FilterMode): Promise<s
   let dstMat: any = null;   // 1-channel output
 
   try {
+    const tStart = performance.now();
     const resized = await ImageManipulator.manipulateAsync(
       grayscaleUri,
       [{ resize: { width: 1200 } }],
-      { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+      { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG, base64: false }
     );
-    if (!resized.base64) return grayscaleUri;
+    const tResize = performance.now() - tStart;
 
-    // Decode JPEG → always comes as 4-channel RGBA
-    srcMat = OpenCV.base64ToMat(resized.base64);
+    const tLoadStart = performance.now();
+    // Decode native file to Mat
+    const safePath = normalizeOpenCVPath(resized.uri);
+    srcMat = OpenCV.imread(safePath);
+    const tImread = performance.now() - tLoadStart;
+
+    if (!srcMat || srcMat.cols <= 0 || srcMat.rows <= 0) {
+      throw new Error(`imread returned empty Mat for path: ${safePath}`);
+    }
 
     // STEP 1: RGBA → single-channel Gray (required by equalizeHist & adaptiveThreshold)
     grayMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
@@ -649,9 +961,19 @@ export async function applyFilter(imageUri: string, mode: FilterMode): Promise<s
 
     const destFilename = `ocr_${mode}_${Date.now()}.jpg`;
     const dest = new File(Paths.document, destFilename);
+    const tSaveStart = performance.now();
     OpenCV.saveMatToFile(dstMat, dest.uri, 'jpeg', 0.95);
+    const tSave = performance.now() - tSaveStart;
+
+    const tTotal = performance.now() - tStart;
+    console.log(`[TIMING] applyFilter: Total=${tTotal.toFixed(1)}ms (resize=${tResize.toFixed(1)}ms, imread=${tImread.toFixed(1)}ms, save=${tSave.toFixed(1)}ms)`);
 
     if (!dest.exists) return grayscaleUri;
+
+    // Clean up the intermediate resized file
+    try {
+      new File(resized.uri).delete();
+    } catch (_) {}
 
     // Clean up the intermediate grayscale file
     try {

@@ -1,7 +1,7 @@
 import { File, Paths } from 'expo-file-system';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { OpenCV, ObjectType, DataTypes } from 'react-native-fast-opencv';
-import { Point, Quadrilateral, cleanupMats } from './cvProcessor';
+import { Point, Quadrilateral, cleanupMats, normalizeOpenCVPath } from './cvProcessor';
 
 export interface NormalizationOptions {
   enhancementMode?: 'original' | 'enhanced_color' | 'grayscale';
@@ -80,7 +80,6 @@ export async function normalizeCapturedDocument(
   originalPreviewDimensions: { width: number, height: number },
   options: NormalizationOptions = {}
 ): Promise<NormalizationResult> {
-  let base64String: string | null = null;
   let downscaledUri: string | null = null;
   let finalUri: string | null = null;
 
@@ -91,20 +90,17 @@ export async function normalizeCapturedDocument(
   let enhancedMat: any = null;
 
   try {
+    const tStart = performance.now();
+    
     // ── STEP 1: Safe Native Downscaling ──────────────────────────────────
-    // Never pass 12MP full-res base64 to OpenCV bridge!
     const manipResult = await ImageManipulator.manipulateAsync(
       rawImageUri,
       [{ resize: { height: TARGET_MAX_HEIGHT } }],
-      { base64: true, format: ImageManipulator.SaveFormat.JPEG, compress: 0.9 }
+      { base64: false, format: ImageManipulator.SaveFormat.JPEG, compress: 0.9 }
     );
+    const tResize = performance.now() - tStart;
 
     downscaledUri = manipResult.uri;
-    base64String = manipResult.base64 || null;
-
-    if (!base64String) {
-      throw new Error('Failed to extract base64 from downscaled image');
-    }
 
     // ── STEP 2: Scale Quadrilateral ─────────────────────────────────────
     // rawQuad is relative to the small 480px preview frame. We must scale it 
@@ -133,10 +129,14 @@ export async function normalizeCapturedDocument(
     const expandedQuad = expandQuad(orderedQuad, manipResult.width, manipResult.height, CROP_PADDING_RATIO);
 
     // ── STEP 3: Load into OpenCV ─────────────────────────────────────────
-    srcMat = OpenCV.base64ToMat(base64String);
+    const tLoadStart = performance.now();
+    const safePath = normalizeOpenCVPath(downscaledUri);
+    srcMat = OpenCV.imread(safePath);
+    const tImread = performance.now() - tLoadStart;
 
-    // Free JS string memory immediately
-    base64String = null;
+    if (!srcMat || srcMat.cols <= 0 || srcMat.rows <= 0) {
+      throw new Error(`imread returned empty Mat for path: ${safePath}`);
+    }
 
     // ── STEP 4: Perspective Warp ─────────────────────────────────────────
     // Source points
@@ -160,12 +160,14 @@ export async function normalizeCapturedDocument(
     // Get Transform Matrix (0 = DECOMP_LU)
     transformMat = (OpenCV as any).invoke('getPerspectiveTransform', srcVector, dstVector, 0);
 
+    const tWarpStart = performance.now();
     // Warp
     dstMat = OpenCV.createObject(ObjectType.Mat, OUTPUT_HEIGHT, OUTPUT_WIDTH, DataTypes.CV_8UC3);
     const dsize = OpenCV.createObject(ObjectType.Size, OUTPUT_WIDTH, OUTPUT_HEIGHT);
     // 1 = INTER_LINEAR, 0 = BORDER_CONSTANT
     const scalar0 = OpenCV.createObject(ObjectType.Scalar, 0, 0, 0);
     (OpenCV as any).invoke('warpPerspective', srcMat, dstMat, transformMat, dsize, 1, 0, scalar0);
+    const tWarp = performance.now() - tWarpStart;
 
     // ── STEP 5: Image Enhancement ────────────────────────────────────────
     let finalProcessingMat = dstMat;
@@ -188,7 +190,12 @@ export async function normalizeCapturedDocument(
     finalUri = outFile.uri;
     
     // Save directly from Native Mat to File (avoids Base64 output serialization!)
+    const tSaveStart = performance.now();
     OpenCV.saveMatToFile(finalProcessingMat, finalUri, 'jpeg', 0.9);
+    const tSave = performance.now() - tSaveStart;
+
+    const tTotal = performance.now() - tStart;
+    console.log(`[TIMING] normalizeCapturedDocument: Total=${tTotal.toFixed(1)}ms (resize=${tResize.toFixed(1)}ms, imread=${tImread.toFixed(1)}ms, warp=${tWarp.toFixed(1)}ms, save=${tSave.toFixed(1)}ms)`);
 
     // Wait slightly to ensure filesystem flush
     await new Promise(resolve => setTimeout(resolve, 50));

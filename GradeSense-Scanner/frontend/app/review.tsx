@@ -18,8 +18,11 @@ import { COLORS } from '../src/config';
 import { useScanStore, qualityScore, QualityLevel, PendingRetake } from '../src/store/scanStore';
 import { useShallow } from 'zustand/react/shallow';
 import { ScannedStudent, ScannedPage } from '../src/types';
-import { applyFilter, FilterMode } from '../src/utils/cvProcessor';
+import { applyFilter, FilterMode, Quadrilateral } from '../src/utils/cvProcessor';
 import { File, Paths } from 'expo-file-system';
+import { CropOverlay } from '../src/components/CropOverlay';
+import { normalizeCapturedDocument } from '../src/utils/documentNormalizer';
+import { Image as RNImage } from 'react-native';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -36,6 +39,7 @@ const PageThumb = memo(({
   pageIndex,
   student,
   onRetake,
+  onCrop,
   onDelete,
   onPreview,
 }: {
@@ -43,6 +47,7 @@ const PageThumb = memo(({
   pageIndex: number;
   student: ScannedStudent;
   onRetake: (student: ScannedStudent, page: ScannedPage, pageIndex: number) => void;
+  onCrop: (student: ScannedStudent, page: ScannedPage, pageIndex: number) => void;
   onDelete: (studentIndex: number, pageIndex: number) => void;
   onPreview: (student: ScannedStudent, pageIndex: number) => void;
 }) => {
@@ -71,23 +76,22 @@ const PageThumb = memo(({
 
       {/* Actions row */}
       <View style={styles.thumbActions}>
-        <TouchableOpacity
-          style={styles.thumbActionBtn}
-          onPress={() => onRetake(student, page, pageIndex)}
-        >
+        <TouchableOpacity style={styles.thumbActionBtn} onPress={() => onRetake(student, page, pageIndex)}>
           <Ionicons name="camera-outline" size={14} color={COLORS.primary} />
-          <Text style={styles.thumbActionLabel}>Retake</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity
-          style={styles.thumbActionBtn}
-          onPress={() => {
+        {page.raw_file_path && (
+          <TouchableOpacity style={styles.thumbActionBtn} onPress={() => onCrop(student, page, pageIndex)}>
+            <Ionicons name="crop-outline" size={14} color={COLORS.primary} />
+          </TouchableOpacity>
+        )}
+
+        <TouchableOpacity style={styles.thumbActionBtn} onPress={() => {
             Alert.alert('Delete page', 'Remove this scan?', [
               { text: 'Cancel', style: 'cancel' },
               { text: 'Delete', style: 'destructive', onPress: () => onDelete(student.student_index, pageIndex) },
             ]);
-          }}
-        >
+        }}>
           <Ionicons name="trash-outline" size={14} color={COLORS.danger ?? '#E24B4A'} />
         </TouchableOpacity>
       </View>
@@ -101,6 +105,7 @@ const StudentCard = memo(({
   isExpanded,
   onToggle,
   onRetake,
+  onCrop,
   onDelete,
   onPreview,
   onRename,
@@ -184,6 +189,7 @@ const StudentCard = memo(({
                   pageIndex={index}
                   student={student}
                   onRetake={onRetake}
+                  onCrop={onCrop}
                   onDelete={onDelete}
                   onPreview={onPreview}
                 />
@@ -222,6 +228,8 @@ export default function ReviewScreen() {
     { id: 'adaptive_threshold', label: 'OCR Binarize', icon: 'scan-outline' },
   ];
   const [isApplyingGlobalFilter, setIsApplyingGlobalFilter] = useState(false);
+  const [cropTarget, setCropTarget] = useState<{ student: ScannedStudent, page: ScannedPage, pageIndex: number } | null>(null);
+  const [isProcessingCrop, setIsProcessingCrop] = useState(false);
 
   const [expandedStudents, setExpandedStudents] = useState<Set<number>>(() => {
     // Auto-expand students that have quality issues
@@ -258,6 +266,10 @@ export default function ReviewScreen() {
     // Push back to scanner — it will show the retake banner automatically
     router.push('/scanner');
   }, [setRetake, router]);
+
+  const handleCrop = useCallback((student: ScannedStudent, page: ScannedPage, pageIndex: number) => {
+    setCropTarget({ student, page, pageIndex });
+  }, []);
 
   const handleDelete = useCallback((studentIndex: number, pageIndex: number) => {
     deletePage(studentIndex, pageIndex, 'students');
@@ -423,6 +435,7 @@ export default function ReviewScreen() {
             isExpanded={expandedStudents.has(student.student_index)}
             onToggle={handleToggle}
             onRetake={handleRetake}
+            onCrop={handleCrop}
             onDelete={handleDelete}
             onPreview={handlePreview}
             onRename={handleRename}
@@ -439,6 +452,92 @@ export default function ReviewScreen() {
           <Text style={styles.uploadButtonText}>Upload to GradeSense</Text>
         </TouchableOpacity>
       </View>
+
+      {cropTarget && cropTarget.page.raw_file_path && (
+        <View style={StyleSheet.absoluteFill}>
+          <CropOverlay
+            imageUri={cropTarget.page.raw_file_path}
+            initialQuad={cropTarget.page.crop_quad}
+            onCancel={() => setCropTarget(null)}
+            onCropComplete={async (quad) => {
+              try {
+                setIsProcessingCrop(true);
+                const rawUri = cropTarget.page.raw_file_path!;
+                
+                // Get original image dimensions
+                const dims = await new Promise<{width: number, height: number}>((resolve, reject) => {
+                  RNImage.getSize(rawUri, (w, h) => resolve({width: w, height: h}), reject);
+                });
+
+                // Run perspective warp
+                const norm = await normalizeCapturedDocument(rawUri, quad, dims);
+                
+                // Save original warped image (before filter)
+                const origFilename = `orig_${Date.now()}.jpg`;
+                const destOrig = new File(Paths.document, origFilename);
+                new File(norm.uri).copy(destOrig);
+
+                // Wait for file system
+                let origVerified = false;
+                for (let i = 0; i < 10; i++) {
+                    if (destOrig.exists) { origVerified = true; break; }
+                    await new Promise(r => setTimeout(r, 50));
+                }
+
+                // Apply current filter
+                const filterToApply = cropTarget.page.filter_mode || 'grayscale';
+                const filteredUri = await applyFilter(destOrig.uri, filterToApply);
+
+                const finalFilename = `scanned_${Date.now()}.jpg`;
+                const dest = new File(Paths.document, finalFilename);
+                new File(filteredUri).copy(dest);
+
+                let verified = false;
+                for (let i = 0; i < 10; i++) {
+                    if (dest.exists) { verified = true; break; }
+                    await new Promise(r => setTimeout(r, 50));
+                }
+
+                if (verified) {
+                    // Update store with new paths and quad
+                    const pages = [...cropTarget.student.pages];
+                    pages[cropTarget.pageIndex] = {
+                        ...pages[cropTarget.pageIndex],
+                        file_path: dest.uri,
+                        original_file_path: destOrig.uri,
+                        crop_quad: quad,
+                    };
+                    useScanStore.setState(state => {
+                        const newSessions = [...state.savedSessions];
+                        const sessionIndex = newSessions.findIndex(s => s.session_id === session.session_id);
+                        if (sessionIndex > -1) {
+                            newSessions[sessionIndex].students[cropTarget.student.student_index].pages = pages;
+                            return { savedSessions: newSessions };
+                        }
+                        if (state.currentSession?.session_id === session.session_id) {
+                            const newStudents = [...state.currentSession.students];
+                            newStudents[cropTarget.student.student_index].pages = pages;
+                            return { currentSession: { ...state.currentSession, students: newStudents } };
+                        }
+                        return state;
+                    });
+                }
+              } catch (e) {
+                Alert.alert('Error', 'Failed to process crop');
+                console.warn(e);
+              } finally {
+                setIsProcessingCrop(false);
+                setCropTarget(null);
+              }
+            }}
+          />
+          {isProcessingCrop && (
+            <View style={styles.globalFilterOverlay}>
+              <Text style={{color: '#fff', fontSize: 13, fontWeight: 'bold'}}>Applying Crop...</Text>
+            </View>
+          )}
+        </View>
+      )}
     </SafeAreaView>
   );
 }

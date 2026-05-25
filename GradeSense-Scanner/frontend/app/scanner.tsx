@@ -264,23 +264,79 @@ export default function ScannerScreen() {
         try {
             let finalUri = pending.uri;
 
-            // Step 1: Perspective correction with scaled coordinates
-            if (pending.quad?.topLeft && pending.dims) {
+            // Step 1: Post-Capture Auto-Crop Detection
+            let detectionQuad = null; // Start with null so we only warp if post-capture detection succeeds
+            let detectionDims = pending.dims;
+            let finalScaledQuad = null;
+
+            // Save raw un-warped camera image
+            const rawFilename = `raw_${Date.now()}.jpg`;
+            const destRaw = new File(Paths.document, rawFilename);
+            new File(pending.uri).copy(destRaw);
+            let rawVerified = false;
+            for (let i = 0; i < 10; i++) {
+                if (destRaw.exists) { rawVerified = true; break; }
+                await new Promise(r => setTimeout(r, 50));
+            }
+
+            try {
+                // Downscale to a fast processing size
+                const downscaled = await ImageManipulator.manipulateAsync(
+                    pending.uri,
+                    [{ resize: { width: 640 } }],
+                    { base64: false, format: ImageManipulator.SaveFormat.JPEG, compress: 0.5 }
+                );
+
+                if (downscaled.uri) {
+                    const cvResult = await detectDocumentInFrame(
+                        downscaled.uri,
+                        downscaled.width,
+                        downscaled.height
+                    );
+                    
+                    console.log(`[DEBUG-AUTOCROP] cvResult returned:`, JSON.stringify({
+                        isDetected: cvResult?.isDocumentDetected,
+                        hasQuad: !!cvResult?.quadrilateral,
+                        sharpness: cvResult?.sharpnessScore,
+                        areaScore: cvResult?.areaScore,
+                        confidence: cvResult?.confidence
+                    }));
+
+                    if (cvResult && cvResult.quadrilateral) {
+                        detectionQuad = cvResult.quadrilateral;
+                        detectionDims = { width: downscaled.width, height: downscaled.height };
+                        console.log('[commitCapture] Post-capture detection SUCCESS');
+                    } else {
+                        console.log('[commitCapture] Post-capture detection failed to find document. Falling back to original image.');
+                    }
+
+                    // CLEANUP: delete temporary downscaled file
+                    try {
+                        new File(downscaled.uri).delete();
+                    } catch (_) {}
+                }
+            } catch (detectErr) {
+                console.warn('[commitCapture] post-capture detection error:', detectErr);
+            }
+
+            // Step 2: Perspective correction with scaled coordinates
+            if (detectionQuad?.topLeft && detectionDims) {
                 try {
                     const fullRes = await ImageManipulator.manipulateAsync(
                         pending.uri,
                         [],
                         { format: ImageManipulator.SaveFormat.JPEG },
                     );
-                    const scaleX = fullRes.width / pending.dims.width;
-                    const scaleY = fullRes.height / pending.dims.height;
+                    const scaleX = fullRes.width / detectionDims.width;
+                    const scaleY = fullRes.height / detectionDims.height;
 
                     const scaledQuad: Quadrilateral = {
-                        topLeft: { x: pending.quad.topLeft.x * scaleX, y: pending.quad.topLeft.y * scaleY },
-                        topRight: { x: pending.quad.topRight.x * scaleX, y: pending.quad.topRight.y * scaleY },
-                        bottomRight: { x: pending.quad.bottomRight.x * scaleX, y: pending.quad.bottomRight.y * scaleY },
-                        bottomLeft: { x: pending.quad.bottomLeft.x * scaleX, y: pending.quad.bottomLeft.y * scaleY },
+                        topLeft: { x: detectionQuad.topLeft.x * scaleX, y: detectionQuad.topLeft.y * scaleY },
+                        topRight: { x: detectionQuad.topRight.x * scaleX, y: detectionQuad.topRight.y * scaleY },
+                        bottomRight: { x: detectionQuad.bottomRight.x * scaleX, y: detectionQuad.bottomRight.y * scaleY },
+                        bottomLeft: { x: detectionQuad.bottomLeft.x * scaleX, y: detectionQuad.bottomLeft.y * scaleY },
                     };
+                    finalScaledQuad = scaledQuad;
 
                     const norm = await normalizeCapturedDocument(
                         pending.uri,
@@ -340,6 +396,8 @@ export default function ScannerScreen() {
                 page_number: 0,
                 file_path: dest.uri,
                 original_file_path: destOrig.uri,
+                raw_file_path: rawVerified ? destRaw.uri : undefined,
+                crop_quad: finalScaledQuad || undefined,
                 filter_mode: filter,
                 file_size: dest.size || 0,
                 is_blurry: pending.blur.isBlurry,
