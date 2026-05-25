@@ -12,6 +12,11 @@ import {
 import { Image as ExpoImage } from 'expo-image';
 import { Quadrilateral } from '../utils/cvProcessor';
 import Svg, { Polygon, Line, Circle } from 'react-native-svg';
+import * as ImageManipulator from 'expo-image-manipulator';
+import { isConvexQuad, hasConsistentWinding, minimumEdgeLengthValid } from '../utils/geometryUtils';
+
+const ENABLE_MANUAL_CROP_VALIDATION = true;
+const ENABLE_EXIF_NORMALIZATION = true;
 
 interface CropOverlayProps {
     imageUri: string;
@@ -27,6 +32,7 @@ const CORNER_DOT_SIZE = 22; // visual dot size
 type Corner = keyof Quadrilateral;
 
 export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }: CropOverlayProps) {
+    const [normalizedImageUri, setNormalizedImageUri] = useState<string | null>(null);
     const [imageDims, setImageDims] = useState<{ width: number; height: number } | null>(null);
     const [containerDims, setContainerDims] = useState<{ width: number; height: number; scale: number } | null>(null);
     const [points, setPoints] = useState<Quadrilateral | null>(null);
@@ -41,10 +47,34 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
     useEffect(() => { pointsRef.current = points; }, [points]);
     useEffect(() => { containerRef.current = containerDims; }, [containerDims]);
 
+    // EXIF Normalization
+    useEffect(() => {
+        let isMounted = true;
+        if (!ENABLE_EXIF_NORMALIZATION) {
+            setNormalizedImageUri(imageUri);
+            return;
+        }
+        (async () => {
+            try {
+                // Bake EXIF rotation into the pixel data natively (must match scanner.tsx)
+                const result = await ImageManipulator.manipulateAsync(
+                    imageUri,
+                    [{ rotate: 0 }],
+                    { compress: 1, format: ImageManipulator.SaveFormat.JPEG }
+                );
+                if (isMounted) setNormalizedImageUri(result.uri);
+            } catch (err) {
+                if (isMounted) setNormalizedImageUri(imageUri);
+            }
+        })();
+        return () => { isMounted = false; };
+    }, [imageUri]);
+
     // Load image dimensions
     useEffect(() => {
-        RNImage.getSize(imageUri, (w, h) => setImageDims({ width: w, height: h }));
-    }, [imageUri]);
+        if (!normalizedImageUri) return;
+        RNImage.getSize(normalizedImageUri, (w, h) => setImageDims({ width: w, height: h }));
+    }, [normalizedImageUri]);
 
     // Compute container size and initial quad
     useEffect(() => {
@@ -60,15 +90,40 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
         containerRef.current = dims;
 
         if (initialQuad) {
-            const q = {
+            const rawQ = {
                 topLeft:     { x: initialQuad.topLeft.x * scale,     y: initialQuad.topLeft.y * scale },
                 topRight:    { x: initialQuad.topRight.x * scale,    y: initialQuad.topRight.y * scale },
                 bottomRight: { x: initialQuad.bottomRight.x * scale, y: initialQuad.bottomRight.y * scale },
                 bottomLeft:  { x: initialQuad.bottomLeft.x * scale,  y: initialQuad.bottomLeft.y * scale },
             };
-            setPoints(q);
-            pointsRef.current = q;
+
+            const isOffScreen = Object.values(rawQ).some(p => 
+                p.x < -finalWidth * 0.1 || p.x > finalWidth * 1.1 || 
+                p.y < -finalHeight * 0.1 || p.y > finalHeight * 1.1
+            );
+
+            if (isOffScreen || (ENABLE_MANUAL_CROP_VALIDATION && (!isConvexQuad(rawQ) || !hasConsistentWinding(rawQ)))) {
+                console.warn("[CropOverlay] initialQuad is invalid or off-screen. Falling back to default pad.");
+                useFallback();
+            } else {
+                // Clamp to screen edges
+                const clampX = (val: number) => Math.max(0, Math.min(val, finalWidth));
+                const clampY = (val: number) => Math.max(0, Math.min(val, finalHeight));
+                
+                const q = {
+                    topLeft:     { x: clampX(rawQ.topLeft.x),     y: clampY(rawQ.topLeft.y) },
+                    topRight:    { x: clampX(rawQ.topRight.x),    y: clampY(rawQ.topRight.y) },
+                    bottomRight: { x: clampX(rawQ.bottomRight.x), y: clampY(rawQ.bottomRight.y) },
+                    bottomLeft:  { x: clampX(rawQ.bottomLeft.x),  y: clampY(rawQ.bottomLeft.y) },
+                };
+                setPoints(q);
+                pointsRef.current = q;
+            }
         } else {
+            useFallback();
+        }
+
+        function useFallback() {
             const padX = finalWidth * 0.08;
             const padY = finalHeight * 0.08;
             const q = {
@@ -101,6 +156,16 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
             const newY = Math.max(0, Math.min(start.y + gestureState.dy, c.height));
 
             const updated = { ...pointsRef.current, [corner]: { x: newX, y: newY } };
+            
+            if (ENABLE_MANUAL_CROP_VALIDATION) {
+                // Validate convexity, winding, and edge length (e.g. 10% of shortest container side)
+                const isValidGeometry = hasConsistentWinding(updated) && isConvexQuad(updated) && minimumEdgeLengthValid(updated, 0.1, c.width, c.height);
+                if (!isValidGeometry) {
+                    if (__DEV__) console.log("[DEBUG] Invalid crop geometry rejected.");
+                    return; // Prevent update
+                }
+            }
+            
             pointsRef.current = updated;
             setPoints(updated);
         },
@@ -166,9 +231,9 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
                 >
                     {/* Raw image */}
                     <ExpoImage
-                        source={{ uri: imageUri }}
+                        source={{ uri: normalizedImageUri || imageUri }}
                         style={StyleSheet.absoluteFill}
-                        contentFit="fill"
+                        contentFit="contain"
                     />
 
                     {/* Dimming outside crop region via SVG */}

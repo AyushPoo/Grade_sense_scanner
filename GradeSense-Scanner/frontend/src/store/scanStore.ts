@@ -762,7 +762,22 @@ export const useScanStore = create<ScanState>()(
           });
 
           console.log(`[TRACE] fetchSessions: success, received ${normalizedSessions.length} sessions at ${Date.now()}`);
-          set({ savedSessions: normalizedSessions });
+          // TASK 3A: Merge sessions instead of overwriting to preserve local status
+          set(state => {
+            const currentSaved = state.savedSessions || [];
+            const merged = normalizedSessions.map(fetched => {
+              const local = currentSaved.find(s => s.session_id === fetched.session_id);
+              if (local) {
+                // If local status is more authoritative than backend, keep it
+                const authoritativeStatuses = ['uploaded', 'uploading', 'completed'];
+                if (authoritativeStatuses.includes(local.status) && fetched.status === 'scanning') {
+                  return { ...fetched, status: local.status, upload_progress: local.upload_progress };
+                }
+              }
+              return fetched;
+            });
+            return { savedSessions: merged };
+          });
         } catch (error) {
           console.error(`[TRACE] fetchSessions: FAILED at ${Date.now()} with error:`, error);
         }
@@ -1026,6 +1041,10 @@ export const useScanStore = create<ScanState>()(
             const timeoutId = (global as any)[`debounce_${name}`];
             if (timeoutId) clearTimeout(timeoutId);
 
+            // TASK 3D: Flush critical status writes immediately
+            const isCriticalWrite = value.includes('"status":"uploaded"') || value.includes('"status":"completed"');
+            const debounceMs = isCriticalWrite ? 0 : 1000;
+
             (global as any)[`debounce_${name}`] = setTimeout(async () => {
               try {
                 const writeStart = Date.now();
@@ -1037,7 +1056,7 @@ export const useScanStore = create<ScanState>()(
                 console.error(`[TRACE] scan-storage.setItem: FAILED for ${name} at ${Date.now()}:`, e);
                 resolve();
               }
-            }, 1000); // 1s debounce is safe for metadata
+            }, debounceMs); // 1s debounce for regular metadata, 0 for critical
           });
         },
         removeItem: (name) => {

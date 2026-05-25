@@ -40,7 +40,8 @@ export default function PagePreviewScreen() {
     { id: 'high_contrast',      label: 'Hi-Contrast', icon: 'sunny-outline' },
     { id: 'adaptive_threshold', label: 'OCR Binarize', icon: 'scan-outline' },
   ];
-  const [imageLoading, setImageLoading] = useState(true);
+  // TASK 2A: Per-page loading state instead of single global boolean
+  const [loadingPages, setLoadingPages] = useState<Set<string>>(new Set());
 
   // Get pages based on phase
   const getPages = (): ScannedPage[] => {
@@ -172,8 +173,8 @@ export default function PagePreviewScreen() {
 
   const onViewableItemsChanged = useRef(({ viewableItems }: any) => {
     if (viewableItems.length > 0) {
+      // TASK 2B: Only update current index, do NOT reset loading globally
       setCurrentIndex(viewableItems[0].index);
-      setImageLoading(true);
     }
   }).current;
 
@@ -185,12 +186,21 @@ export default function PagePreviewScreen() {
             source={{ uri: item.file_path }}
             style={styles.image}
             contentFit="contain"
-            cachePolicy="memory-disk"
-            transition={0}
-            onLoadStart={() => setImageLoading(true)}
-            onLoadEnd={() => setImageLoading(false)}
+            cachePolicy="none"
+            transition={150}
+            onLoadStart={() => {
+              // TASK 2C: Bind loading to specific page ID
+              setLoadingPages(prev => new Set(prev).add(item.id));
+            }}
+            onLoadEnd={() => {
+              setLoadingPages(prev => {
+                const next = new Set(prev);
+                next.delete(item.id);
+                return next;
+              });
+            }}
           />
-          {(imageLoading || isApplyingFilter) && index === currentIndex && (
+          {(loadingPages.has(item.id) || isApplyingFilter) && index === currentIndex && (
             <View style={styles.loadingOverlay}>
               <ActivityIndicator size="large" color={COLORS.primary} />
             </View>

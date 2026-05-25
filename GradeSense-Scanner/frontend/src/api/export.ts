@@ -165,7 +165,7 @@ export async function uploadSessionToWebApp(
     });
     if (!compRes.ok) throw new Error('Failed to complete session');
 
-    updateStatus(session.session_id, 'uploaded', 100);
+    updateStatus(session.session_id, 'completed', 100);
     console.log(`Session ${session.session_id} successfully synced via multipart upload.`);
 
   } catch (error) {

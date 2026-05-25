@@ -56,6 +56,7 @@ export default function SessionsScreen() {
   const getStatusInfo = (status: string) => {
     switch (status) {
       case 'uploaded':
+      case 'completed': // TASK 3C: Explicitly handle completed
         return { icon: 'checkmark-circle', color: COLORS.success, text: 'Uploaded' };
       case 'ready':
         return { icon: 'time', color: COLORS.warning, text: 'Pending Upload' };
@@ -63,8 +64,11 @@ export default function SessionsScreen() {
         return { icon: 'cloud-upload', color: COLORS.primary, text: 'Uploading...' };
       case 'failed':
         return { icon: 'alert-circle', color: COLORS.error, text: 'Upload Failed' };
-      default:
+      case 'scanning':
         return { icon: 'document', color: COLORS.textMuted, text: 'Scanning' };
+      default:
+        // TASK 3C: Don't mask unknown statuses as "Scanning"
+        return { icon: 'help-circle', color: COLORS.textMuted, text: 'Unknown' };
     }
   };
 

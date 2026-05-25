@@ -5,7 +5,10 @@ import { Point, Quadrilateral, cleanupMats, normalizeOpenCVPath } from './cvProc
 export interface NormalizationOptions {
   enhancementMode?: 'original' | 'enhanced_color' | 'grayscale';
   debugMode?: boolean;
+  isManualCrop?: boolean;
 }
+
+const ENABLE_MANUAL_CROP_EXACT_EXPORT = true;
 
 export interface NormalizationResult {
   uri: string;
@@ -154,16 +157,16 @@ export async function normalizeCapturedDocument(
       bottomLeft: scalePoint(rawQuad.bottomLeft),
     };
 
-    // Order corners deterministically
-    const orderedQuad = orderCorners([
+    // Order corners deterministically, unless manual crop explicitly overrides
+    const orderedQuad = (options.isManualCrop && ENABLE_MANUAL_CROP_EXACT_EXPORT) ? scaledQuad : orderCorners([
       scaledQuad.topLeft,
       scaledQuad.topRight,
       scaledQuad.bottomRight,
       scaledQuad.bottomLeft
     ]);
 
-    // Apply smart crop padding
-    const expandedQuad = expandQuad(orderedQuad, targetWidth, targetHeight, CROP_PADDING_RATIO);
+    // Apply smart crop padding, unless manual crop explicitly overrides
+    const expandedQuad = (options.isManualCrop && ENABLE_MANUAL_CROP_EXACT_EXPORT) ? orderedQuad : expandQuad(orderedQuad, targetWidth, targetHeight, CROP_PADDING_RATIO);
 
     // ── STEP 4: Perspective Warp ─────────────────────────────────────────
     // Source points

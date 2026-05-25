@@ -66,10 +66,17 @@ export default function HomeScreen() {
 
   const getStatusIcon = (status: string) => {
     switch (status) {
-      case 'uploaded': return { icon: 'checkmark-circle', color: COLORS.success };
-      case 'ready': return { icon: 'time', color: COLORS.warning };
-      case 'failed': return { icon: 'alert-circle', color: COLORS.error };
-      default: return { icon: 'document', color: COLORS.textMuted };
+      case 'uploaded':
+      case 'completed':
+        return { icon: 'checkmark-circle', color: COLORS.success };
+      case 'ready': 
+        return { icon: 'time', color: COLORS.warning };
+      case 'failed': 
+        return { icon: 'alert-circle', color: COLORS.error };
+      case 'scanning':
+        return { icon: 'document', color: COLORS.textMuted };
+      default: 
+        return { icon: 'help-circle', color: COLORS.textMuted };
     }
   };
 

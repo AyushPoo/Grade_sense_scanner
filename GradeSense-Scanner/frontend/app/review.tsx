@@ -22,7 +22,7 @@ import { applyFilter, FilterMode, Quadrilateral } from '../src/utils/cvProcessor
 import { File, Paths } from 'expo-file-system';
 import { CropOverlay } from '../src/components/CropOverlay';
 import { normalizeCapturedDocument } from '../src/utils/documentNormalizer';
-import { Image as RNImage } from 'react-native';
+import * as ImageManipulator from 'expo-image-manipulator';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -61,6 +61,7 @@ const PageThumb = memo(({
           source={{ uri: page.file_path }}
           style={styles.thumbImage}
           contentFit="cover"
+          cachePolicy="none"
         />
 
         {/* Page number badge */}
@@ -485,14 +486,22 @@ export default function ReviewScreen() {
                 setIsProcessingCrop(true);
                 const rawUri = cropTarget.page.raw_file_path!;
                 
-                // Get original image dimensions
-                const dims = await new Promise<{width: number, height: number}>((resolve, reject) => {
-                  RNImage.getSize(rawUri, (w, h) => resolve({width: w, height: h}), reject);
-                });
+                // TASK 1A: EXIF-bake the raw image before normalization
+                // This ensures dimensions match what OpenCV sees (same as CropOverlay)
+                const baked = await ImageManipulator.manipulateAsync(
+                    rawUri,
+                    [{ rotate: 0 }],
+                    { compress: 1, format: ImageManipulator.SaveFormat.JPEG }
+                );
+                const normalizedUri = baked.uri;
+                const dims = { width: baked.width, height: baked.height };
 
-                // Run perspective warp
-                const norm = await normalizeCapturedDocument(rawUri, quad, dims);
+                // Run perspective warp on EXIF-normalized image
+                const norm = await normalizeCapturedDocument(normalizedUri, quad, dims, { isManualCrop: true });
                 
+                // Cleanup temp EXIF-baked file
+                try { new File(normalizedUri).delete(); } catch (_) {}
+
                 // Save original warped image (before filter)
                 const origFilename = `orig_${Date.now()}.jpg`;
                 const destOrig = new File(Paths.document, origFilename);
@@ -520,27 +529,43 @@ export default function ReviewScreen() {
                 }
 
                 if (verified) {
-                    // Update store with new paths and quad
-                    const pages = [...cropTarget.student.pages];
-                    pages[cropTarget.pageIndex] = {
-                        ...pages[cropTarget.pageIndex],
+                    // TASK 1D: Build updated page object
+                    const updatedPage = {
+                        ...cropTarget.student.pages[cropTarget.pageIndex],
                         file_path: dest.uri,
                         original_file_path: destOrig.uri,
                         crop_quad: quad,
                     };
+                    // Fully immutable Zustand update — new references at every nesting level
+                    // Previous code mutated in-place, so useShallow selector never detected changes
                     useScanStore.setState(state => {
                         const newSessions = [...state.savedSessions];
                         const sessionIndex = newSessions.findIndex(s => s.session_id === session.session_id);
                         if (sessionIndex > -1) {
-                            newSessions[sessionIndex].students[cropTarget.student.student_index].pages = pages;
-                            return { savedSessions: newSessions };
+                            const oldSession = newSessions[sessionIndex];
+                            const newStudents = [...oldSession.students];
+                            const si = cropTarget.student.student_index;
+                            const newPages = [...newStudents[si].pages];
+                            newPages[cropTarget.pageIndex] = updatedPage;
+                            newStudents[si] = { ...newStudents[si], pages: newPages };
+                            newSessions[sessionIndex] = { ...oldSession, students: newStudents };
+                            return {
+                                savedSessions: newSessions,
+                                // Keep currentSession in sync
+                                ...(state.currentSession?.session_id === oldSession.session_id
+                                    ? { currentSession: newSessions[sessionIndex] }
+                                    : {}),
+                            };
                         }
                         if (state.currentSession?.session_id === session.session_id) {
                             const newStudents = [...state.currentSession.students];
-                            newStudents[cropTarget.student.student_index].pages = pages;
+                            const si = cropTarget.student.student_index;
+                            const newPages = [...newStudents[si].pages];
+                            newPages[cropTarget.pageIndex] = updatedPage;
+                            newStudents[si] = { ...newStudents[si], pages: newPages };
                             return { currentSession: { ...state.currentSession, students: newStudents } };
                         }
-                        return state;
+                        return {};
                     });
                 }
               } catch (e) {
@@ -548,7 +573,8 @@ export default function ReviewScreen() {
                 console.warn(e);
               } finally {
                 setIsProcessingCrop(false);
-                setCropTarget(null);
+                // TASK 1D: Defer overlay teardown to next frame so Zustand state propagates first
+                requestAnimationFrame(() => setCropTarget(null));
               }
             }}
           />
