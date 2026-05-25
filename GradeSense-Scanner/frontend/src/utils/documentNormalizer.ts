@@ -1,6 +1,7 @@
+import * as FileSystem from 'expo-file-system/legacy';
 import { File, Paths } from 'expo-file-system';
 import { OpenCV, ObjectType, DataTypes } from 'react-native-fast-opencv';
-import { Point, Quadrilateral, cleanupMats, normalizeOpenCVPath } from './cvProcessor';
+import { Point, Quadrilateral, cleanupMats } from './cvProcessor';
 
 export interface NormalizationOptions {
   enhancementMode?: 'original' | 'enhanced_color' | 'grayscale';
@@ -94,15 +95,18 @@ export async function normalizeCapturedDocument(
 
   try {
     const tStart = performance.now();
-    
-    // ── STEP 1: Load directly into OpenCV (Native Decode) ────────────────
     const tLoadStart = performance.now();
-    const safePath = normalizeOpenCVPath(rawImageUri);
-    srcMat = OpenCV.imread(safePath);
+
+    const base64 = await FileSystem.readAsStringAsync(rawImageUri, {
+      encoding: 'base64',
+    });
+
+    srcMat = OpenCV.base64ToMat(base64);
+
     const tImread = performance.now() - tLoadStart;
 
-    if (!srcMat) {
-      throw new Error(`imread returned empty Mat for path: ${safePath}`);
+    if (!srcMat || srcMat.cols <= 0 || srcMat.rows <= 0) {
+      throw new Error(`imread returned empty Mat`);
     }
 
     const { width: rawWidth, height: rawHeight } = originalBitmapDimensions;
@@ -218,7 +222,7 @@ export async function normalizeCapturedDocument(
     // Use new class-based API: Paths.cache is the safe cache directory
     const outFile = new File(Paths.cache, outFilename);
     finalUri = outFile.uri;
-    
+
     // Save directly from Native Mat to File (avoids Base64 output serialization!)
     const tSaveStart = performance.now();
     OpenCV.saveMatToFile(finalProcessingMat, finalUri, 'jpeg', 0.9);
@@ -239,7 +243,7 @@ export async function normalizeCapturedDocument(
   } finally {
     // ── STEP 7: Aggressive Memory Cleanup ────────────────────────────────
     cleanupMats([srcMat, resizedMat !== srcMat ? resizedMat : null, dstMat, transformMat, enhancedMat]);
-    
+
     try {
       OpenCV.clearBuffers();
     } catch { /* ignore */ }

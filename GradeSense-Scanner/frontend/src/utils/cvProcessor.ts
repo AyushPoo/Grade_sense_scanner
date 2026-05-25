@@ -1,4 +1,5 @@
 import * as ImageManipulator from 'expo-image-manipulator';
+import * as FileSystem from 'expo-file-system/legacy';
 import { File, Paths } from 'expo-file-system';
 import { OpenCV, ObjectType, DataTypes } from 'react-native-fast-opencv';
 
@@ -82,18 +83,7 @@ export const cleanupMats = (mats: any[]): void => {
   });
 };
 
-/**
- * Normalizes a file URI for safe consumption by OpenCV imread().
- * Strips 'file://' prefix which can cause native decoding failures on some platforms.
- */
-export const normalizeOpenCVPath = (uri: string): string => {
-  if (!uri) return '';
-  let path = uri;
-  if (path.startsWith('file://')) {
-    path = path.replace('file://', '');
-  }
-  return path;
-};
+
 
 /**
  * Real-time document detection using native OpenCV via JSI.
@@ -120,19 +110,19 @@ export async function detectDocumentInFrame(
   }
   // ─────────────────────────────────────────────────────────────────────────
   // Declare all mats upfront so cleanup is always reachable
-  let srcMat: any    = null;
-  let grayMat: any   = null;
-  let lapMat: any    = null;
-  let meanMat: any   = null;
+  let srcMat: any = null;
+  let grayMat: any = null;
+  let lapMat: any = null;
+  let meanMat: any = null;
   let stddevMat: any = null;
-  let blurMat: any   = null;
-  let ksizeMat: any  = null;
-  let edgeMat: any   = null;
-  let ctrData: any   = null;
+  let blurMat: any = null;
+  let ksizeMat: any = null;
+  let edgeMat: any = null;
+  let ctrData: any = null;
 
   /** Cleanup all allocated mats + clear OpenCV buffer pool */
-  let hsvMat: any    = null;
-  let maskMat: any   = null;
+  let hsvMat: any = null;
+  let maskMat: any = null;
   let kernelMat: any = null;
   let maskedEdgeMat: any = null;
   let lowerBound: any = null;
@@ -144,7 +134,7 @@ export async function detectDocumentInFrame(
 
   const safeCleanup = () => {
     cleanupMats([
-      srcMat, grayMat, lapMat, meanMat, stddevMat, 
+      srcMat, grayMat, lapMat, meanMat, stddevMat,
       blurMat, ksizeMat, edgeMat, ctrData,
       hsvMat, maskMat, kernelMat, maskedEdgeMat, lowerBound, upperBound,
       dilatedEdgeMat, closedEdgeMat, edgeKernel5, edgeKernel9
@@ -155,13 +145,18 @@ export async function detectDocumentInFrame(
   // ── STAGE 1: File → Mat ─────────────────────────────────────────────────────────
   try {
     const tLoadStart = performance.now();
-    const safePath = normalizeOpenCVPath(imageUri);
-    srcMat = OpenCV.imread(safePath);
+
+    const base64 = await FileSystem.readAsStringAsync(imageUri, {
+      encoding: 'base64',
+    });
+
+    srcMat = OpenCV.base64ToMat(base64);
+
     tImread = performance.now() - tLoadStart;
-    
-    // Check if imread failed (returns empty Mat)
+
+    // Check if imread failed
     if (!srcMat || srcMat.cols <= 0 || srcMat.rows <= 0) {
-      throw new Error(`imread returned empty Mat for path: ${safePath}`);
+      throw new Error(`imread returned empty Mat`);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -189,10 +184,10 @@ export async function detectDocumentInFrame(
       (OpenCV as any).invoke('meanStdDev', grayMat, meanGrayMat, stddevGrayMat);
       const meanRaw: any = OpenCV.toJSValue(meanGrayMat);
       const frameMean = Array.isArray(meanRaw?.array) ? meanRaw.array[0] : 127;
-      
+
       // Smooth the brightness to avoid rapid flickers
       globalAvgBrightness = globalAvgBrightness * 0.9 + frameMean * 0.1;
-      
+
       cleanupMats([meanGrayMat, stddevGrayMat]);
     }
   } catch (err) {
@@ -202,9 +197,9 @@ export async function detectDocumentInFrame(
   // ── STAGE 3: Sharpness — try OpenCV Laplacian, fall back to entropy heuristic ──
   let sharpnessScore = 0;
   try {
-    lapMat    = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC1);
+    lapMat = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC1);
     (OpenCV as any).invoke('Laplacian', grayMat, lapMat, 3, 1, 1, 0, 4);
-    meanMat   = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8U);
+    meanMat = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8U);
     stddevMat = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8U);
     (OpenCV as any).invoke('meanStdDev', lapMat, meanMat, stddevMat);
     const stddevRaw: any = OpenCV.toJSValue(stddevMat);
@@ -231,7 +226,7 @@ export async function detectDocumentInFrame(
 
   // ── STAGE 4: Gaussian blur ───────────────────────────────────────────────────
   try {
-    blurMat  = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC1);
+    blurMat = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC1);
     ksizeMat = OpenCV.createObject(ObjectType.Size, 5, 5);
     (OpenCV as any).invoke(GAUSSIAN_BLUR, grayMat, blurMat, ksizeMat, 0);
   } catch (err) {
@@ -262,7 +257,7 @@ export async function detectDocumentInFrame(
   try {
     hsvMat = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC3);
     // srcMat was loaded via imread -> BGR. COLOR_BGR2HSV = 40
-    (OpenCV as any).invoke('cvtColor', srcMat, hsvMat, 40); 
+    (OpenCV as any).invoke('cvtColor', srcMat, hsvMat, 40);
 
     let vLower = 80;
     if (ENABLE_ADAPTIVE_LIGHTING) {
@@ -387,7 +382,7 @@ export async function detectDocumentInFrame(
   let maxArea = 0;
   const frameArea = width * height;
   const minAreaThreshold = frameArea * 0.03; // Phase 2C temporary relaxed filter
-  
+
   // Telemetry variables
   const rawContourCount = rawContours.length;
   let filteredContourCount = 0;
@@ -396,7 +391,7 @@ export async function detectDocumentInFrame(
   let largestHullVertexCount = 0;
   let acceptedCount = 0;
   const contourAreas: number[] = [];
-  
+
   // Track candidate quads for semantic shape ranking
   const candidates: { quad: Quadrilateral; score: number; telemetry: string; area: number }[] = [];
 
@@ -419,7 +414,7 @@ export async function detectDocumentInFrame(
       rejectionReasons.TOO_SMALL++;
       continue;
     }
-    
+
     filteredContourCount++;
 
     // 1. Convex Hull
@@ -500,7 +495,7 @@ export async function detectDocumentInFrame(
     // 4. Polygon Semantic Reduction (Phase 3 Extension)
     if (!sweepSuccess && fallbackPolygon) {
       let currentPoly = [...fallbackPolygon];
-      
+
       while (currentPoly.length > 4) {
         let maxAngle = -1;
         let indexToRemove = -1;
@@ -514,7 +509,7 @@ export async function detectDocumentInFrame(
             indexToRemove = i;
           }
         }
-        
+
         // Remove most collinear vertex if it's flatter than 160 degrees
         if (maxAngle > 160) {
           currentPoly.splice(indexToRemove, 1);
@@ -549,7 +544,7 @@ export async function detectDocumentInFrame(
             });
           }
         } else {
-           sweepRejectedForRatio = true;
+          sweepRejectedForRatio = true;
         }
       }
     }
@@ -570,7 +565,7 @@ export async function detectDocumentInFrame(
   if (candidates.length > 0) {
     bestQuad = candidates[0].quad;
     maxArea = candidates[0].area;
-    
+
     if (ENABLE_EMA_SMOOTHING) {
       const currentPts = [bestQuad.topLeft, bestQuad.topRight, bestQuad.bottomRight, bestQuad.bottomLeft];
       if (lastStablePoints) {
@@ -642,7 +637,7 @@ export async function detectDocumentInFrame(
   console.log(`[TELEMETRY] Contours: Raw=${rawContourCount} Filtered=${filteredContourCount} LargestHullArea=${largestHullArea.toFixed(0)} LargestHullVertices=${largestHullVertexCount}`);
   console.log(`[TELEMETRY] Top5ContourAreas=[${top5Areas.join(', ')}]`);
   console.log(`[TELEMETRY] Accepted Quads=${acceptedCount}. Rejections:`, JSON.stringify(rejectionReasons));
-  
+
   if (__DEV__) {
     console.log(`[SEMANTIC-RANKING] Total valid candidate quads: ${candidates.length}`);
     candidates.slice(0, 5).forEach((cand, idx) => {
@@ -670,9 +665,9 @@ export async function detectDocumentInFrame(
 
   const areaRatio = maxArea / frameArea;
   // Lowered isSharp threshold — entropy heuristic scores differently from Laplacian
-  const isSharp   = sharpnessScore > 30;
-  const isStable  = motionLevel < 60;
-  const isLarge   = areaRatio > 0.08;
+  const isSharp = sharpnessScore > 30;
+  const isStable = motionLevel < 60;
+  const isLarge = areaRatio > 0.08;
 
   let captureReadiness = 0;
   let areaScore = 0;
@@ -681,8 +676,8 @@ export async function detectDocumentInFrame(
 
   if (bestQuad) {
     captureReadiness = 20;
-    if (isSharp)  captureReadiness += 30;
-    if (isLarge)  captureReadiness += 20;
+    if (isSharp) captureReadiness += 30;
+    if (isLarge) captureReadiness += 20;
     if (isStable) captureReadiness += 30;
 
     areaScore = Math.min(1, areaRatio * 2);
@@ -740,13 +735,13 @@ function orderPoints(points: Point[]): Quadrilateral {
   if (ENABLE_CENTROID_ORDERING) {
     const cx = points.reduce((sum, p) => sum + p.x, 0) / 4;
     const cy = points.reduce((sum, p) => sum + p.y, 0) / 4;
-    
+
     const sorted = [...points].sort((a, b) => {
       const angleA = Math.atan2(a.y - cy, a.x - cx);
       const angleB = Math.atan2(b.y - cy, b.x - cx);
       return angleA - angleB;
     });
-    
+
     // atan2 ranges from -PI to PI
     // TL: negative x, negative y -> ~ -135 deg
     // TR: positive x, negative y -> ~ -45 deg
@@ -940,7 +935,7 @@ function calculateSemanticScore(
   const solidity = hArea > 0 ? cArea / hArea : 0;
 
   // Compute final weighted score
-  const finalScore = 
+  const finalScore =
     (areaScore * 0.30) +
     (rectangularity * 0.20) +
     (angleScore * 0.20) +
@@ -969,15 +964,15 @@ function perimeter(pts: Point[]): number {
 function douglasPeucker(pts: Point[], epsilon: number): Point[] {
   if (pts.length <= 2) return pts;
   let maxDist = 0;
-  let maxIdx  = 0;
+  let maxIdx = 0;
   const start = pts[0];
-  const end   = pts[pts.length - 1];
+  const end = pts[pts.length - 1];
   for (let i = 1; i < pts.length - 1; i++) {
     const dist = perpendicularDistance(pts[i], start, end);
     if (dist > maxDist) { maxDist = dist; maxIdx = i; }
   }
   if (maxDist > epsilon) {
-    const left  = douglasPeucker(pts.slice(0, maxIdx + 1), epsilon);
+    const left = douglasPeucker(pts.slice(0, maxIdx + 1), epsilon);
     const right = douglasPeucker(pts.slice(maxIdx), epsilon);
     return [...left.slice(0, -1), ...right];
   }
@@ -1056,8 +1051,8 @@ function perpendicularDistance(p: Point, a: Point, b: Point): number {
 }
 
 export async function nativeProcessImage(
-  imageUri: string, 
-  options: { 
+  imageUri: string,
+  options: {
     targetWidth: number,
     grayscale?: boolean,
     autoCrop?: boolean,
@@ -1071,10 +1066,10 @@ export async function nativeProcessImage(
     const resized = await ImageManipulator.manipulateAsync(
       imageUri,
       [{ resize: { width: options.targetWidth } }],
-      { 
-        compress: 0.85, 
-        format: ImageManipulator.SaveFormat.JPEG, 
-        base64: false 
+      {
+        compress: 0.85,
+        format: ImageManipulator.SaveFormat.JPEG,
+        base64: false
       }
     );
 
@@ -1084,17 +1079,17 @@ export async function nativeProcessImage(
       try {
         console.log('[ISOLATION] nativeProcessImage: Enhancement requested (Binary Flow)');
         const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
-        
+
         // 2. STABILITY: Use FormData for binary upload to prevent bridge Base64 overload
         const formData = new FormData();
-        
+
         // @ts-ignore - React Native FormData expects an object with uri, name, and type
         formData.append('file', {
           uri: finalUri,
           name: 'enhance_capture.jpg',
           type: 'image/jpeg',
         });
-        
+
         formData.append('mode', 'enhanced');
         if (options.points) {
           formData.append('points', JSON.stringify(options.points.map(p => [p.x, p.y])));
@@ -1117,7 +1112,7 @@ export async function nativeProcessImage(
             const enhancedFile = new File(Paths.document, `proc_${Date.now()}.jpg`);
             // write() accepts a string; for base64, we write the raw base64 data string with correct encoding
             enhancedFile.write(data.enhanced_image, { encoding: 'base64' });
-            
+
             // CLEANUP: Delete the intermediate resized image to save space
             try {
               const resizedFile = new File(resized.uri);
@@ -1125,7 +1120,7 @@ export async function nativeProcessImage(
             } catch (e) {
               console.warn('[Cleanup] Failed to delete temp resized image:', e);
             }
-            
+
             finalUri = enhancedFile.uri;
             console.log('[ISOLATION] FileSystem.writeAsString: SUCCESS');
           }
@@ -1216,17 +1211,21 @@ export async function convertToGrayscale(imageUri: string): Promise<string> {
       { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG, base64: false }
     );
     const tResize = performance.now() - tStart;
-    
+
     resizedUri = resized.uri;
 
     const tLoadStart = performance.now();
-    // 2. Decode native file to Mat
-    const safePath = normalizeOpenCVPath(resizedUri);
-    srcMat = OpenCV.imread(safePath);
+    // 2. Read image as base64 and decode to Mat
+    const base64 = await FileSystem.readAsStringAsync(resizedUri, {
+      encoding: 'base64',
+    });
+
+    srcMat = OpenCV.base64ToMat(base64);
+
     const tImread = performance.now() - tLoadStart;
 
     if (!srcMat || srcMat.cols <= 0 || srcMat.rows <= 0) {
-      throw new Error(`imread returned empty Mat for path: ${safePath}`);
+      throw new Error(`imread returned empty Mat`);
     }
 
     // 3. Grayscale conversion via color converter
@@ -1249,7 +1248,7 @@ export async function convertToGrayscale(imageUri: string): Promise<string> {
       if (resizedUri && resizedUri !== imageUri) {
         new File(resizedUri).delete();
       }
-    } catch (_) {}
+    } catch (_) { }
 
     return dest.uri;
   } catch (err) {
@@ -1259,7 +1258,7 @@ export async function convertToGrayscale(imageUri: string): Promise<string> {
     cleanupMats([srcMat, grayMat]);
     try {
       OpenCV.clearBuffers();
-    } catch (_) {}
+    } catch (_) { }
   }
 }
 
@@ -1300,13 +1299,17 @@ export async function applyFilter(imageUri: string, mode: FilterMode): Promise<s
     const tResize = performance.now() - tStart;
 
     const tLoadStart = performance.now();
-    // Decode native file to Mat
-    const safePath = normalizeOpenCVPath(resized.uri);
-    srcMat = OpenCV.imread(safePath);
+    // Read image as base64 and decode to Mat
+    const base64 = await FileSystem.readAsStringAsync(resized.uri, {
+      encoding: 'base64',
+    });
+
+    srcMat = OpenCV.base64ToMat(base64);
+
     const tImread = performance.now() - tLoadStart;
 
     if (!srcMat || srcMat.cols <= 0 || srcMat.rows <= 0) {
-      throw new Error(`imread returned empty Mat for path: ${safePath}`);
+      throw new Error(`imread returned empty Mat`);
     }
 
     // STEP 1: RGBA → single-channel Gray (required by equalizeHist & adaptiveThreshold)
@@ -1349,12 +1352,12 @@ export async function applyFilter(imageUri: string, mode: FilterMode): Promise<s
     // Clean up the intermediate resized file
     try {
       new File(resized.uri).delete();
-    } catch (_) {}
+    } catch (_) { }
 
     // Clean up the intermediate grayscale file
     try {
       if (grayscaleUri !== imageUri) new File(grayscaleUri).delete();
-    } catch (_) {}
+    } catch (_) { }
 
     return dest.uri;
   } catch (err) {
@@ -1362,6 +1365,6 @@ export async function applyFilter(imageUri: string, mode: FilterMode): Promise<s
     return grayscaleUri;
   } finally {
     cleanupMats([srcMat, grayMat, dstMat]);
-    try { OpenCV.clearBuffers(); } catch (_) {}
+    try { OpenCV.clearBuffers(); } catch (_) { }
   }
 }
