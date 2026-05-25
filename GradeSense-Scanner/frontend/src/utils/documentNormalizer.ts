@@ -1,5 +1,4 @@
 import { File, Paths } from 'expo-file-system';
-import * as ImageManipulator from 'expo-image-manipulator';
 import { OpenCV, ObjectType, DataTypes } from 'react-native-fast-opencv';
 import { Point, Quadrilateral, cleanupMats, normalizeOpenCVPath } from './cvProcessor';
 
@@ -77,7 +76,7 @@ function expandQuad(quad: Quadrilateral, width: number, height: number, ratio: n
 export async function normalizeCapturedDocument(
   rawImageUri: string,
   rawQuad: Quadrilateral,
-  originalPreviewDimensions: { width: number, height: number },
+  originalBitmapDimensions: { width: number, height: number },
   options: NormalizationOptions = {}
 ): Promise<NormalizationResult> {
   let downscaledUri: string | null = null;
@@ -85,6 +84,7 @@ export async function normalizeCapturedDocument(
 
   // Mats and buffers for cleanup
   let srcMat: any = null;
+  let resizedMat: any = null;
   let dstMat: any = null;
   let transformMat: any = null;
   let enhancedMat: any = null;
@@ -92,21 +92,58 @@ export async function normalizeCapturedDocument(
   try {
     const tStart = performance.now();
     
-    // ── STEP 1: Safe Native Downscaling ──────────────────────────────────
-    const manipResult = await ImageManipulator.manipulateAsync(
-      rawImageUri,
-      [{ resize: { height: TARGET_MAX_HEIGHT } }],
-      { base64: false, format: ImageManipulator.SaveFormat.JPEG, compress: 0.9 }
-    );
-    const tResize = performance.now() - tStart;
+    // ── STEP 1: Load directly into OpenCV (Native Decode) ────────────────
+    const tLoadStart = performance.now();
+    const safePath = normalizeOpenCVPath(rawImageUri);
+    srcMat = OpenCV.imread(safePath);
+    const tImread = performance.now() - tLoadStart;
 
-    downscaledUri = manipResult.uri;
+    if (!srcMat) {
+      throw new Error(`imread returned empty Mat for path: ${safePath}`);
+    }
 
-    // ── STEP 2: Scale Quadrilateral ─────────────────────────────────────
-    // rawQuad is relative to the small 480px preview frame. We must scale it 
-    // to the new downscaled dimensions (TARGET_MAX_HEIGHT).
-    const scaleX = manipResult.width / originalPreviewDimensions.width;
-    const scaleY = manipResult.height / originalPreviewDimensions.height;
+    const { width: rawWidth, height: rawHeight } = originalBitmapDimensions;
+
+    // STEP 1.5: Hard Validation Guards
+    if (!Number.isFinite(rawWidth) || !Number.isFinite(rawHeight) || rawWidth <= 0 || rawHeight <= 0) {
+      throw new Error(`[normalizeCapturedDocument] Invalid bitmap dimensions: ${rawWidth}x${rawHeight}`);
+    }
+
+    if (__DEV__) {
+      console.log(`[DEBUG-NORMALIZE] Original image dimensions (from capture): ${rawWidth}x${rawHeight}`);
+    }
+
+    // ── STEP 2: Native Resize ───────────────────────────────────────────
+    const tNativeResizeStart = performance.now();
+    const aspectRatio = rawWidth / rawHeight;
+    let targetWidth = rawWidth;
+    let targetHeight = rawHeight;
+
+    if (rawHeight > TARGET_MAX_HEIGHT) {
+      targetHeight = TARGET_MAX_HEIGHT;
+      targetWidth = Math.round(TARGET_MAX_HEIGHT * Math.max(0.01, aspectRatio));
+
+      if (__DEV__) {
+        console.log(`[DEBUG-NORMALIZE] Resized dimensions: ${targetWidth}x${targetHeight}`);
+      }
+
+      resizedMat = OpenCV.createObject(ObjectType.Mat, targetHeight, targetWidth, DataTypes.CV_8UC3);
+      const dsize = OpenCV.createObject(ObjectType.Size, targetWidth, targetHeight);
+      // 1 = INTER_LINEAR
+      (OpenCV as any).invoke('resize', srcMat, resizedMat, dsize, 0, 0, 1);
+    } else {
+      resizedMat = srcMat;
+      if (__DEV__) {
+        console.log(`[DEBUG-NORMALIZE] Skipping resize, image within target bounds: ${targetWidth}x${targetHeight}`);
+      }
+    }
+    const tResize = performance.now() - tNativeResizeStart;
+
+    // ── STEP 3: Scale Quadrilateral ─────────────────────────────────────
+    // rawQuad is relative to originalBitmapDimensions. We scale it 
+    // to the new target dimensions.
+    const scaleX = targetWidth / rawWidth;
+    const scaleY = targetHeight / rawHeight;
 
     const scalePoint = (p: Point): Point => ({ x: p.x * scaleX, y: p.y * scaleY });
 
@@ -126,17 +163,7 @@ export async function normalizeCapturedDocument(
     ]);
 
     // Apply smart crop padding
-    const expandedQuad = expandQuad(orderedQuad, manipResult.width, manipResult.height, CROP_PADDING_RATIO);
-
-    // ── STEP 3: Load into OpenCV ─────────────────────────────────────────
-    const tLoadStart = performance.now();
-    const safePath = normalizeOpenCVPath(downscaledUri);
-    srcMat = OpenCV.imread(safePath);
-    const tImread = performance.now() - tLoadStart;
-
-    if (!srcMat || srcMat.cols <= 0 || srcMat.rows <= 0) {
-      throw new Error(`imread returned empty Mat for path: ${safePath}`);
-    }
+    const expandedQuad = expandQuad(orderedQuad, targetWidth, targetHeight, CROP_PADDING_RATIO);
 
     // ── STEP 4: Perspective Warp ─────────────────────────────────────────
     // Source points
@@ -166,7 +193,7 @@ export async function normalizeCapturedDocument(
     const dsize = OpenCV.createObject(ObjectType.Size, OUTPUT_WIDTH, OUTPUT_HEIGHT);
     // 1 = INTER_LINEAR, 0 = BORDER_CONSTANT
     const scalar0 = OpenCV.createObject(ObjectType.Scalar, 0, 0, 0);
-    (OpenCV as any).invoke('warpPerspective', srcMat, dstMat, transformMat, dsize, 1, 0, scalar0);
+    (OpenCV as any).invoke('warpPerspective', resizedMat, dstMat, transformMat, dsize, 1, 0, scalar0);
     const tWarp = performance.now() - tWarpStart;
 
     // ── STEP 5: Image Enhancement ────────────────────────────────────────
@@ -208,17 +235,10 @@ export async function normalizeCapturedDocument(
 
   } finally {
     // ── STEP 7: Aggressive Memory Cleanup ────────────────────────────────
-    cleanupMats([srcMat, dstMat, transformMat, enhancedMat]);
+    cleanupMats([srcMat, resizedMat !== srcMat ? resizedMat : null, dstMat, transformMat, enhancedMat]);
     
     try {
       OpenCV.clearBuffers();
     } catch { /* ignore */ }
-
-    // Cleanup temp downscaled image to save disk space
-    if (downscaledUri) {
-      try {
-        new File(downscaledUri).delete();
-      } catch { /* ignore */ }
-    }
   }
 }

@@ -78,6 +78,7 @@ interface PendingCapture {
     blur: BlurDetectionResult;
     quad: Quadrilateral | null;
     dims: { width: number; height: number };
+    rawDims: { width: number; height: number };
 }
 
 function phaseToLiveStatus(phase: ScannerPhase): LiveScanStatus {
@@ -223,7 +224,6 @@ export default function ScannerScreen() {
 
             const photo = await cameraRef.current.takePictureAsync({
                 quality: 0.88,
-                skipProcessing: true,
                 shutterSound: false,
             });
             if (!photo?.uri) throw new Error('No photo URI');
@@ -240,6 +240,7 @@ export default function ScannerScreen() {
                 blur,
                 quad: lastQuadRef.current,
                 dims: cvResultRef.current?.dimensions ?? { width: 480, height: 640 },
+                rawDims: { width: photo.width, height: photo.height },
             };
 
             // Commit with grayscale as the default OCR-optimised filter.
@@ -264,8 +265,24 @@ export default function ScannerScreen() {
         try {
             let finalUri = pending.uri;
 
+            // ── PHASE 1: Create EXIF-Resolved Canonical Image ──────────────
+            // ImageManipulator applies EXIF rotation, producing a physically
+            // upright bitmap. OpenCV.imread ignores EXIF, so we must feed it
+            // this pre-rotated image to keep coordinate spaces unified.
+            const canonical = await ImageManipulator.manipulateAsync(
+                pending.uri,
+                [{ rotate: 0 }],
+                { compress: 0.98, format: ImageManipulator.SaveFormat.JPEG }
+            );
+            const canonicalUri = canonical.uri;
+            const canonicalDims = { width: canonical.width, height: canonical.height };
+
+            if (__DEV__) {
+                console.log(`[EXIF-AUDIT] canonicalDims=${canonical.width}x${canonical.height} rawDims=${pending.rawDims.width}x${pending.rawDims.height}`);
+            }
+
             // Step 1: Post-Capture Auto-Crop Detection
-            let detectionQuad = null; // Start with null so we only warp if post-capture detection succeeds
+            let detectionQuad = null;
             let detectionDims = pending.dims;
             let finalScaledQuad = null;
 
@@ -280,12 +297,16 @@ export default function ScannerScreen() {
             }
 
             try {
-                // Downscale to a fast processing size
+                // Downscale the EXIF-resolved canonical image (NOT raw sensor image)
                 const downscaled = await ImageManipulator.manipulateAsync(
-                    pending.uri,
+                    canonicalUri,
                     [{ resize: { width: 640 } }],
                     { base64: false, format: ImageManipulator.SaveFormat.JPEG, compress: 0.5 }
                 );
+
+                if (__DEV__) {
+                    console.log(`[EXIF-AUDIT] detectionDims=${downscaled.width}x${downscaled.height}`);
+                }
 
                 if (downscaled.uri) {
                     const cvResult = await detectDocumentInFrame(
@@ -320,15 +341,23 @@ export default function ScannerScreen() {
             }
 
             // Step 2: Perspective correction with scaled coordinates
+            // Both canonicalDims and detectionDims are now in the same EXIF-resolved
+            // upright coordinate space, so scaleX/scaleY are mathematically correct.
             if (detectionQuad?.topLeft && detectionDims) {
                 try {
-                    const fullRes = await ImageManipulator.manipulateAsync(
-                        pending.uri,
-                        [],
-                        { format: ImageManipulator.SaveFormat.JPEG },
-                    );
-                    const scaleX = fullRes.width / detectionDims.width;
-                    const scaleY = fullRes.height / detectionDims.height;
+                    // ── PHASE 6: Orientation mismatch guard ──────────────────
+                    const canonicalIsPortrait = canonicalDims.width < canonicalDims.height;
+                    const detectionIsPortrait = detectionDims.width < detectionDims.height;
+                    if (canonicalIsPortrait !== detectionIsPortrait) {
+                        console.error(`[GEOMETRY-ERROR] Orientation mismatch detected between detection and normalization spaces. canonical=${canonicalDims.width}x${canonicalDims.height} detection=${detectionDims.width}x${detectionDims.height}`);
+                    }
+
+                    const scaleX = canonicalDims.width / detectionDims.width;
+                    const scaleY = canonicalDims.height / detectionDims.height;
+
+                    if (__DEV__) {
+                        console.log(`[EXIF-AUDIT] scaleX=${scaleX.toFixed(4)} scaleY=${scaleY.toFixed(4)}`);
+                    }
 
                     const scaledQuad: Quadrilateral = {
                         topLeft: { x: detectionQuad.topLeft.x * scaleX, y: detectionQuad.topLeft.y * scaleY },
@@ -338,10 +367,12 @@ export default function ScannerScreen() {
                     };
                     finalScaledQuad = scaledQuad;
 
+                    // Pass the EXIF-resolved canonical URI so OpenCV.imread loads
+                    // an upright image matching the coordinate space of the quad.
                     const norm = await normalizeCapturedDocument(
-                        pending.uri,
+                        canonicalUri,
                         scaledQuad,
-                        { width: fullRes.width, height: fullRes.height },
+                        canonicalDims,
                     );
                     finalUri = norm.uri;
                 } catch (e) {
@@ -349,7 +380,7 @@ export default function ScannerScreen() {
                 }
             }
 
-            // Step 2: Resize if perspective correction didn't run
+            // Step 2b: Resize if perspective correction didn't run
             if (finalUri === pending.uri) {
                 const resized = await ImageManipulator.manipulateAsync(
                     finalUri,
@@ -358,6 +389,11 @@ export default function ScannerScreen() {
                 );
                 finalUri = resized.uri;
             }
+
+            // CLEANUP: delete temporary canonical image
+            try {
+                new File(canonicalUri).delete();
+            } catch (_) {}
 
             // Step 3: Save original un-filtered image
             const origFilename = `orig_${Date.now()}.jpg`;

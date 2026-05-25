@@ -347,12 +347,16 @@ export async function detectDocumentInFrame(
   let largestHullVertexCount = 0;
   let acceptedCount = 0;
   const contourAreas: number[] = [];
+  
+  // Track candidate quads for semantic shape ranking
+  const candidates: { quad: Quadrilateral; score: number; telemetry: string; area: number }[] = [];
 
   const rejectionReasons = {
     TOO_SMALL: 0,
     NOT_4_POINTS: 0,
     INVALID_AREA_RATIO: 0,
-    NON_CONVEX: 0
+    NON_CONVEX: 0,
+    PLAUSIBILITY_FAIL: 0
   };
 
   for (const contour of rawContours) {
@@ -385,7 +389,7 @@ export async function detectDocumentInFrame(
     let fallbackPolygon: Point[] | null = null;
 
     for (let epsilonRatio = 0.01; epsilonRatio <= 0.06; epsilonRatio += 0.005) {
-      const approx = douglasPeucker(hull, epsilonRatio * peri);
+      const approx = cyclicDouglasPeucker(hull, epsilonRatio * peri);
 
       if (__DEV__) {
         console.log(`[ADAPTIVE-DP] epsilon=${epsilonRatio.toFixed(3)} vertices=${approx.length}`);
@@ -425,13 +429,21 @@ export async function detectDocumentInFrame(
           console.log(`[ADAPTIVE-DP] epsilon=${epsilonRatio.toFixed(3)} vertices=4 ACCEPTED`);
         }
 
+        if (!passesDocumentPlausibility(orderedQuad, hullArea, width, height)) {
+          rejectionReasons.PLAUSIBILITY_FAIL++;
+          break;
+        }
+
         acceptedCount++;
         sweepSuccess = true;
 
-        if (hullArea > maxArea) {
-          maxArea = hullArea;
-          bestQuad = orderedQuad;
-        }
+        const { finalScore, telemetry } = calculateSemanticScore(contour, hull, approx, orderedQuad, width, height);
+        candidates.push({
+          quad: orderedQuad,
+          score: finalScore,
+          telemetry: `Score=${finalScore.toFixed(4)} Epsilon=${epsilonRatio.toFixed(3)} | ${telemetry}`,
+          area: hullArea
+        });
         break;
       }
     }
@@ -474,13 +486,18 @@ export async function detectDocumentInFrame(
         const maxEdge = Math.max(topLen, rightLen, bottomLen, leftLen);
 
         if (minEdge >= 20 && maxEdge / minEdge <= 10) {
-          if (__DEV__) console.log(`[SEMANTIC-REDUCTION] Recovered 4-point quad from ${fallbackPolygon.length} vertices`);
-          acceptedCount++;
-          sweepSuccess = true;
-          const currentArea = shoelaceArea(currentPoly);
-          if (currentArea > maxArea) {
-            maxArea = currentArea;
-            bestQuad = orderedQuad;
+          if (!passesDocumentPlausibility(orderedQuad, hullArea, width, height)) {
+            rejectionReasons.PLAUSIBILITY_FAIL++;
+          } else {
+            acceptedCount++;
+            sweepSuccess = true;
+            const { finalScore, telemetry } = calculateSemanticScore(contour, hull, currentPoly, orderedQuad, width, height);
+            candidates.push({
+              quad: orderedQuad,
+              score: finalScore,
+              telemetry: `Score=${finalScore.toFixed(4)} SemanticReduced(from ${fallbackPolygon.length}) | ${telemetry}`,
+              area: hullArea
+            });
           }
         } else {
            sweepRejectedForRatio = true;
@@ -498,6 +515,14 @@ export async function detectDocumentInFrame(
     }
   }
 
+  // Rank candidate quads by semantic score
+  candidates.sort((a, b) => b.score - a.score);
+
+  if (candidates.length > 0) {
+    bestQuad = candidates[0].quad;
+    maxArea = candidates[0].area;
+  }
+
   contourAreas.sort((a, b) => b - a);
   const top5Areas = contourAreas.slice(0, 5).map(a => Math.round(a));
 
@@ -505,6 +530,14 @@ export async function detectDocumentInFrame(
   console.log(`[TELEMETRY] Contours: Raw=${rawContourCount} Filtered=${filteredContourCount} LargestHullArea=${largestHullArea.toFixed(0)} LargestHullVertices=${largestHullVertexCount}`);
   console.log(`[TELEMETRY] Top5ContourAreas=[${top5Areas.join(', ')}]`);
   console.log(`[TELEMETRY] Accepted Quads=${acceptedCount}. Rejections:`, JSON.stringify(rejectionReasons));
+  
+  if (__DEV__) {
+    console.log(`[SEMANTIC-RANKING] Total valid candidate quads: ${candidates.length}`);
+    candidates.slice(0, 5).forEach((cand, idx) => {
+      console.log(`  Rank #${idx + 1}: ${cand.telemetry} | HullArea=${cand.area.toFixed(0)}`);
+    });
+  }
+
   if (bestQuad && __DEV__) {
     console.log(`[TELEMETRY] Final Quad:`, JSON.stringify(bestQuad));
   }
@@ -637,6 +670,154 @@ function shoelaceArea(pts: Point[]): number {
 }
 
 /** Perimeter of a closed polygon from an {x,y} point array */
+/**
+ * Document Plausibility Validation Layer:
+ * Evaluates physical dimensions (occupancy, width/height spans, and letter/A4 aspect ratios)
+ * to filter out tiny internal printed blocks, text bands, shadows, or desk slivers.
+ */
+function passesDocumentPlausibility(
+  quad: Quadrilateral,
+  hullArea: number,
+  frameWidth: number,
+  frameHeight: number
+): boolean {
+  const frameArea = frameWidth * frameHeight;
+  const occupancy = hullArea / frameArea;
+
+  // Quad Bounds
+  const qPoints = [quad.topLeft, quad.topRight, quad.bottomRight, quad.bottomLeft];
+  let minX = frameWidth, maxX = 0, minY = frameHeight, maxY = 0;
+  qPoints.forEach(p => {
+    minX = Math.min(minX, p.x);
+    maxX = Math.max(maxX, p.x);
+    minY = Math.min(minY, p.y);
+    maxY = Math.max(maxY, p.y);
+  });
+
+  const widthCoverage = (maxX - minX) / frameWidth;
+  const heightCoverage = (maxY - minY) / frameHeight;
+
+  // Edge Lengths
+  const topLen = Math.hypot(quad.topRight.x - quad.topLeft.x, quad.topRight.y - quad.topLeft.y);
+  const bottomLen = Math.hypot(quad.bottomRight.x - quad.bottomLeft.x, quad.bottomRight.y - quad.bottomLeft.y);
+  const leftLen = Math.hypot(quad.topLeft.x - quad.bottomLeft.x, quad.topLeft.y - quad.bottomLeft.y);
+  const rightLen = Math.hypot(quad.topRight.x - quad.bottomRight.x, quad.topRight.y - quad.bottomRight.y);
+
+  const avgWidth = (topLen + bottomLen) / 2;
+  const avgHeight = (leftLen + rightLen) / 2;
+  const aspectRatio = avgWidth / Math.max(avgHeight, 1);
+
+  if (occupancy < 0.10) {
+    if (__DEV__) {
+      console.log(`[Plausibility Reject] occupancy=${occupancy.toFixed(3)} widthCoverage=${widthCoverage.toFixed(2)} heightCoverage=${heightCoverage.toFixed(2)} aspect=${aspectRatio.toFixed(2)} | reason=LOW_OCCUPANCY`);
+    }
+    return false;
+  }
+  if (widthCoverage < 0.25) {
+    if (__DEV__) {
+      console.log(`[Plausibility Reject] occupancy=${occupancy.toFixed(3)} widthCoverage=${widthCoverage.toFixed(2)} heightCoverage=${heightCoverage.toFixed(2)} aspect=${aspectRatio.toFixed(2)} | reason=LOW_WIDTH_COVERAGE`);
+    }
+    return false;
+  }
+  if (heightCoverage < 0.25) {
+    if (__DEV__) {
+      console.log(`[Plausibility Reject] occupancy=${occupancy.toFixed(3)} widthCoverage=${widthCoverage.toFixed(2)} heightCoverage=${heightCoverage.toFixed(2)} aspect=${aspectRatio.toFixed(2)} | reason=LOW_HEIGHT_COVERAGE`);
+    }
+    return false;
+  }
+  if (aspectRatio < 0.6 || aspectRatio > 2.2) {
+    if (__DEV__) {
+      console.log(`[Plausibility Reject] occupancy=${occupancy.toFixed(3)} widthCoverage=${widthCoverage.toFixed(2)} heightCoverage=${heightCoverage.toFixed(2)} aspect=${aspectRatio.toFixed(2)} | reason=INVALID_ASPECT_RATIO`);
+    }
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Calculate multi-dimensional weighted shape semantic score to rank contours.
+ * Directly penalizes high angle deviations and extreme edge imbalances,
+ * preventing desk borders or diagonal slivers from hijacking crop detection.
+ */
+function calculateSemanticScore(
+  contour: Point[],
+  hull: Point[],
+  approx: Point[],
+  quad: Quadrilateral,
+  width: number,
+  height: number
+): { finalScore: number; telemetry: string } {
+  const frameArea = width * height;
+  const cArea = shoelaceArea(contour);
+  const hArea = shoelaceArea(hull);
+
+  // 1. Area Score (30%) - Square-root compressed scale
+  const areaRatio = hArea / frameArea;
+  const areaScore = Math.sqrt(Math.min(1, areaRatio / 0.7));
+
+  // 2. Rectangularity (20%) - Using simplified quad bounding box
+  let minX = width, maxX = 0, minY = height, maxY = 0;
+  const qPoints = [quad.topLeft, quad.topRight, quad.bottomRight, quad.bottomLeft];
+  qPoints.forEach(p => {
+    minX = Math.min(minX, p.x);
+    maxX = Math.max(maxX, p.x);
+    minY = Math.min(minY, p.y);
+    maxY = Math.max(maxY, p.y);
+  });
+  const bboxArea = (maxX - minX) * (maxY - minY);
+  const rectangularity = bboxArea > 0 ? Math.min(1.0, cArea / bboxArea) : 0;
+
+  // 3. Angle Quality (20%) - Exponential decay
+  const angles = [
+    getAngle(quad.bottomLeft, quad.topLeft, quad.topRight),
+    getAngle(quad.topLeft, quad.topRight, quad.bottomRight),
+    getAngle(quad.topRight, quad.bottomRight, quad.bottomLeft),
+    getAngle(quad.bottomRight, quad.bottomLeft, quad.topLeft),
+  ];
+  let angleDevSum = 0;
+  angles.forEach(a => {
+    angleDevSum += Math.abs(a - 90);
+  });
+  const avgAngleDev = angleDevSum / 4;
+  const angleScore = Math.exp(-avgAngleDev / 18);
+
+  // 4. Edge Balance (15%) - Clamped for perspective tolerance
+  const topLen = Math.hypot(quad.topRight.x - quad.topLeft.x, quad.topRight.y - quad.topLeft.y);
+  const bottomLen = Math.hypot(quad.bottomRight.x - quad.bottomLeft.x, quad.bottomRight.y - quad.bottomLeft.y);
+  const leftLen = Math.hypot(quad.topLeft.x - quad.bottomLeft.x, quad.topLeft.y - quad.bottomLeft.y);
+  const rightLen = Math.hypot(quad.topRight.x - quad.bottomRight.x, quad.topRight.y - quad.bottomRight.y);
+
+  const tbRatio = Math.max(0.35, Math.min(topLen, bottomLen) / Math.max(1, Math.max(topLen, bottomLen)));
+  const lrRatio = Math.max(0.35, Math.min(leftLen, rightLen) / Math.max(1, Math.max(leftLen, rightLen)));
+  const edgeBalance = (tbRatio + lrRatio) / 2;
+
+  // 5. Center Bias (10%)
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const centroidX = (quad.topLeft.x + quad.topRight.x + quad.bottomRight.x + quad.bottomLeft.x) / 4;
+  const centroidY = (quad.topLeft.y + quad.topRight.y + quad.bottomRight.y + quad.bottomLeft.y) / 4;
+  const distFromCenter = Math.hypot(centroidX - centerX, centroidY - centerY);
+  const maxDiag = Math.hypot(width, height) / 2;
+  const centerBias = Math.max(0, 1 - distFromCenter / maxDiag);
+
+  // 6. Solidity (5%)
+  const solidity = hArea > 0 ? cArea / hArea : 0;
+
+  // Compute final weighted score
+  const finalScore = 
+    (areaScore * 0.30) +
+    (rectangularity * 0.20) +
+    (angleScore * 0.20) +
+    (edgeBalance * 0.15) +
+    (centerBias * 0.10) +
+    (solidity * 0.05);
+
+  const telemetry = `AreaS=${areaScore.toFixed(2)} RectS=${rectangularity.toFixed(2)} AngleS=${angleScore.toFixed(2)} EdgeS=${edgeBalance.toFixed(2)} CentS=${centerBias.toFixed(2)} SolidS=${solidity.toFixed(2)}`;
+
+  return { finalScore, telemetry };
+}
+
 function perimeter(pts: Point[]): number {
   let total = 0;
   const n = pts.length;
@@ -666,6 +847,66 @@ function douglasPeucker(pts: Point[], epsilon: number): Point[] {
     return [...left.slice(0, -1), ...right];
   }
   return [start, end];
+}
+
+/**
+ * Cyclic Douglas-Peucker: pre-conditions the closed hull loop to prevent fixed endpoint lock.
+ * Finds the two furthest points on the hull, splits it into two open polylines, simplifies
+ * them separately, and merges the result back cyclically.
+ */
+function cyclicDouglasPeucker(hull: Point[], epsilon: number): Point[] {
+  if (hull.length <= 4) return douglasPeucker(hull, epsilon);
+
+  let maxDistSq = 0;
+  let idxA = 0;
+  let idxB = 0;
+  const n = hull.length;
+
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const dx = hull[i].x - hull[j].x;
+      const dy = hull[i].y - hull[j].y;
+      const distSq = dx * dx + dy * dy;
+      if (distSq > maxDistSq) {
+        maxDistSq = distSq;
+        idxA = i;
+        idxB = j;
+      }
+    }
+  }
+
+  // Ensure winding/ordering: idxA < idxB
+  if (idxA > idxB) {
+    const temp = idxA;
+    idxA = idxB;
+    idxB = temp;
+  }
+
+  // Split hull into two halves
+  // Half 1: idxA -> idxB (inclusive)
+  const half1 = hull.slice(idxA, idxB + 1);
+
+  // Half 2: idxB -> End -> Start -> idxA
+  const half2: Point[] = [];
+  for (let i = idxB; i < n; i++) {
+    half2.push(hull[i]);
+  }
+  for (let i = 0; i <= idxA; i++) {
+    half2.push(hull[i]);
+  }
+
+  // Run standard DP on both halves
+  const simp1 = douglasPeucker(half1, epsilon);
+  const simp2 = douglasPeucker(half2, epsilon);
+
+  // Merge simplified halves without duplicate endpoints
+  const merged = [...simp1.slice(0, -1), ...simp2.slice(0, -1)];
+
+  if (__DEV__) {
+    console.log(`[CYCLIC-DP] Split anchors: A=${idxA}, B=${idxB} | Half1: ${half1.length}->${simp1.length} | Half2: ${half2.length}->${simp2.length} | Merged: ${merged.length}`);
+  }
+
+  return merged;
 }
 
 /** Perpendicular distance from point p to line segment a→b */
