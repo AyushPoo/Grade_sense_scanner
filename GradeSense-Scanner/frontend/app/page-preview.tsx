@@ -163,7 +163,7 @@ export default function PagePreviewScreen() {
               const studentIdx = studentIndex ? parseInt(studentIndex) : undefined;
               startRetake(currentPage, phaseToUse as ScanPhase, studentIdx);
             }
-            router.back();
+            router.push('/scanner');
           },
         },
       ]
