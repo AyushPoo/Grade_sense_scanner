@@ -109,6 +109,7 @@ const StudentCard = memo(({
   onDelete,
   onPreview,
   onRename,
+  onAppend,
 }: any) => {
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput]     = useState(student.label);
@@ -166,6 +167,17 @@ const StudentCard = memo(({
             {student.page_count > 0 ? `${student.page_count} page${student.page_count !== 1 ? 's' : ''}` : 'No pages yet'}
           </Text>
         </View>
+
+        <TouchableOpacity 
+          style={{ paddingHorizontal: 10, paddingVertical: 6, backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 6, flexDirection: 'row', alignItems: 'center', gap: 4 }}
+          onPress={(e) => {
+            e.stopPropagation();
+            onAppend(student.student_index);
+          }}
+        >
+          <Ionicons name="add" size={14} color={COLORS.primary} />
+          <Text style={{ fontSize: 12, color: COLORS.primary, fontWeight: '600' }}>Add Pages</Text>
+        </TouchableOpacity>
 
         <Ionicons
           name={isExpanded ? 'chevron-up' : 'chevron-down'}
@@ -290,6 +302,14 @@ export default function ReviewScreen() {
   const handleRename = useCallback((studentIndex: number, newLabel: string) => {
     renameStudent(studentIndex, newLabel);
   }, [renameStudent]);
+
+  const handleAppend = useCallback((studentIndex: number) => {
+    useScanStore.setState({
+      currentPhase: 'students',
+      currentStudentIndex: studentIndex
+    });
+    router.push('/scanner');
+  }, [router]);
 
   const handleGlobalFilter = async (filter: FilterMode) => {
     if (!session || isApplyingGlobalFilter) return;
@@ -439,6 +459,7 @@ export default function ReviewScreen() {
             onDelete={handleDelete}
             onPreview={handlePreview}
             onRename={handleRename}
+            onAppend={handleAppend}
           />
         ))}
       </ScrollView>

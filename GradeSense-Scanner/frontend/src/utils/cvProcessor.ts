@@ -36,7 +36,26 @@ const RETR_EXTERNAL = 0;
 const RETR_LIST = 1;
 const CHAIN_APPROX_SIMPLE = 2;
 
+// Feature Flags for Stabilization
+const ENABLE_CENTROID_ORDERING = true;
+const ENABLE_EMA_SMOOTHING = true;
+const ENABLE_ADAPTIVE_LIGHTING = true;
+const ENABLE_RELAXED_SCORING = true;
+
 let lastPoints: Point[] = [];
+let lastStablePoints: Point[] | null = null;
+let stabilityCounter = 0;
+let globalAvgBrightness = 127;
+const EMA_ALPHA = 0.15;
+const EMA_DRIFT_THRESHOLD = 30; // pixels
+
+export function resetScannerState() {
+  lastPoints = [];
+  lastStablePoints = null;
+  stabilityCounter = 0;
+  globalAvgBrightness = 127;
+  if (__DEV__) console.log('[CV] Scanner state reset.');
+}
 
 /** Safe fallback returned whenever input is invalid or CV throws */
 const SAFE_NO_DETECT_RESULT: CVProcessingResult = {
@@ -162,6 +181,24 @@ export async function detectDocumentInFrame(
     return { ...SAFE_NO_DETECT_RESULT };
   }
 
+  // ── STAGE 2.5: Frame Brightness Check ──────────────────────────────────────────
+  try {
+    if (ENABLE_ADAPTIVE_LIGHTING) {
+      const meanGrayMat = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8U);
+      const stddevGrayMat = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8U);
+      (OpenCV as any).invoke('meanStdDev', grayMat, meanGrayMat, stddevGrayMat);
+      const meanRaw: any = OpenCV.toJSValue(meanGrayMat);
+      const frameMean = Array.isArray(meanRaw?.array) ? meanRaw.array[0] : 127;
+      
+      // Smooth the brightness to avoid rapid flickers
+      globalAvgBrightness = globalAvgBrightness * 0.9 + frameMean * 0.1;
+      
+      cleanupMats([meanGrayMat, stddevGrayMat]);
+    }
+  } catch (err) {
+    console.warn('[CV][STAGE:brightness]', err);
+  }
+
   // ── STAGE 3: Sharpness — try OpenCV Laplacian, fall back to entropy heuristic ──
   let sharpnessScore = 0;
   try {
@@ -207,7 +244,13 @@ export async function detectDocumentInFrame(
   // ── STAGE 5: Canny edge detection ───────────────────────────────────────────
   try {
     edgeMat = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC1);
-    (OpenCV as any).invoke(CANNY, blurMat, edgeMat, 30, 100);
+    let cannyLow = 30;
+    let cannyHigh = 100;
+    if (ENABLE_ADAPTIVE_LIGHTING) {
+      cannyLow = Math.max(10, Math.round(globalAvgBrightness * 0.3));
+      cannyHigh = Math.max(50, Math.round(globalAvgBrightness * 0.8));
+    }
+    (OpenCV as any).invoke(CANNY, blurMat, edgeMat, cannyLow, cannyHigh);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[CV][STAGE:canny]', msg);
@@ -221,8 +264,14 @@ export async function detectDocumentInFrame(
     // srcMat was loaded via imread -> BGR. COLOR_BGR2HSV = 40
     (OpenCV as any).invoke('cvtColor', srcMat, hsvMat, 40); 
 
+    let vLower = 80;
+    if (ENABLE_ADAPTIVE_LIGHTING) {
+      // If global brightness is low, V threshold drops to allow dark paper.
+      vLower = Math.max(20, Math.min(100, Math.round(globalAvgBrightness - 40)));
+    }
+
     maskMat = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC1);
-    lowerBound = OpenCV.createObject(ObjectType.Scalar, 0, 0, 80);
+    lowerBound = OpenCV.createObject(ObjectType.Scalar, 0, 0, vLower);
     upperBound = OpenCV.createObject(ObjectType.Scalar, 179, 120, 255);
     (OpenCV as any).invoke('inRange', hsvMat, lowerBound, upperBound, maskMat);
   } catch (err) {
@@ -521,6 +570,69 @@ export async function detectDocumentInFrame(
   if (candidates.length > 0) {
     bestQuad = candidates[0].quad;
     maxArea = candidates[0].area;
+    
+    if (ENABLE_EMA_SMOOTHING) {
+      const currentPts = [bestQuad.topLeft, bestQuad.topRight, bestQuad.bottomRight, bestQuad.bottomLeft];
+      if (lastStablePoints) {
+        // Calculate drift from last stable points
+        let drift = 0;
+        for (let i = 0; i < 4; i++) {
+          drift += Math.hypot(currentPts[i].x - lastStablePoints[i].x, currentPts[i].y - lastStablePoints[i].y);
+        }
+        drift /= 4;
+
+        if (drift < EMA_DRIFT_THRESHOLD) {
+          stabilityCounter = Math.min(10, stabilityCounter + 1);
+          // Apply EMA
+          for (let i = 0; i < 4; i++) {
+            currentPts[i].x = lastStablePoints[i].x * (1 - EMA_ALPHA) + currentPts[i].x * EMA_ALPHA;
+            currentPts[i].y = lastStablePoints[i].y * (1 - EMA_ALPHA) + currentPts[i].y * EMA_ALPHA;
+          }
+          bestQuad = {
+            topLeft: currentPts[0],
+            topRight: currentPts[1],
+            bottomRight: currentPts[2],
+            bottomLeft: currentPts[3]
+          };
+          lastStablePoints = currentPts;
+        } else {
+          // Rapid movement detected, decay stability
+          stabilityCounter -= 2;
+          if (stabilityCounter <= 0) {
+            // Snap to new position
+            stabilityCounter = 1;
+            lastStablePoints = currentPts;
+          } else {
+            // Keep old stable points while decaying
+            bestQuad = {
+              topLeft: lastStablePoints[0],
+              topRight: lastStablePoints[1],
+              bottomRight: lastStablePoints[2],
+              bottomLeft: lastStablePoints[3]
+            };
+          }
+        }
+      } else {
+        lastStablePoints = currentPts;
+        stabilityCounter = 1;
+      }
+    }
+  } else {
+    if (ENABLE_EMA_SMOOTHING) {
+      stabilityCounter -= 2;
+      if (stabilityCounter <= 0) {
+        lastStablePoints = null;
+        stabilityCounter = 0;
+      } else if (lastStablePoints) {
+        // Coasting for a few frames if dropped
+        bestQuad = {
+          topLeft: lastStablePoints[0],
+          topRight: lastStablePoints[1],
+          bottomRight: lastStablePoints[2],
+          bottomLeft: lastStablePoints[3]
+        };
+      }
+    }
   }
 
   contourAreas.sort((a, b) => b - a);
@@ -625,6 +737,29 @@ export async function detectDocumentInFrame(
  * Order points consistently: Top-Left, Top-Right, Bottom-Right, Bottom-Left
  */
 function orderPoints(points: Point[]): Quadrilateral {
+  if (ENABLE_CENTROID_ORDERING) {
+    const cx = points.reduce((sum, p) => sum + p.x, 0) / 4;
+    const cy = points.reduce((sum, p) => sum + p.y, 0) / 4;
+    
+    const sorted = [...points].sort((a, b) => {
+      const angleA = Math.atan2(a.y - cy, a.x - cx);
+      const angleB = Math.atan2(b.y - cy, b.x - cx);
+      return angleA - angleB;
+    });
+    
+    // atan2 ranges from -PI to PI
+    // TL: negative x, negative y -> ~ -135 deg
+    // TR: positive x, negative y -> ~ -45 deg
+    // BR: positive x, positive y -> ~ 45 deg
+    // BL: negative x, positive y -> ~ 135 deg
+    return {
+      topLeft: sorted[0],
+      topRight: sorted[1],
+      bottomRight: sorted[2],
+      bottomLeft: sorted[3]
+    };
+  }
+
   // Sort by Y to find top and bottom
   const sortedByY = [...points].sort((a, b) => a.y - b.y);
   const topPoints = sortedByY.slice(0, 2).sort((a, b) => a.x - b.x);
@@ -780,7 +915,7 @@ function calculateSemanticScore(
     angleDevSum += Math.abs(a - 90);
   });
   const avgAngleDev = angleDevSum / 4;
-  const angleScore = Math.exp(-avgAngleDev / 18);
+  const angleScore = Math.exp(-avgAngleDev / (ENABLE_RELAXED_SCORING ? 30 : 18));
 
   // 4. Edge Balance (15%) - Clamped for perspective tolerance
   const topLen = Math.hypot(quad.topRight.x - quad.topLeft.x, quad.topRight.y - quad.topLeft.y);

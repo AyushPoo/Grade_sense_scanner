@@ -12,7 +12,7 @@ import {
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { detectDocumentInFrame, convertToGrayscale, FilterMode, applyFilter } from '../src/utils/cvProcessor';
+import { detectDocumentInFrame, convertToGrayscale, FilterMode, applyFilter, resetScannerState } from '../src/utils/cvProcessor';
 import { normalizeCapturedDocument } from '../src/utils/documentNormalizer';
 import { generateUUID, useScanStore } from '../src/store/scanStore';
 import { useRouter } from 'expo-router';
@@ -20,6 +20,7 @@ import * as Haptics from 'expo-haptics';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { File, Paths } from 'expo-file-system';
+import { AppState, AppStateStatus } from 'react-native';
 import { COLORS } from '../src/config';
 import { useShallow } from 'zustand/react/shallow';
 import { CVProcessingResult, Quadrilateral } from '../src/utils/cvProcessor';
@@ -184,11 +185,22 @@ export default function ScannerScreen() {
     }, [isCameraReady]);
 
     useEffect(() => {
+        resetScannerState();
         ScreenOrientation.unlockAsync();
         return () => {
             isMounted.current = false;
+            resetScannerState();
             ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
         };
+    }, []);
+
+    useEffect(() => {
+        const subscription = AppState.addEventListener('change', nextAppState => {
+            if (nextAppState.match(/inactive|background/)) {
+                resetScannerState();
+            }
+        });
+        return () => subscription.remove();
     }, []);
 
     const onCameraReady = useCallback(() => setIsCameraReady(true), []);
@@ -250,6 +262,7 @@ export default function ScannerScreen() {
         } finally {
             setLiveFlashMode('off');
             transitionTo('COOLDOWN');
+            resetScannerState();
             setTimeout(() => transitionTo('SEARCHING'), CAPTURE_COOLDOWN_MS);
         }
     }, [transitionTo]);
@@ -459,12 +472,14 @@ export default function ScannerScreen() {
     const handleTogglePause = useCallback(() => {
         setIsPaused(prev => {
             isPausedRef.current = !prev;
+            if (!prev) resetScannerState();
             return !prev;
         });
     }, []);
 
     const handleNextStudent = useCallback(() => {
         silentNextStudent();
+        resetScannerState();
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }, [silentNextStudent]);
 
