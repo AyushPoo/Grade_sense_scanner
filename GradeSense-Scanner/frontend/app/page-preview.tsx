@@ -18,6 +18,7 @@ import { useScanStore } from '../src/store/scanStore';
 import { ScannedPage, ScanPhase } from '../src/types';
 import { applyFilter, FilterMode } from '../src/utils/cvProcessor';
 import { File, Paths } from 'expo-file-system';
+import { ZoomModal } from '../src/components/ZoomModal';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -33,6 +34,8 @@ export default function PagePreviewScreen() {
   const flatListRef = useRef<FlatList>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isApplyingFilter, setIsApplyingFilter] = useState(false);
+  const [zoomModalVisible, setZoomModalVisible] = useState(false);
+  const [zoomImageUri, setZoomImageUri] = useState('');
 
   const FILTERS: { id: FilterMode; label: string; icon: string }[] = [
     { id: 'original',           label: 'Original',    icon: 'image-outline' },
@@ -181,7 +184,14 @@ export default function PagePreviewScreen() {
   const renderPage = ({ item, index }: { item: ScannedPage; index: number }) => (
     <View style={styles.pageContainer}>
       {item.file_path ? (
-        <>
+        <TouchableOpacity
+          activeOpacity={0.9}
+          onPress={() => {
+            setZoomImageUri(item.file_path);
+            setZoomModalVisible(true);
+          }}
+          style={styles.imageTouchArea}
+        >
           <Image
             source={{ uri: item.file_path }}
             style={styles.image}
@@ -205,7 +215,7 @@ export default function PagePreviewScreen() {
               <ActivityIndicator size="large" color={COLORS.primary} />
             </View>
           )}
-        </>
+        </TouchableOpacity>
       ) : (
         <View style={styles.noImage}>
           <Ionicons name="image-outline" size={64} color={COLORS.textMuted} />
@@ -354,11 +364,23 @@ export default function PagePreviewScreen() {
           </TouchableOpacity>
         </View>
       </View>
+
+      <ZoomModal
+        visible={zoomModalVisible}
+        imageUri={zoomImageUri}
+        onClose={() => setZoomModalVisible(false)}
+      />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  imageTouchArea: {
+    width: SCREEN_WIDTH,
+    height: SCREEN_HEIGHT * 0.6,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   container: {
     flex: 1,
     backgroundColor: '#000',
