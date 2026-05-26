@@ -171,7 +171,7 @@ export async function detectDocumentInFrame(
     // Probe the input image channel structure by calling matToBuffer metadata retrieval.
     const meta = OpenCV.matToBuffer(srcMat, 'uint8');
     const srcChannels = meta.channels;
-    
+
     // We want our canonical format to be 4-channel RGBA.
     if (srcChannels === 4) {
       // 4 channels: could be RGBA or BGRA. Let's verify which grayscale conversion works.
@@ -326,7 +326,7 @@ export async function detectDocumentInFrame(
     // Let's use exact code values:
     // COLOR_RGBA2RGB = 1
     // COLOR_RGB2HSV = 41
-    (OpenCV as any).invoke('cvtColor', normalizedMat, tempRgbMat, 1); 
+    (OpenCV as any).invoke('cvtColor', normalizedMat, tempRgbMat, 1);
     (OpenCV as any).invoke('cvtColor', tempRgbMat, hsvMat, 41);
     cleanupMats([tempRgbMat]);
 
@@ -908,19 +908,19 @@ function passesDocumentPlausibility(
   const avgHeight = (leftLen + rightLen) / 2;
   const aspectRatio = avgWidth / Math.max(avgHeight, 1);
 
-  if (occupancy < 0.10) {
+  if (occupancy < 0.03) {
     if (__DEV__) {
       console.log(`[Plausibility Reject] occupancy=${occupancy.toFixed(3)} widthCoverage=${widthCoverage.toFixed(2)} heightCoverage=${heightCoverage.toFixed(2)} aspect=${aspectRatio.toFixed(2)} | reason=LOW_OCCUPANCY`);
     }
     return false;
   }
-  if (widthCoverage < 0.25) {
+  if (widthCoverage < 0.15) {
     if (__DEV__) {
       console.log(`[Plausibility Reject] occupancy=${occupancy.toFixed(3)} widthCoverage=${widthCoverage.toFixed(2)} heightCoverage=${heightCoverage.toFixed(2)} aspect=${aspectRatio.toFixed(2)} | reason=LOW_WIDTH_COVERAGE`);
     }
     return false;
   }
-  if (heightCoverage < 0.25) {
+  if (heightCoverage < 0.15) {
     if (__DEV__) {
       console.log(`[Plausibility Reject] occupancy=${occupancy.toFixed(3)} widthCoverage=${widthCoverage.toFixed(2)} heightCoverage=${heightCoverage.toFixed(2)} aspect=${aspectRatio.toFixed(2)} | reason=LOW_HEIGHT_COVERAGE`);
     }
