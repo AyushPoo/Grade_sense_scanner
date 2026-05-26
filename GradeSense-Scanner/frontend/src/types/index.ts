@@ -63,6 +63,7 @@ export interface ScannedStudent {
 
 export interface ScanSessionSettings {
   auto_capture: boolean;
+  auto_crop?: boolean;
   barcode_detection: boolean;
   blur_detection: boolean;
   flash_mode: 'off' | 'on' | 'auto';

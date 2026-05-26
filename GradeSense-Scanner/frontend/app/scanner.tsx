@@ -310,44 +310,48 @@ export default function ScannerScreen() {
             }
 
             try {
-                // Downscale the EXIF-resolved canonical image (NOT raw sensor image)
-                const downscaled = await ImageManipulator.manipulateAsync(
-                    canonicalUri,
-                    [{ resize: { width: 640 } }],
-                    { base64: false, format: ImageManipulator.SaveFormat.JPEG, compress: 0.5 }
-                );
-
-                if (__DEV__) {
-                    console.log(`[EXIF-AUDIT] detectionDims=${downscaled.width}x${downscaled.height}`);
-                }
-
-                if (downscaled.uri) {
-                    const cvResult = await detectDocumentInFrame(
-                        downscaled.uri,
-                        downscaled.width,
-                        downscaled.height
+                if (useScanStore.getState().autoCropEnabled) {
+                    // Downscale the EXIF-resolved canonical image (NOT raw sensor image)
+                    const downscaled = await ImageManipulator.manipulateAsync(
+                        canonicalUri,
+                        [{ resize: { width: 640 } }],
+                        { base64: false, format: ImageManipulator.SaveFormat.JPEG, compress: 0.5 }
                     );
-                    
-                    console.log(`[DEBUG-AUTOCROP] cvResult returned:`, JSON.stringify({
-                        isDetected: cvResult?.isDocumentDetected,
-                        hasQuad: !!cvResult?.quadrilateral,
-                        sharpness: cvResult?.sharpnessScore,
-                        areaScore: cvResult?.areaScore,
-                        confidence: cvResult?.confidence
-                    }));
 
-                    if (cvResult && cvResult.quadrilateral) {
-                        detectionQuad = cvResult.quadrilateral;
-                        detectionDims = { width: downscaled.width, height: downscaled.height };
-                        console.log('[commitCapture] Post-capture detection SUCCESS');
-                    } else {
-                        console.log('[commitCapture] Post-capture detection failed to find document. Falling back to original image.');
+                    if (__DEV__) {
+                        console.log(`[EXIF-AUDIT] detectionDims=${downscaled.width}x${downscaled.height}`);
                     }
 
-                    // CLEANUP: delete temporary downscaled file
-                    try {
-                        new File(downscaled.uri).delete();
-                    } catch (_) {}
+                    if (downscaled.uri) {
+                        const cvResult = await detectDocumentInFrame(
+                            downscaled.uri,
+                            downscaled.width,
+                            downscaled.height
+                        );
+                        
+                        console.log(`[DEBUG-AUTOCROP] cvResult returned:`, JSON.stringify({
+                            isDetected: cvResult?.isDocumentDetected,
+                            hasQuad: !!cvResult?.quadrilateral,
+                            sharpness: cvResult?.sharpnessScore,
+                            areaScore: cvResult?.areaScore,
+                            confidence: cvResult?.confidence
+                        }));
+
+                        if (cvResult && cvResult.quadrilateral) {
+                            detectionQuad = cvResult.quadrilateral;
+                            detectionDims = { width: downscaled.width, height: downscaled.height };
+                            console.log('[commitCapture] Post-capture detection SUCCESS');
+                        } else {
+                            console.log('[commitCapture] Post-capture detection failed to find document. Falling back to original image.');
+                        }
+
+                        // CLEANUP: delete temporary downscaled file
+                        try {
+                            new File(downscaled.uri).delete();
+                        } catch (_) {}
+                    }
+                } else {
+                    console.log('[commitCapture] Auto-crop disabled. Skipping post-capture detection.');
                 }
             } catch (detectErr) {
                 console.warn('[commitCapture] post-capture detection error:', detectErr);

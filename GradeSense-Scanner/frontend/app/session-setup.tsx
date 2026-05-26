@@ -37,6 +37,7 @@ export default function SessionSetupScreen() {
     scan_question_paper: false,
     scan_model_answer: false,
     auto_capture: true,
+    auto_crop: true,
     barcode_detection: false,
     blur_detection: false,
     flash_mode: 'auto',
@@ -298,6 +299,24 @@ export default function SessionSetupScreen() {
                   onValueChange={(value) => updateSetting('auto_capture', value)}
                   trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
                   thumbColor={settings.auto_capture ? COLORS.primary : '#f4f3f4'}
+                />
+              </View>
+
+              <View style={styles.optionRow}>
+                <View style={styles.optionLeft}>
+                  <View style={[styles.optionIcon, { backgroundColor: '#E0F7FA' }]}>
+                    <Ionicons name="crop" size={20} color="#00838F" />
+                  </View>
+                  <View style={styles.optionTextContainer}>
+                    <Text style={styles.optionLabel}>Auto-Crop Mode</Text>
+                    <Text style={styles.optionHint}>Automatically detect and crop document</Text>
+                  </View>
+                </View>
+                <Switch
+                  value={settings.auto_crop !== false}
+                  onValueChange={(value) => updateSetting('auto_crop', value)}
+                  trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
+                  thumbColor={settings.auto_crop !== false ? COLORS.primary : '#f4f3f4'}
                 />
               </View>
 

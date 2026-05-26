@@ -214,7 +214,7 @@ export const useScanStore = create<ScanState>()(
             currentStudentIndex: 0,
             isScanning: true,
             autoCaptureEnabled: settings.auto_capture,
-            autoCropEnabled: true,
+            autoCropEnabled: settings.auto_crop !== false,
           });
         } catch (error) {
           console.error("Error creating session:", error);
