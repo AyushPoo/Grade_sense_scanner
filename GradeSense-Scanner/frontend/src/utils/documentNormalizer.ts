@@ -83,6 +83,12 @@ export async function normalizeCapturedDocument(
   originalBitmapDimensions: { width: number, height: number },
   options: NormalizationOptions = {}
 ): Promise<NormalizationResult> {
+  console.log('[CV-AUDIT] normalizeCapturedDocument entry', {
+      rawWidth: originalBitmapDimensions.width,
+      rawHeight: originalBitmapDimensions.height,
+      cropQuad: rawQuad,
+  });
+
   let downscaledUri: string | null = null;
   let finalUri: string | null = null;
 

@@ -3,11 +3,10 @@ import {
     View,
     StyleSheet,
     PanResponder,
-    Dimensions,
+    useWindowDimensions,
     TouchableOpacity,
     Text,
     ActivityIndicator,
-    Image as RNImage,
 } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
 import { Quadrilateral } from '../utils/cvProcessor';
@@ -25,13 +24,13 @@ interface CropOverlayProps {
     onCancel: () => void;
 }
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const CORNER_HIT_SIZE = 52; // touch target size
 const CORNER_DOT_SIZE = 22; // visual dot size
 
 type Corner = keyof Quadrilateral;
 
 export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }: CropOverlayProps) {
+    const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = useWindowDimensions();
     const [normalizedImageUri, setNormalizedImageUri] = useState<string | null>(null);
     const [imageDims, setImageDims] = useState<{ width: number; height: number } | null>(null);
     const [containerDims, setContainerDims] = useState<{ width: number; height: number; scale: number } | null>(null);
@@ -47,13 +46,9 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
     useEffect(() => { pointsRef.current = points; }, [points]);
     useEffect(() => { containerRef.current = containerDims; }, [containerDims]);
 
-    // EXIF Normalization
+    // EXIF Normalization & Dimension Loading
     useEffect(() => {
         let isMounted = true;
-        if (!ENABLE_EXIF_NORMALIZATION) {
-            setNormalizedImageUri(imageUri);
-            return;
-        }
         (async () => {
             try {
                 // Bake EXIF rotation into the pixel data natively (must match scanner.tsx)
@@ -62,19 +57,24 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
                     [{ rotate: 0 }],
                     { compress: 1, format: ImageManipulator.SaveFormat.JPEG }
                 );
-                if (isMounted) setNormalizedImageUri(result.uri);
+                if (isMounted) {
+                    setNormalizedImageUri(result.uri);
+                    setImageDims({ width: result.width, height: result.height });
+                }
             } catch (err) {
-                if (isMounted) setNormalizedImageUri(imageUri);
+                try {
+                    const result = await ImageManipulator.manipulateAsync(imageUri, []);
+                    if (isMounted) {
+                        setNormalizedImageUri(imageUri);
+                        setImageDims({ width: result.width, height: result.height });
+                    }
+                } catch (fallbackErr) {
+                    console.warn('[CropOverlay] Failed to load image dimensions:', fallbackErr);
+                }
             }
         })();
         return () => { isMounted = false; };
     }, [imageUri]);
-
-    // Load image dimensions
-    useEffect(() => {
-        if (!normalizedImageUri) return;
-        RNImage.getSize(normalizedImageUri, (w, h) => setImageDims({ width: w, height: h }));
-    }, [normalizedImageUri]);
 
     // Compute container size and initial quad
     useEffect(() => {
@@ -135,7 +135,7 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
             setPoints(q);
             pointsRef.current = q;
         }
-    }, [imageDims]);  // only re-run when imageDims changes, not initialQuad
+    }, [imageDims, SCREEN_WIDTH, SCREEN_HEIGHT]);  // re-run when imageDims or screen dimensions change
 
     // One PanResponder that handles a corner based on activeCornerRef
     const panResponder = useMemo(() => PanResponder.create({
@@ -183,12 +183,17 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
         if (pointsRef.current && containerRef.current) {
             const { scale } = containerRef.current;
             const q = pointsRef.current;
-            onCropComplete({
+            const exportedQuad = {
                 topLeft:     { x: q.topLeft.x / scale,     y: q.topLeft.y / scale },
                 topRight:    { x: q.topRight.x / scale,    y: q.topRight.y / scale },
                 bottomRight: { x: q.bottomRight.x / scale, y: q.bottomRight.y / scale },
                 bottomLeft:  { x: q.bottomLeft.x / scale,  y: q.bottomLeft.y / scale },
+            };
+            console.log('[CV-AUDIT] CropOverlay.handleSave', {
+                imageDims,
+                exportedQuad,
             });
+            onCropComplete(exportedQuad);
         }
     };
 
@@ -233,7 +238,7 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
                     <ExpoImage
                         source={{ uri: normalizedImageUri || imageUri }}
                         style={StyleSheet.absoluteFill}
-                        contentFit="contain"
+                        contentFit="fill"
                     />
 
                     {/* Dimming outside crop region via SVG */}
