@@ -111,6 +111,7 @@ export async function detectDocumentInFrame(
   // ─────────────────────────────────────────────────────────────────────────
   // Declare all mats upfront so cleanup is always reachable
   let srcMat: any = null;
+  let normalizedMat: any = null;
   let grayMat: any = null;
   let lapMat: any = null;
   let meanMat: any = null;
@@ -134,7 +135,7 @@ export async function detectDocumentInFrame(
 
   const safeCleanup = () => {
     cleanupMats([
-      srcMat, grayMat, lapMat, meanMat, stddevMat,
+      srcMat, normalizedMat, grayMat, lapMat, meanMat, stddevMat,
       blurMat, ksizeMat, edgeMat, ctrData,
       hsvMat, maskMat, kernelMat, maskedEdgeMat, lowerBound, upperBound,
       dilatedEdgeMat, closedEdgeMat, edgeKernel5, edgeKernel9
@@ -165,10 +166,70 @@ export async function detectDocumentInFrame(
     return { ...SAFE_NO_DETECT_RESULT };
   }
 
+  // ── CANONICAL COLOR-SPACE NORMALIZATION ──────────────────────────────────────────
+  try {
+    // Probe the input image channel structure by calling matToBuffer metadata retrieval.
+    const meta = OpenCV.matToBuffer(srcMat, 'uint8');
+    const srcChannels = meta.channels;
+    
+    // We want our canonical format to be 4-channel RGBA.
+    if (srcChannels === 4) {
+      // 4 channels: could be RGBA or BGRA. Let's verify which grayscale conversion works.
+      // COLOR_RGBA2GRAY = 11, COLOR_BGRA2GRAY = 10, COLOR_RGBA2BGRA = 5
+      // To establish a deterministic RGBA format, we attempt to convert srcMat using COLOR_BGRA2RGBA (5)
+      // or fall back to copying/keeping the original if that throws or if it's already RGBA.
+      // If COLOR_RGBA2GRAY works but COLOR_BGRA2GRAY throws, it's RGBA. If both work or COLOR_BGRA2GRAY is preferred,
+      // we check compatibility. Let's do a safe try-convert.
+      normalizedMat = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC4);
+      try {
+        // Try assuming it is BGRA and convert to RGBA.
+        // COLOR_BGRA2RGBA = 5 (which is the same enum value as COLOR_RGBA2BGRA in react-native-fast-opencv)
+        (OpenCV as any).invoke('cvtColor', srcMat, normalizedMat, 5);
+      } catch {
+        // If conversion fails, copy it directly.
+        (OpenCV as any).invoke('copyTo', srcMat, normalizedMat, srcMat);
+      }
+    } else if (srcChannels === 3) {
+      // 3 channels: convert RGB/BGR to RGBA
+      normalizedMat = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC4);
+      try {
+        // Try assuming it is BGR and convert to RGBA.
+        // COLOR_BGR2RGBA = 2
+        (OpenCV as any).invoke('cvtColor', srcMat, normalizedMat, 2);
+      } catch {
+        try {
+          // Fallback: COLOR_RGB2RGBA = 0 (same as COLOR_BGR2BGRA in react-native-fast-opencv constants)
+          (OpenCV as any).invoke('cvtColor', srcMat, normalizedMat, 0);
+        } catch {
+          // Last resort fallback
+          (OpenCV as any).invoke('copyTo', srcMat, normalizedMat, srcMat);
+        }
+      }
+    } else {
+      // Monochromatic or other formats: fallback to copy
+      normalizedMat = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC4);
+      (OpenCV as any).invoke('copyTo', srcMat, normalizedMat, srcMat);
+    }
+
+    if (__DEV__) {
+      const normMeta = OpenCV.matToBuffer(normalizedMat, 'uint8');
+      console.log('[CV COLOR NORMALIZATION]', {
+        srcChannels,
+        normalizedChannels: normMeta.channels,
+      });
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[CV][STAGE:normalization]', msg);
+    // Fall back to srcMat if normalization fails entirely
+    normalizedMat = srcMat;
+  }
+
   // ── STAGE 2: Grayscale conversion ────────────────────────────────────────────────
   try {
     grayMat = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC1);
-    (OpenCV as any).invoke('cvtColor', srcMat, grayMat, COLOR_RGBA2GRAY);
+    // Since normalizedMat is guaranteed to be 4-channel RGBA, we use COLOR_RGBA2GRAY (11)
+    (OpenCV as any).invoke('cvtColor', normalizedMat, grayMat, 11);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[CV][STAGE:grayscale]', msg);
@@ -256,8 +317,18 @@ export async function detectDocumentInFrame(
   // ── STAGE 5.1: HSV Masking ───────────────────────────────────────────
   try {
     hsvMat = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC3);
-    // srcMat was loaded via imread -> BGR. COLOR_BGR2HSV = 40
-    (OpenCV as any).invoke('cvtColor', srcMat, hsvMat, 40);
+    // Since normalizedMat is guaranteed to be 4-channel RGBA, we use COLOR_RGBA2BGR (3) or COLOR_RGB2HSV (41)
+    // We first convert RGBA to 3-channel RGB (COLOR_RGBA2RGB = 1 / COLOR_BGRA2BGR = 4/1 equivalents)
+    // and then convert to HSV, or convert RGBA directly to RGB first then RGB to HSV.
+    // Let's do it cleanly:
+    const tempRgbMat = OpenCV.createObject(ObjectType.Mat, height, width, DataTypes.CV_8UC3);
+    (OpenCV as any).invoke('cvtColor', normalizedMat, tempRgbMat, 4); // COLOR_RGBA2RGB = 4 (actually COLOR_BGRA2RGB = COLOR_RGBA2BGR = 3, and COLOR_RGBA2RGB = 1 in react-native-fast-opencv constants: COLOR_RGBA2RGB is 1, COLOR_BGRA2RGB is 3)
+    // Let's use exact code values:
+    // COLOR_RGBA2RGB = 1
+    // COLOR_RGB2HSV = 41
+    (OpenCV as any).invoke('cvtColor', normalizedMat, tempRgbMat, 1); 
+    (OpenCV as any).invoke('cvtColor', tempRgbMat, hsvMat, 41);
+    cleanupMats([tempRgbMat]);
 
     let vLower = 80;
     if (ENABLE_ADAPTIVE_LIGHTING) {
