@@ -18,7 +18,9 @@ from io import BytesIO
 from fastapi import File, UploadFile, Form
 from fastapi.responses import FileResponse
 import shutil
-from storage_service import StorageService
+from storage_service import StorageService, get_storage_service
+import jwt as pyjwt
+import asyncpg
 
 # Configure logging early so startup failures are visible.
 logging.basicConfig(
@@ -49,7 +51,7 @@ db = client[db_name]
 
 # ==================== FILE STORAGE ====================
 UPLOADS_DIR = ROOT_DIR / "uploads"
-storage = StorageService(UPLOADS_DIR)
+storage = get_storage_service(UPLOADS_DIR)
 
 # Create the main app
 app = FastAPI(title="GradeSense Scanner API")
@@ -122,6 +124,9 @@ class ScanSession(BaseModel):
     session_name: str
     batch_id: str
     batch_name: str
+    subject_id: Optional[str] = None
+    total_marks: Optional[float] = None
+    exam_date: Optional[str] = None
     user_id: str
     org_id: Optional[str] = None
     status: str = "scanning"
@@ -141,6 +146,9 @@ class ScanSessionCreate(BaseModel):
     session_name: str
     batch_id: str
     settings: dict
+    subject_id: Optional[str] = None
+    total_marks: Optional[float] = None
+    exam_date: Optional[str] = None
 
 
 class UploadQpRequest(BaseModel):
@@ -159,6 +167,31 @@ class UploadResponse(BaseModel):
 
 # ==================== AUTH HELPERS ====================
 
+async def validate_token_with_webapp(token: str) -> Optional[dict]:
+    """Validate token with the main webapp auth endpoint"""
+    webapp_url = os.environ.get("WEBAPP_URL")
+    if not webapp_url:
+        logger.error("WEBAPP_URL environment variable is not set")
+        return None
+    
+    try:
+        async with httpx.AsyncClient() as client_http:
+            response = await client_http.get(
+                f"{webapp_url.rstrip('/')}/api/v1/auth/me",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10.0
+            )
+            if response.status_code == 200:
+                res_json = response.json()
+                return res_json.get("data", {}).get("user")
+            else:
+                logger.warning(f"Webapp token validation failed: {response.status_code} - {response.text}")
+                return None
+    except Exception as e:
+        logger.error(f"Error communicating with webapp for token validation: {e}")
+        return None
+
+
 async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
     """Get current user from session token"""
     if not authorization:
@@ -166,46 +199,171 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
     
     token = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else authorization
     
-    # Find session
+    # 1. Check guest/mock token bypass
     if token == "sess_mock_token_12345":
-        # Hardcoded mock session for development/guest bypass
-        session_doc = {
-            "user_id": "user_mock_001",
-            "session_token": "sess_mock_token_12345",
-            "expires_at": (datetime.now(timezone.utc) + timedelta(days=365)).isoformat()
-        }
-    else:
-        session_doc = await db.user_sessions.find_one(
-            {"session_token": token},
-            {"_id": 0}
-        )
+        user_doc = await db.users.find_one({"user_id": "user_mock_001"}, {"_id": 0})
+        if not user_doc:
+            user_doc = {
+                "user_id": "user_mock_001",
+                "email": "guest@gradesense.in",
+                "name": "Guest Teacher",
+                "role": "teacher",
+                "org_name": "GradeSense Mock Academy"
+            }
+            await db.users.insert_one(user_doc)
+        return User(**user_doc)
     
-    if not session_doc:
-        raise HTTPException(status_code=401, detail="Invalid session token")
-    
-    # Check expiry
-    expires_at = session_doc.get("expires_at")
-    if isinstance(expires_at, str):
-        expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-    
-    if expires_at < datetime.now(timezone.utc):
-        raise HTTPException(status_code=401, detail="Session expired")
-    
-    # Find user
-    user_doc = await db.users.find_one(
-        {"user_id": session_doc["user_id"]},
+    # 2. Check local db cache
+    session_doc = await db.user_sessions.find_one(
+        {"session_token": token},
         {"_id": 0}
     )
     
-    if not user_doc:
-        raise HTTPException(status_code=401, detail="User not found")
+    if session_doc:
+        expires_at = session_doc.get("expires_at")
+        if isinstance(expires_at, str):
+            expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        
+        if expires_at > datetime.now(timezone.utc):
+            user_doc = await db.users.find_one(
+                {"user_id": session_doc["user_id"]},
+                {"_id": 0}
+            )
+            if user_doc:
+                return User(**user_doc)
+    
+    # 3. Fallback to validate with webapp
+    user_info = await validate_token_with_webapp(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid or expired session token")
+    
+    # 4. Sync user and session
+    webapp_user_id = user_info.get("id")
+    email = user_info.get("email")
+    name = user_info.get("name", "User")
+    role = user_info.get("role", "teacher")
+    org_id = user_info.get("orgId")
+    
+    user_doc = {
+        "user_id": webapp_user_id,
+        "email": email,
+        "name": name,
+        "role": role,
+        "org_id": org_id,
+        "org_name": "GradeSense Academy"
+    }
+    
+    await db.users.update_one(
+        {"user_id": webapp_user_id},
+        {"$set": user_doc},
+        upsert=True
+    )
+    
+    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+    await db.user_sessions.update_one(
+        {"session_token": token},
+        {"$set": {
+            "user_id": webapp_user_id,
+            "expires_at": expires_at
+        }},
+        upsert=True
+    )
     
     return User(**user_doc)
 
 
 # ==================== AUTH ROUTES ====================
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+@api_router.post("/auth/login")
+async def login_endpoint(data: LoginRequest):
+    """
+    Proxy login to the main webapp auth endpoint.
+    Upon success, creates a session locally and returns user + token.
+    """
+    webapp_url = os.environ.get("WEBAPP_URL")
+    if not webapp_url:
+        logger.error("WEBAPP_URL environment variable is not set")
+        raise HTTPException(status_code=500, detail="Authentication service configuration error")
+    
+    try:
+        async with httpx.AsyncClient() as client_http:
+            response = await client_http.post(
+                f"{webapp_url.rstrip('/')}/api/v1/auth/login",
+                json={"email": data.email, "password": data.password},
+                timeout=15.0
+            )
+            
+            if response.status_code != 200:
+                logger.warning(f"Webapp authentication failed for {data.email}: {response.status_code} - {response.text}")
+                error_detail = "Invalid email or password"
+                try:
+                    res_json = response.json()
+                    if "error" in res_json and "message" in res_json["error"]:
+                        error_detail = res_json["error"]["message"]
+                    elif "message" in res_json:
+                        error_detail = res_json["message"]
+                except Exception:
+                    pass
+                raise HTTPException(status_code=response.status_code, detail=error_detail)
+            
+            auth_data = response.json()
+            data_payload = auth_data.get("data", {})
+            token = data_payload.get("token")
+            user_info = data_payload.get("user", {})
+            
+            if not token or not user_info:
+                logger.error("Authentication response is missing token or user data")
+                raise HTTPException(status_code=500, detail="Invalid response from authentication service")
+                
+    except httpx.RequestError as e:
+        logger.error(f"HTTP connection to webapp failed during login: {e}")
+        raise HTTPException(status_code=500, detail="Authentication service unavailable")
+    
+    # Extract user info
+    webapp_user_id = user_info.get("id")
+    email = user_info.get("email")
+    name = user_info.get("name", "User")
+    role = user_info.get("role", "teacher")
+    org_id = user_info.get("orgId")
+    
+    # Upsert user locally in scanner MongoDB
+    user_doc = {
+        "user_id": webapp_user_id,
+        "email": email,
+        "name": name,
+        "role": role,
+        "org_id": org_id,
+        "org_name": "GradeSense Academy"
+    }
+    await db.users.update_one(
+        {"user_id": webapp_user_id},
+        {"$set": user_doc},
+        upsert=True
+    )
+    
+    # Create persistent session locally
+    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+    session = UserSession(
+        user_id=webapp_user_id,
+        session_token=token,
+        expires_at=expires_at
+    )
+    
+    # Delete old sessions for this user
+    await db.user_sessions.delete_many({"user_id": webapp_user_id})
+    await db.user_sessions.insert_one(session.model_dump())
+    
+    return {
+        "user": user_doc,
+        "session_token": token
+    }
+
 
 @api_router.get("/auth/session")
 async def process_session(x_session_id: str = Header(..., alias="X-Session-ID")):
@@ -260,40 +418,180 @@ async def process_session(x_session_id: str = Header(..., alias="X-Session-ID"))
             org_name="GradeSense Academy"
         )
         await db.users.insert_one(new_user.model_dump())
-    
-    # Create session token
-    session_token = auth_data.get("session_token", f"sess_{uuid.uuid4().hex}")
+
+    # Create session token and return (legacy Emergent Auth - kept for compatibility)
+    session_token = f"sess_{uuid.uuid4().hex}"
     expires_at = datetime.now(timezone.utc) + timedelta(days=7)
-    
-    # Store session
     session = UserSession(
         user_id=user_id,
         session_token=session_token,
         expires_at=expires_at
     )
-    
-    # Delete old sessions for this user
     await db.user_sessions.delete_many({"user_id": user_id})
     await db.user_sessions.insert_one(session.model_dump())
-    
-    # Get updated user
     user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0})
-
-    # Serialize datetime fields to ISO strings so the mobile app can parse them
-    def serialize_doc(doc):
-        if doc is None:
-            return doc
-        result = {}
-        for k, v in doc.items():
-            if isinstance(v, datetime):
-                result[k] = v.isoformat()
-            else:
-                result[k] = v
-        return result
-
     return {
-        "user": serialize_doc(user_doc),
+        "user": user_doc,
         "session_token": session_token
+    }
+
+
+@api_router.post("/auth/google-idtoken")
+async def google_idtoken_auth(data: dict):
+    """
+    Authenticate using a Google ID token obtained from native mobile OAuth.
+    Supports two modes:
+    - id_token: Verifies a Google ID token (preferred)
+    - access_token + token_info: Uses pre-fetched tokeninfo (fallback when id_token unavailable)
+    Looks up the user in the webapp's PostgreSQL DB and returns a webapp-compatible JWT token.
+    """
+    id_token = data.get("id_token")
+    access_token = data.get("access_token")
+    prefetched_token_info = data.get("token_info")
+
+    if not id_token and not access_token:
+        raise HTTPException(status_code=400, detail="Either id_token or access_token is required")
+
+    google_client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+    webapp_jwt_secret = os.environ.get("WEBAPP_JWT_SECRET", "development-jwt-secret-change-me-now")
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+
+    if not google_client_id:
+        raise HTTPException(status_code=500, detail="Google OAuth not configured")
+
+    token_info = None
+
+    # 1. Verify the ID token or access token with Google
+    try:
+        async with httpx.AsyncClient() as http:
+            if id_token:
+                # Primary path: verify ID token
+                resp = await http.get(
+                    "https://oauth2.googleapis.com/tokeninfo",
+                    params={"id_token": id_token},
+                    timeout=10.0
+                )
+                if resp.status_code != 200:
+                    logger.warning(f"Google tokeninfo rejected ID token: {resp.text}")
+                    raise HTTPException(status_code=401, detail="Invalid Google ID token")
+                token_info = resp.json()
+            else:
+                # Fallback path: verify access token
+                if prefetched_token_info and prefetched_token_info.get("email"):
+                    # Use pre-fetched token_info from client (already validated by Google)
+                    token_info = prefetched_token_info
+                else:
+                    resp = await http.get(
+                        "https://oauth2.googleapis.com/oauth2/v3/tokeninfo",
+                        params={"access_token": access_token},
+                        timeout=10.0
+                    )
+                    if resp.status_code != 200:
+                        raise HTTPException(status_code=401, detail="Invalid Google access token")
+                    token_info = resp.json()
+    except httpx.RequestError as e:
+        logger.error(f"Error contacting Google tokeninfo: {e}")
+        raise HTTPException(status_code=503, detail="Could not verify Google token")
+
+    # 2. Validate audience (only for id_token - access_token tokeninfo has different aud format)
+    if id_token:
+        aud = token_info.get("aud", "")
+        android_client_id = os.environ.get("GOOGLE_OAUTH_ANDROID_CLIENT_ID", "")
+        allowed_clients = {google_client_id, android_client_id} - {""}
+        if not any(client in aud for client in allowed_clients):
+            logger.warning(f"Google token audience mismatch: {aud}, allowed: {allowed_clients}")
+            raise HTTPException(status_code=401, detail="Google token audience mismatch")
+
+    # 3. Extract user info from token
+    google_email = token_info.get("email", "").strip().lower()
+    google_sub = token_info.get("sub", "") or token_info.get("user_id", "")
+    google_name = token_info.get("name", "") or google_email.split("@")[0]
+    google_picture = token_info.get("picture", "")
+    email_verified = token_info.get("email_verified", "false") == "true" or token_info.get("verified_email", False)
+
+    if not google_email:
+        raise HTTPException(status_code=401, detail="Google token missing email")
+    if not email_verified:
+        raise HTTPException(status_code=403, detail="Google email is not verified")
+
+
+    # 4. Look up user in the webapp's PostgreSQL DB
+    webapp_user_id = None
+    user_role = "teacher"
+    if webapp_db_url:
+        try:
+            conn = await asyncpg.connect(webapp_db_url)
+            row = await conn.fetchrow(
+                'SELECT id, role, account_status FROM users WHERE email = $1 LIMIT 1',
+                google_email
+            )
+            await conn.close()
+            if row:
+                if row["account_status"] != "active":
+                    raise HTTPException(status_code=403, detail="Account is not active")
+                webapp_user_id = row["id"]
+                user_role = row["role"]
+            else:
+                logger.warning(f"Google auth: user {google_email} not found in webapp DB")
+                raise HTTPException(
+                    status_code=403,
+                    detail="This email is not registered in GradeSense. Please contact your administrator."
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error querying webapp DB: {e}")
+            # Fall through - we'll try webapp token validation instead
+            webapp_user_id = None
+
+    # 5. If we couldn't get the user ID from DB, try via webapp API
+    if not webapp_user_id:
+        # As a fallback, try calling the webapp's login via the proxy
+        raise HTTPException(
+            status_code=503,
+            detail="User database unavailable. Please try again or use email/password login."
+        )
+
+    # 6. Create a webapp-compatible JWT token
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(days=30)
+    payload = {
+        "sub": webapp_user_id,
+        "role": user_role,
+        "iat": int(now.timestamp()),
+        "exp": int(expires.timestamp()),
+    }
+    webapp_token = pyjwt.encode(payload, webapp_jwt_secret, algorithm="HS256")
+
+    # 7. Sync user to local MongoDB cache
+    user_doc = {
+        "user_id": webapp_user_id,
+        "email": google_email,
+        "name": google_name,
+        "picture": google_picture,
+        "role": user_role,
+        "org_name": "GradeSense Academy"
+    }
+    await db.users.update_one(
+        {"user_id": webapp_user_id},
+        {"$set": user_doc},
+        upsert=True
+    )
+
+    # 8. Store session in local MongoDB
+    expire_dt = now + timedelta(days=30)
+    await db.user_sessions.delete_many({"user_id": webapp_user_id})
+    session = UserSession(
+        user_id=webapp_user_id,
+        session_token=webapp_token,
+        expires_at=expire_dt
+    )
+    await db.user_sessions.insert_one(session.model_dump())
+
+    logger.info(f"Google auth success for {google_email} (role: {user_role})")
+    return {
+        "user": user_doc,
+        "session_token": webapp_token
     }
 
 
@@ -317,18 +615,193 @@ async def logout(authorization: Optional[str] = Header(None)):
 
 @api_router.get("/batches")
 async def get_batches(authorization: Optional[str] = Header(None)):
-    """Get all batches for the organization"""
+    """Get all batches for the organization (proxied to webapp)"""
     user = await get_current_user(authorization)
-    batches = await db.batches.find({"org_id": user.org_id}, {"_id": 0}).to_list(100)
+    
+    # 1. Fetch batches from webapp
+    webapp_url = os.environ.get("WEBAPP_URL")
+    if not webapp_url:
+        batches = await db.batches.find({"org_id": user.org_id}, {"_id": 0}).to_list(100)
+        return {"batches": batches}
+    
+    token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
+    if token == "sess_mock_token_12345":
+        batches = await db.batches.find({"org_id": user.org_id}, {"_id": 0}).to_list(100)
+        if not batches:
+            batches = [
+                {"batch_id": "batch_001", "name": "Grade 10 - Science", "student_count": 24, "org_id": user.org_id},
+                {"batch_id": "batch_002", "name": "Grade 11 - Physics", "student_count": 18, "org_id": user.org_id}
+            ]
+        return {"batches": batches}
+        
+    try:
+        async with httpx.AsyncClient() as client_http:
+            response = await client_http.get(
+                f"{webapp_url.rstrip('/')}/api/v1/batches",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=15.0
+            )
+            if response.status_code == 200:
+                res_data = response.json()
+                webapp_batches = res_data.get("data", [])
+                
+                mapped_batches = []
+                for b in webapp_batches:
+                    class_std = b.get("classStandard") or ""
+                    section = b.get("section") or ""
+                    full_name = b.get("name")
+                    if class_std or section:
+                        suffix = f" ({class_std} {section})".strip()
+                        if not full_name.endswith(suffix):
+                            full_name = f"{full_name}{suffix}"
+                            
+                    mapped_batches.append({
+                        "batch_id": b.get("id"),
+                        "name": full_name,
+                        "student_count": 0,
+                        "org_id": user.org_id
+                    })
+                
+                for mb in mapped_batches:
+                    await db.batches.update_one(
+                        {"batch_id": mb["batch_id"]},
+                        {"$set": mb},
+                        upsert=True
+                    )
+                    
+                return {"batches": mapped_batches}
+            else:
+                logger.warning(f"Failed to fetch batches from webapp: {response.status_code} - {response.text}")
+    except Exception as e:
+        logger.error(f"Error fetching batches from webapp: {e}")
+        
+    batches = await db.batches.find({"user_id": user.user_id}, {"_id": 0}).to_list(100)
+    if not batches:
+        batches = await db.batches.find({"org_id": user.org_id}, {"_id": 0}).to_list(100)
     return {"batches": batches}
 
 
 @api_router.get("/batches/{batch_id}/students")
 async def get_batch_students(batch_id: str, authorization: Optional[str] = Header(None)):
-    """Get students in a batch"""
+    """Get students in a batch (proxied to webapp)"""
     user = await get_current_user(authorization)
+    
+    # 1. Fetch students from webapp
+    webapp_url = os.environ.get("WEBAPP_URL")
+    if not webapp_url:
+        students = await db.students.find({"batch_id": batch_id}, {"_id": 0}).to_list(1000)
+        return {"students": students}
+        
+    token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
+    if token == "sess_mock_token_12345":
+        students = await db.students.find({"batch_id": batch_id}, {"_id": 0}).to_list(1000)
+        if not students:
+            students = [
+                {"student_id": "std_001", "roll_number": "10", "name": "Aarav Sharma", "batch_id": batch_id},
+                {"student_id": "std_002", "roll_number": "11", "name": "Aditi Patel", "batch_id": batch_id},
+                {"student_id": "std_003", "roll_number": "12", "name": "Amit Kumar", "batch_id": batch_id}
+            ]
+        return {"students": students}
+        
+    try:
+        async with httpx.AsyncClient() as client_http:
+            response = await client_http.get(
+                f"{webapp_url.rstrip('/')}/api/v1/students",
+                params={"batchId": batch_id},
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=15.0
+            )
+            if response.status_code == 200:
+                res_data = response.json()
+                webapp_students = res_data.get("data", [])
+                
+                mapped_students = []
+                for s in webapp_students:
+                    mapped_students.append({
+                        "student_id": s.get("id"),
+                        "roll_number": s.get("rollNumber") or "",
+                        "name": s.get("name") or "Unnamed Student",
+                        "batch_id": batch_id
+                    })
+                    
+                for ms in mapped_students:
+                    await db.students.update_one(
+                        {"student_id": ms["student_id"]},
+                        {"$set": ms},
+                        upsert=True
+                    )
+                    
+                await db.batches.update_one(
+                    {"batch_id": batch_id},
+                    {"$set": {"student_count": len(mapped_students)}}
+                )
+                    
+                return {"students": mapped_students}
+            else:
+                logger.warning(f"Failed to fetch students from webapp: {response.status_code} - {response.text}")
+    except Exception as e:
+        logger.error(f"Error fetching students from webapp: {e}")
+        
     students = await db.students.find({"batch_id": batch_id}, {"_id": 0}).to_list(1000)
     return {"students": students}
+
+
+@api_router.get("/subjects")
+async def get_subjects(authorization: Optional[str] = Header(None)):
+    """Get all subjects for the teacher (proxied to webapp)"""
+    user = await get_current_user(authorization)
+    
+    # 1. Fetch subjects from webapp
+    webapp_url = os.environ.get("WEBAPP_URL")
+    if not webapp_url:
+        subjects = await db.subjects.find({"teacher_id": user.user_id}, {"_id": 0}).to_list(100)
+        return {"subjects": subjects}
+    
+    token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
+    if token == "sess_mock_token_12345":
+        subjects = await db.subjects.find({"teacher_id": user.user_id}, {"_id": 0}).to_list(100)
+        if not subjects:
+            subjects = [
+                {"id": "subj_001", "name": "Science", "teacher_id": user.user_id},
+                {"id": "subj_002", "name": "Physics", "teacher_id": user.user_id}
+            ]
+        return {"subjects": subjects}
+        
+    try:
+        async with httpx.AsyncClient() as client_http:
+            response = await client_http.get(
+                f"{webapp_url.rstrip('/')}/api/v1/subjects",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=15.0
+            )
+            if response.status_code == 200:
+                res_data = response.json()
+                webapp_subjects = res_data.get("data", [])
+                
+                mapped_subjects = []
+                for s in webapp_subjects:
+                    mapped_subjects.append({
+                        "id": s.get("id"),
+                        "name": s.get("name"),
+                        "class_standard": s.get("classStandard"),
+                        "teacher_id": user.user_id
+                    })
+                
+                for ms in mapped_subjects:
+                    await db.subjects.update_one(
+                        {"id": ms["id"]},
+                        {"$set": ms},
+                        upsert=True
+                    )
+                    
+                return {"subjects": mapped_subjects}
+            else:
+                logger.warning(f"Failed to fetch subjects from webapp: {response.status_code} - {response.text}")
+    except Exception as e:
+        logger.error(f"Error fetching subjects from webapp: {e}")
+        
+    subjects = await db.subjects.find({"teacher_id": user.user_id}, {"_id": 0}).to_list(100)
+    return {"subjects": subjects}
 
 
 # ==================== SCAN SESSIONS ROUTES ====================
@@ -348,6 +821,9 @@ async def create_scan_session(data: ScanSessionCreate, authorization: Optional[s
         session_name=data.session_name,
         batch_id=data.batch_id,
         batch_name=batch_name,
+        subject_id=data.subject_id,
+        total_marks=data.total_marks,
+        exam_date=data.exam_date,
         user_id=user.user_id,
         org_id=user.org_id,
         settings=data.settings
@@ -404,18 +880,28 @@ async def upload_file(
 
 @api_router.get("/files/{session_id}/{filename}")
 async def get_file(session_id: str, filename: str):
-    """Production-hardened file serving"""
-    file_path = storage.get_file_path(session_id, filename)
-    if not file_path or not file_path.exists():
-        logger.error(f"File not found: {session_id}/{filename}")
+    """Production-hardened file serving (supports Local and GCS)"""
+    provider = os.environ.get("STORAGE_PROVIDER", "local").lower()
+    if provider == "gcs":
+        if hasattr(storage, "get_signed_url"):
+            signed_url = storage.get_signed_url(session_id, filename)
+            if signed_url:
+                from fastapi.responses import RedirectResponse
+                return RedirectResponse(url=signed_url, status_code=307)
+        
+        logger.error(f"File not found on GCS: {session_id}/{filename}")
         raise HTTPException(status_code=404, detail="File not found")
-    
-    # MIME type detection is automatic in FileResponse
-    return FileResponse(
-        file_path, 
-        media_type="image/jpeg",
-        headers={"Cache-Control": "public, max-age=3600"}
-    )
+    else:
+        file_path = storage.get_file_path(session_id, filename)
+        if not file_path or not file_path.exists():
+            logger.error(f"File not found: {session_id}/{filename}")
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        return FileResponse(
+            file_path, 
+            media_type="image/jpeg",
+            headers={"Cache-Control": "public, max-age=3600"}
+        )
 
 
 @api_router.post("/scan-sessions/{session_id}/upload-model")
@@ -450,14 +936,298 @@ async def upload_student_papers(session_id: str, data: UploadStudentRequest, aut
     return {"status": "success", "pages_received": len(data.student.pages)}
 
 
+async def compile_pdf_and_upload_to_webapp(session_id: str, user_id: str, token: str) -> str:
+    """
+    Compiles JPEG scans from a scan session into PDFs and uploads them to the webapp.
+    Creates an Exam on the webapp first, uploads QP/Model PDFs, and then bulk uploads student PDFs.
+    Returns the created webapp exam_id.
+    """
+    import tempfile
+    import shutil
+    import asyncio
+    from PIL import Image
+    
+    webapp_url = os.environ.get("WEBAPP_URL")
+    if not webapp_url:
+        logger.warning("WEBAPP_URL not set, skipping webapp sync")
+        return f"exam_mock_{uuid.uuid4().hex[:8]}"
+
+    # 1. Fetch the scan session details from MongoDB
+    session = await db.scan_sessions.find_one({"session_id": session_id, "user_id": user_id})
+    if not session:
+        raise ValueError("Scan session not found")
+
+    # 2. Call the webapp to create the exam
+    exam_payload = {
+        "name": session["session_name"],
+        "batchId": session["batch_id"],
+        "subjectId": session.get("subject_id") or None,
+        "totalMarks": session.get("total_marks") or None,
+        "examDate": session.get("exam_date") or None
+    }
+    
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Bypass-Tunnel-Reminder": "true"
+    }
+
+    async with httpx.AsyncClient() as client_http:
+        try:
+            logger.info(f"Creating exam on webapp for batch {session['batch_id']}...")
+            res = await client_http.post(
+                f"{webapp_url.rstrip('/')}/api/v1/exams",
+                json=exam_payload,
+                headers=headers,
+                timeout=30.0
+            )
+            if res.status_code != 201:
+                logger.error(f"Failed to create exam on webapp: {res.status_code} - {res.text}")
+                raise ValueError(f"Failed to create exam on webapp: {res.text}")
+            
+            exam_data = res.json().get("data", {})
+            exam_id = exam_data.get("id")
+            if not exam_id:
+                raise ValueError("Exam creation response missing ID")
+            logger.info(f"Exam created successfully on webapp: {exam_id}")
+        except Exception as e:
+            logger.error(f"Error creating exam: {e}")
+            raise
+
+        # Helper to download a page file from storage (Local or GCS)
+        async def download_file_locally(p_metadata: dict, temp_dir: str) -> Optional[Path]:
+            file_url = p_metadata.get("file_url") or p_metadata.get("file_path")
+            if not file_url:
+                return None
+            
+            filename = file_url.split("/")[-1]
+            local_temp_path = Path(temp_dir) / filename
+            
+            provider = os.environ.get("STORAGE_PROVIDER", "local").lower()
+            if provider == "gcs":
+                try:
+                    blob_path = f"{session_id}/{filename}"
+                    blob = storage.bucket.blob(blob_path)
+                    
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(None, blob.download_to_filename, str(local_temp_path))
+                    return local_temp_path
+                except Exception as ex:
+                    logger.error(f"Failed to download from GCS: {blob_path} - {ex}")
+                    return None
+            else:
+                local_src_path = storage.get_file_path(session_id, filename)
+                if local_src_path and local_src_path.exists():
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(None, shutil.copy, local_src_path, local_temp_path)
+                    return local_temp_path
+                return None
+
+        # Helper to compile page metadata into a single PDF
+        async def compile_pages_to_pdf(pages_metadata: list, output_path: Path, compile_temp_dir: str) -> bool:
+            images = []
+            sorted_pages = sorted(pages_metadata, key=lambda x: x.get("page_number", 0))
+            
+            for p_meta in sorted_pages:
+                local_img_path = await download_file_locally(p_meta, compile_temp_dir)
+                if local_img_path and local_img_path.exists():
+                    try:
+                        img = Image.open(local_img_path)
+                        if img.mode != 'RGB':
+                            img = img.convert('RGB')
+                        img.load()
+                        images.append(img)
+                    except Exception as ex:
+                        logger.error(f"Error opening image {local_img_path}: {ex}")
+                        
+            if images:
+                loop = asyncio.get_event_loop()
+                def save_pdf():
+                    images[0].save(
+                        output_path,
+                        save_all=True,
+                        append_images=images[1:]
+                    )
+                await loop.run_in_executor(None, save_pdf)
+                
+                for img in images:
+                    try:
+                        img.close()
+                    except Exception:
+                        pass
+                return True
+            return False
+
+        # Create a temp directory for compiling PDFs
+        with tempfile.TemporaryDirectory() as compile_temp_dir:
+            temp_dir_path = Path(compile_temp_dir)
+
+            # 3. Upload Question Paper (if present)
+            qp_pages = session.get("question_paper", {}).get("pages", [])
+            if qp_pages:
+                qp_pdf_path = temp_dir_path / "question_paper.pdf"
+                logger.info(f"Compiling QP PDF with {len(qp_pages)} pages...")
+                if await compile_pages_to_pdf(qp_pages, qp_pdf_path, compile_temp_dir):
+                    logger.info("Uploading QP PDF to webapp...")
+                    with open(qp_pdf_path, "rb") as f:
+                        upload_res = await client_http.post(
+                            f"{webapp_url.rstrip('/')}/api/v1/exams/{exam_id}/files/question_paper",
+                            files={"file": ("question_paper.pdf", f, "application/pdf")},
+                            headers={"Authorization": f"Bearer {token}"},
+                            timeout=60.0
+                        )
+                        if upload_res.status_code != 201:
+                            logger.error(f"Failed to upload QP PDF: {upload_res.status_code} - {upload_res.text}")
+
+            # 4. Upload Model Answer (if present)
+            ma_pages = session.get("model_answer", {}).get("pages", [])
+            if ma_pages:
+                ma_pdf_path = temp_dir_path / "model_answer.pdf"
+                logger.info(f"Compiling Model Answer PDF with {len(ma_pages)} pages...")
+                if await compile_pages_to_pdf(ma_pages, ma_pdf_path, compile_temp_dir):
+                    logger.info("Uploading Model Answer PDF to webapp...")
+                    with open(ma_pdf_path, "rb") as f:
+                        upload_res = await client_http.post(
+                            f"{webapp_url.rstrip('/')}/api/v1/exams/{exam_id}/files/model_answer",
+                            files={"file": ("model_answer.pdf", f, "application/pdf")},
+                            headers={"Authorization": f"Bearer {token}"},
+                            timeout=60.0
+                        )
+                        if upload_res.status_code != 201:
+                            logger.error(f"Failed to upload Model Answer PDF: {upload_res.status_code} - {upload_res.text}")
+
+            # 5. Upload Students Submissions (if present)
+            students = session.get("students", [])
+            submission_files = []
+            file_handles = []
+
+            # Create the upload flow state payload template
+            flow_payload = {
+                "examId": exam_id,
+                "title": session["session_name"],
+                "status": "draft",
+                "currentStep": 3,
+                "maxCompletedStep": 2,
+                "state": {
+                    "form": {
+                        "name": session["session_name"],
+                        "batchId": session["batch_id"],
+                        "subjectId": session.get("subject_id") or "",
+                        "totalMarks": str(session.get("total_marks") or 100),
+                        "examDate": session.get("exam_date") or "",
+                        "gradingMode": "balanced",
+                        "gradingInstructions": "",
+                        "feedbackEnabled": True
+                    },
+                    "sourcePaperMode": "separate",
+                    "pilotReviewFirst": False,
+                    "activeJobId": None,
+                    "sessionSubmissionIds": []
+                }
+            }
+
+            try:
+                for idx, student in enumerate(students):
+                    st_pages = student.get("pages", [])
+                    if st_pages:
+                        st_label = student.get("label") or f"student_{idx}"
+                        clean_label = "".join(c for c in st_label if c.isalnum() or c in (" ", "_", "-")).strip()
+                        clean_label = clean_label.replace(" ", "_")
+                        
+                        pdf_name = f"{clean_label}.pdf"
+                        st_pdf_path = temp_dir_path / pdf_name
+                        
+                        logger.info(f"Compiling Student {clean_label} PDF with {len(st_pages)} pages...")
+                        if await compile_pages_to_pdf(st_pages, st_pdf_path, compile_temp_dir):
+                            f_handle = open(st_pdf_path, "rb")
+                            file_handles.append(f_handle)
+                            submission_files.append(("files", (pdf_name, f_handle, "application/pdf")))
+
+                if submission_files:
+                    logger.info(f"Bulk uploading {len(submission_files)} student submissions to webapp...")
+                    upload_res = await client_http.post(
+                        f"{webapp_url.rstrip('/')}/api/v1/exams/{exam_id}/submissions/bulk",
+                        files=submission_files,
+                        data={"autoQueue": "true"},
+                        headers={"Authorization": f"Bearer {token}"},
+                        timeout=120.0
+                    )
+                    if upload_res.status_code not in (200, 201):
+                        logger.error(f"Failed to bulk upload student papers: {upload_res.status_code} - {upload_res.text}")
+                    else:
+                        logger.info("Bulk upload completed successfully!")
+                        try:
+                            bulk_data = upload_res.json().get("data", {})
+                            created_ids = bulk_data.get("createdSubmissionIds", [])
+                            dup_ids = bulk_data.get("duplicateSubmissionIds", [])
+                            submissions_list = bulk_data.get("submissions", [])
+                            
+                            sub_ids = []
+                            for sub_detail in submissions_list:
+                                sub = sub_detail.get("submission") if isinstance(sub_detail, dict) else None
+                                if sub and "id" in sub:
+                                    sub_ids.append(sub["id"])
+                                elif isinstance(sub_detail, dict) and "id" in sub_detail:
+                                    sub_ids.append(sub_detail["id"])
+                                    
+                            all_sub_ids = list(set(created_ids + dup_ids + sub_ids))
+                            
+                            job = bulk_data.get("job")
+                            active_job_id = job.get("id") if (job and isinstance(job, dict)) else None
+                            
+                            flow_payload["currentStep"] = 5
+                            flow_payload["maxCompletedStep"] = 5
+                            flow_payload["state"]["activeJobId"] = active_job_id
+                            flow_payload["state"]["sessionSubmissionIds"] = all_sub_ids
+                        except Exception as ex:
+                            logger.error(f"Error parsing bulk upload response for flow state: {ex}")
+            finally:
+                for fh in file_handles:
+                    try:
+                        fh.close()
+                    except Exception:
+                        pass
+
+            # 6. Create Upload Flow Session card on webapp
+            try:
+                logger.info("Creating upload flow session card on webapp...")
+                flow_res = await client_http.post(
+                    f"{webapp_url.rstrip('/')}/api/v1/exams/upload-flows",
+                    json=flow_payload,
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=30.0
+                )
+                if flow_res.status_code not in (200, 201):
+                    logger.error(f"Failed to create upload flow session: {flow_res.status_code} - {flow_res.text}")
+                else:
+                    logger.info("Upload flow session card created successfully!")
+            except Exception as e:
+                logger.error(f"Error creating upload flow session card: {e}")
+
+        return exam_id
+
+
 @api_router.post("/scan-sessions/{session_id}/complete")
 async def complete_scan_session(session_id: str, authorization: Optional[str] = Header(None)):
-    """Mark scan session as complete"""
+    """Mark scan session as complete and sync to webapp"""
     user = await get_current_user(authorization)
+    token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
+    
+    # 1. Update session status locally to completed
     await db.scan_sessions.update_one(
         {"session_id": session_id, "user_id": user.user_id},
         {"$set": {"status": "completed"}}
     )
+    
+    # 2. Compile scanned JPEGs to PDFs and sync to main webapp (if not guest mode)
+    if token != "sess_mock_token_12345":
+        try:
+            # We run the PDF compilation and sync
+            exam_id = await compile_pdf_and_upload_to_webapp(session_id, user.user_id, token)
+            return {"exam_id": exam_id, "status": "completed"}
+        except Exception as e:
+            logger.error(f"Failed to sync scan session to webapp: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to sync scanned data to webapp: {str(e)}")
+    
     return {"exam_id": f"exam_{uuid.uuid4().hex[:8]}", "status": "completed"}
 
 

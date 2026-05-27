@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -16,16 +16,24 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { COLORS } from '../src/config';
 import { useScanStore } from '../src/store/scanStore';
-import { Batch, ScanSessionSettings } from '../src/types';
+import { Batch, ScanSessionSettings, Subject } from '../src/types';
 
 export default function SessionSetupScreen() {
   const router = useRouter();
-  const { createSession, savedBatches, addBatch, deleteBatch } = useScanStore();
+  const { createSession, savedBatches, addBatch, deleteBatch, fetchBatches, savedSubjects, fetchSubjects } = useScanStore();
+  
+  useEffect(() => {
+    fetchBatches().catch(err => console.error('Failed to load batches:', err));
+    fetchSubjects().catch(err => console.error('Failed to load subjects:', err));
+  }, []);
   
   const [sessionName, setSessionName] = useState(
     `Scan — ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
   );
   const [selectedBatch, setSelectedBatch] = useState<Batch | null>(null);
+  const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
+  const [totalMarks, setTotalMarks] = useState('100');
+  const [examDate, setExamDate] = useState(new Date().toISOString().split('T')[0]);
   
   // Create batch modal
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -75,7 +83,15 @@ export default function SessionSetupScreen() {
     if (!selectedBatch) return;
     
     try {
-      await createSession(sessionName, selectedBatch.batch_id, selectedBatch.name, settings);
+      await createSession(
+        sessionName,
+        selectedBatch.batch_id,
+        selectedBatch.name,
+        settings,
+        selectedSubject?.id,
+        parseFloat(totalMarks) || 100,
+        examDate
+      );
       router.push('/scanner');
     } catch (err) {
       console.error(err);
@@ -113,6 +129,72 @@ export default function SessionSetupScreen() {
                 placeholder="Enter session name"
                 placeholderTextColor={COLORS.textMuted}
               />
+            </View>
+          </View>
+
+          {/* Subject Selection */}
+          <View style={styles.section}>
+            <Text style={styles.label}>Select Subject</Text>
+            {savedSubjects.length === 0 ? (
+              <Text style={styles.emptyTextSub}>No subjects available. Please create one on the webapp.</Text>
+            ) : (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.subjectScroll}>
+                {savedSubjects.map(subject => {
+                  const isSelected = selectedSubject?.id === subject.id;
+                  return (
+                    <TouchableOpacity
+                      key={subject.id}
+                      style={[
+                        styles.subjectPill,
+                        isSelected && styles.subjectPillSelected
+                      ]}
+                      onPress={() => setSelectedSubject(subject)}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons
+                        name="book"
+                        size={16}
+                        color={isSelected ? '#fff' : COLORS.textMuted}
+                        style={{ marginRight: 6 }}
+                      />
+                      <Text style={[
+                        styles.subjectText,
+                        isSelected && styles.subjectTextSelected
+                      ]}>{subject.name}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            )}
+          </View>
+
+          {/* Total Marks & Date Row */}
+          <View style={styles.row}>
+            <View style={[styles.section, { flex: 1, marginRight: 8 }]}>
+              <Text style={styles.label}>Total Marks</Text>
+              <View style={styles.inputContainer}>
+                <TextInput
+                  style={styles.input}
+                  value={totalMarks}
+                  onChangeText={setTotalMarks}
+                  placeholder="100"
+                  placeholderTextColor={COLORS.textMuted}
+                  keyboardType="numeric"
+                />
+              </View>
+            </View>
+
+            <View style={[styles.section, { flex: 1, marginLeft: 8 }]}>
+              <Text style={styles.label}>Exam Date</Text>
+              <View style={styles.inputContainer}>
+                <TextInput
+                  style={styles.input}
+                  value={examDate}
+                  onChangeText={setExamDate}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor={COLORS.textMuted}
+                />
+              </View>
             </View>
           </View>
 
@@ -811,5 +893,42 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#fff',
+  },
+  row: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  subjectScroll: {
+    gap: 8,
+    paddingVertical: 4,
+  },
+  subjectPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.cardBg,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginRight: 8,
+  },
+  subjectPillSelected: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  subjectText: {
+    color: COLORS.textLight,
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  subjectTextSelected: {
+    color: '#fff',
+    fontWeight: '600',
+  },
+  emptyTextSub: {
+    color: COLORS.textMuted,
+    fontSize: 13,
+    fontStyle: 'italic',
   },
 });

@@ -1,0 +1,41 @@
+services:
+  - type: web
+    name: gradesense-scanner-backend
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    envVars:
+      # MongoDB Configuration
+      - key: MONGO_URL
+        sync: false
+      - key: DB_NAME
+        value: gradesense_db
+
+      # Webapp Integration Settings
+      - key: WEBAPP_URL
+        sync: false
+      - key: WEBAPP_DB_URL
+        sync: false
+      - key: WEBAPP_JWT_SECRET
+        sync: false
+
+      # Google OAuth Credentials
+      - key: GOOGLE_OAUTH_CLIENT_ID
+        sync: false
+      - key: GOOGLE_OAUTH_ANDROID_CLIENT_ID
+        sync: false
+
+      # Storage Settings (Set to 'gcs' or 'local')
+      - key: STORAGE_PROVIDER
+        value: local
+      - key: GCS_BUCKET_NAME
+        sync: false
+      - key: GOOGLE_APPLICATION_CREDENTIALS
+        sync: false
+
+    # OPTIONAL: If using 'local' storage provider on a paid Render plan (Starter or above),
+    # uncomment the disk block below to mount persistent storage so uploads are not lost.
+    # disk:
+    #   name: scanner-uploads
+    #   mountPath: /app/uploads
+    #   sizeGB: 10

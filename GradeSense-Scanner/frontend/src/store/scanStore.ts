@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ScanSession, ScanPhase, ScannedPage, ScanSessionSettings, ScannedStudent, Batch } from '../types';
+import { ScanSession, ScanPhase, ScannedPage, ScanSessionSettings, ScannedStudent, Batch, Subject } from '../types';
 import * as FileSystem from 'expo-file-system';
 
 // Simple UUID generator
@@ -43,6 +43,9 @@ interface ScanState {
   // Saved batches
   savedBatches: Batch[];
 
+  // Saved subjects
+  savedSubjects: Subject[];
+
   // Scanner state
   isScanning: boolean;
   flashMode: 'off' | 'on' | 'auto';
@@ -65,7 +68,17 @@ interface ScanState {
   loadSession: (sessionId: string) => void;
   updateSessionStatus: (sessionId: string, status: ScanSession['status'], progress: number) => void;
   fetchSessions: () => Promise<void>;
-  createSession: (name: string, batchId: string, batchName: string, settings: ScanSessionSettings) => Promise<void>;
+  fetchBatches: () => Promise<void>;
+  fetchSubjects: () => Promise<void>;
+  createSession: (
+    name: string,
+    batchId: string,
+    batchName: string,
+    settings: ScanSessionSettings,
+    subjectId?: string,
+    totalMarks?: number,
+    examDate?: string
+  ) => Promise<void>;
   syncCurrentMetadata: (currentPhase?: 'question_paper' | 'model_answer' | 'student', studentIndex?: number) => Promise<void>;
   updateStudentBarcode: (studentIndex: number, barcodeData: { type: string; data: string; matched_name?: string }) => void;
   setFlashMode: (mode: 'off' | 'on' | 'auto') => void;
@@ -149,6 +162,7 @@ export const useScanStore = create<ScanState>()(
       currentStudentIndex: 0,
       savedSessions: [],
       savedBatches: [],
+      savedSubjects: [],
       isScanning: false,
       flashMode: 'auto',
       autoCaptureEnabled: true,
@@ -158,7 +172,15 @@ export const useScanStore = create<ScanState>()(
 
       setHasHydrated: (val) => set({ hasHydrated: val }),
 
-      createSession: async (name: string, batchId: string, batchName: string, settings: ScanSessionSettings) => {
+      createSession: async (
+        name: string,
+        batchId: string,
+        batchName: string,
+        settings: ScanSessionSettings,
+        subjectId?: string,
+        totalMarks?: number,
+        examDate?: string
+      ) => {
         try {
           const { useAuthStore } = await import('./authStore');
           const token = useAuthStore.getState().sessionToken;
@@ -173,7 +195,10 @@ export const useScanStore = create<ScanState>()(
             body: JSON.stringify({
               session_name: name,
               batch_id: batchId,
-              settings: settings
+              settings: settings,
+              subject_id: subjectId || null,
+              total_marks: totalMarks || null,
+              exam_date: examDate || null
             })
           });
 
@@ -189,6 +214,9 @@ export const useScanStore = create<ScanState>()(
             session_name: name,
             batch_id: batchId,
             batch_name: batchName,
+            subject_id: subjectId || null,
+            total_marks: totalMarks || null,
+            exam_date: examDate || null,
             created_at: new Date().toISOString(),
             status: 'scanning',
             upload_progress: 0,
@@ -765,7 +793,7 @@ export const useScanStore = create<ScanState>()(
           // TASK 3A: Merge sessions instead of overwriting to preserve local status
           set(state => {
             const currentSaved = state.savedSessions || [];
-            const merged = normalizedSessions.map(fetched => {
+            const merged = normalizedSessions.map((fetched: ScanSession) => {
               const local = currentSaved.find(s => s.session_id === fetched.session_id);
               if (local) {
                 // If local status is more authoritative than backend, keep it
@@ -780,6 +808,56 @@ export const useScanStore = create<ScanState>()(
           });
         } catch (error) {
           console.error(`[TRACE] fetchSessions: FAILED at ${Date.now()} with error:`, error);
+        }
+      },
+
+      fetchBatches: async () => {
+        try {
+          const { useAuthStore } = await import('./authStore');
+          const token = useAuthStore.getState().sessionToken;
+          const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
+
+          const response = await fetch(`${backendUrl}/api/batches`, {
+            headers: {
+              'Authorization': token ? `Bearer ${token}` : '',
+              'Bypass-Tunnel-Reminder': 'true',
+            }
+          });
+
+          if (!response.ok) {
+            throw new Error(`Failed to fetch batches: ${response.status}`);
+          }
+
+          const data = await response.json();
+          const batches = data.batches || [];
+          set({ savedBatches: batches });
+        } catch (error) {
+          console.error("Error fetching batches:", error);
+        }
+      },
+
+      fetchSubjects: async () => {
+        try {
+          const { useAuthStore } = await import('./authStore');
+          const token = useAuthStore.getState().sessionToken;
+          const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
+
+          const response = await fetch(`${backendUrl}/api/subjects`, {
+            headers: {
+              'Authorization': token ? `Bearer ${token}` : '',
+              'Bypass-Tunnel-Reminder': 'true',
+            }
+          });
+
+          if (!response.ok) {
+            throw new Error(`Failed to fetch subjects: ${response.status}`);
+          }
+
+          const data = await response.json();
+          const subjects = data.subjects || [];
+          set({ savedSubjects: subjects });
+        } catch (error) {
+          console.error("Error fetching subjects:", error);
         }
       },
 

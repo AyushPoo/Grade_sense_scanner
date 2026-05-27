@@ -5,7 +5,10 @@
     "version": "1.0.0",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
-    "scheme": "gradesense",
+    "scheme": [
+      "gradesense",
+      "com.ayushp123.gradesensescanner"
+    ],
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "ios": {
@@ -66,7 +69,8 @@
         {
           "cameraPermission": "Allow GradeSense to access your camera for scanning documents"
         }
-      ]
+      ],
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true

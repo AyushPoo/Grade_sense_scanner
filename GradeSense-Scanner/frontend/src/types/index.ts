@@ -16,6 +16,12 @@ export interface Batch {
   student_count: number;
 }
 
+export interface Subject {
+  id: string;
+  name: string;
+  classStandard?: string;
+}
+
 export interface Student {
   student_id?: string;
   roll_number?: string;
@@ -77,6 +83,9 @@ export interface ScanSession {
   session_name: string;
   batch_id: string;
   batch_name: string;
+  subject_id?: string | null;
+  total_marks?: number | null;
+  exam_date?: string | null;
   org_id?: string;
   user_id?: string;
   created_at: string;

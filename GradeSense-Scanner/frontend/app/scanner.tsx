@@ -487,6 +487,24 @@ export default function ScannerScreen() {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }, [silentNextStudent]);
 
+    const handleFinishPhase = useCallback(() => {
+        const session = useScanStore.getState().currentSession;
+        if (!session) return;
+
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+        if (currentPhase === 'question_paper') {
+            if (session.settings?.scan_model_answer) {
+                useScanStore.getState().setCurrentPhase('model_answer');
+            } else {
+                useScanStore.getState().setCurrentPhase('students');
+            }
+        } else if (currentPhase === 'model_answer') {
+            useScanStore.getState().setCurrentPhase('students');
+        }
+        resetScannerState();
+    }, [currentPhase]);
+
     const handleMotionStabilizingChange = useCallback((stabilizing: boolean) => {
         setIsStabilizing(stabilizing);
         if (stabilizing) {
@@ -661,7 +679,7 @@ export default function ScannerScreen() {
                 onManualCapture={handleManualCapture}
                 onNextStudent={handleNextStudent}
                 onUndo={undoLastPage}
-                onFinishPhase={() => { }}
+                onFinishPhase={handleFinishPhase}
                 onFinishSession={() => {
                     saveSession();
                     router.replace('/review');

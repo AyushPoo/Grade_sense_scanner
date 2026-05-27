@@ -37,35 +37,70 @@ export default function LoginScreen() {
   const router = useRouter();
   const { setUser, setSessionToken, setIsAuthenticated } = useAuthStore();
 
+  const loginWithToken = async (token: string) => {
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/auth/me`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'Bypass-Tunnel-Reminder': 'true',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to retrieve user profile with this token');
+      }
+
+      const user = await response.json();
+      console.log('Token login successful:', user.email);
+
+      // Store auth data
+      setUser(user);
+      setSessionToken(token);
+      setIsAuthenticated(true);
+
+      // Navigate to home
+      router.replace('/(tabs)/home');
+    } catch (err: any) {
+      console.error('Token login error:', err);
+      setError(err.message || 'Failed to complete login with token.');
+    }
+  };
+
   const handleGoogleLogin = async () => {
     try {
       setIsLoading(true);
       setError(null);
 
+      // Get the app's scheme-based URL for callback
       const redirectUrl = Linking.createURL('callback');
-      const authUrl = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
       
-      console.log('Opening auth URL:', authUrl);
+      // Construct webapp Google initiation URL
+      const webappUrl = process.env.EXPO_PUBLIC_WEBAPP_URL || 'http://localhost:5173';
+      const authUrl = `${webappUrl.replace(/\/$/, '')}/login?mobile=true`;
+      
+      console.log('Opening webapp login for mobile:', authUrl);
       console.log('Redirect URL:', redirectUrl);
 
+      // Open browser for authentication
       const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUrl);
       
       console.log('Auth result:', result);
 
       if (result.type === 'success' && result.url) {
         const url = result.url;
-        const hashIndex = url.indexOf('#');
-        
-        if (hashIndex !== -1) {
-          const fragment = url.substring(hashIndex + 1);
-          const params = new URLSearchParams(fragment);
-          const sessionId = params.get('session_id');
+        // Parse token from redirect URL: gradesense://callback?token=...
+        const queryParams = url.split('?')[1];
+        if (queryParams) {
+          const params = new URLSearchParams(queryParams);
+          const token = params.get('token');
           
-          if (sessionId) {
-            console.log('Got session_id, processing...');
-            await processSession(sessionId);
+          if (token) {
+            console.log('Got token from webapp redirect, processing...');
+            await loginWithToken(token);
           } else {
-            setError('No session ID received from authentication');
+            setError('No token received from webapp');
           }
         } else {
           setError('Invalid callback URL format');
@@ -78,36 +113,6 @@ export default function LoginScreen() {
       setError('An error occurred during login. Please try again.');
     } finally {
       setIsLoading(false);
-    }
-  };
-
-  const processSession = async (sessionId: string) => {
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/auth/session`, {
-        method: 'GET',
-        headers: {
-          'X-Session-ID': sessionId,
-          'Content-Type': 'application/json',
-          'Bypass-Tunnel-Reminder': 'true',
-        },
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Failed to process session');
-      }
-
-      const data = await response.json();
-      console.log('Session processed:', data.user?.email);
-
-      setUser(data.user);
-      setSessionToken(data.session_token);
-      setIsAuthenticated(true);
-
-      router.replace('/(tabs)/home');
-    } catch (err) {
-      console.error('Session processing error:', err);
-      setError('Failed to complete login. Please try again.');
     }
   };
 

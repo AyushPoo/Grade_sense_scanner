@@ -55,16 +55,20 @@ export default function RootLayout() {
     if (!isAppReady) return;
 
     const timeout = setTimeout(() => {
-      // Read from ref at execution time — always current, no stale closure risk.
       const currentSegments = segmentsRef.current;
-      const inAuthGroup = currentSegments[0] === '(auth)' || currentSegments[0] === undefined;
+      const isAtRoot = !currentSegments.length || currentSegments[0] === undefined;
+      const inAuthGroup = currentSegments[0] === '(auth)';
 
-      if (!isAuthenticated && !inAuthGroup) {
-        console.log(`[TRACE] RootLayout: Redirecting to login at ${Date.now()}`);
-        router.replace('/');
-      } else if (isAuthenticated && inAuthGroup) {
-        console.log(`[TRACE] RootLayout: Redirecting to home at ${Date.now()}`);
-        router.replace('/(tabs)/home');
+      if (!isAuthenticated) {
+        if (!inAuthGroup) {
+          console.log(`[TRACE] RootLayout: Redirecting to login at ${Date.now()}`);
+          router.replace('/(auth)/login');
+        }
+      } else {
+        if (inAuthGroup || isAtRoot) {
+          console.log(`[TRACE] RootLayout: Redirecting to home at ${Date.now()}`);
+          router.replace('/(tabs)/home');
+        }
       }
     }, 50);
 
