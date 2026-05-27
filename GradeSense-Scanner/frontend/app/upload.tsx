@@ -5,6 +5,7 @@ import {
   StyleSheet,
   TouchableOpacity,
   Alert,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -14,6 +15,8 @@ import { useScanStore } from '../src/store/scanStore';
 import { useShallow } from 'zustand/react/shallow';
 import { ScanSession } from '../src/types';
 import { uploadSessionToWebApp } from '../src/api/export';
+
+const WEBAPP_URL = 'https://app.gradesense.in';
 
 // Simple Progress Bar Component
 const ProgressBar = ({ progress }: { progress: number }) => (
@@ -179,7 +182,7 @@ export default function UploadScreen() {
 
             <TouchableOpacity
               style={styles.openWebappButton}
-              onPress={() => Alert.alert('Info', 'Connect real webapp URL to open')}
+              onPress={() => Linking.openURL(WEBAPP_URL)}
             >
               <Ionicons name="globe" size={20} color="#fff" />
               <Text style={styles.openWebappText}>Open GradeSense Webapp</Text>

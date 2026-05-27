@@ -14,15 +14,19 @@ async function uploadPageFile(
   const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
   
   if (!backendUrl) throw new Error("Missing EXPO_PUBLIC_BACKEND_URL");
+  if (!token) throw new Error("No auth token — please log in again");
 
   let lastError;
   for (let i = 0; i < retries; i++) {
     try {
       const uploadUri = page.file_path.startsWith('file://') ? page.file_path : `file://${page.file_path}`;
-      const file = new FileSystem.File(uploadUri);
-      if (!file.exists) {
+      
+      // Use getInfoAsync — works reliably across all Expo SDK versions
+      const fileInfo = await FileSystem.getInfoAsync(uploadUri);
+      if (!fileInfo.exists) {
         throw new Error(`Local file not found at ${uploadUri}.`);
       }
+      console.log(`[Upload] File confirmed: ${uploadUri} (${fileInfo.size} bytes)`);
 
       console.log(`[Upload] Attempt ${i + 1}/${retries} for page ${page.page_number} (${phase})`);
       

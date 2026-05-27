@@ -213,7 +213,7 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
             await db.users.insert_one(user_doc)
         return User(**user_doc)
     
-    # 2. Check local db cache
+    # 2. Check local db cache first (avoids hitting webapp on every request)
     session_doc = await db.user_sessions.find_one(
         {"session_token": token},
         {"_id": 0}
@@ -234,12 +234,38 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
             if user_doc:
                 return User(**user_doc)
     
-    # 3. Fallback to validate with webapp
+    # 3. Try local JWT decode (works without WEBAPP_URL being configured)
+    jwt_secret = os.environ.get("WEBAPP_JWT_SECRET")
+    if jwt_secret:
+        try:
+            payload = pyjwt.decode(token, jwt_secret, algorithms=["HS256"])
+            # Scanner-issued JWTs use "sub" for user_id (see google auth endpoint)
+            webapp_user_id = str(payload.get("sub") or payload.get("userId") or payload.get("id") or "")
+            
+            if webapp_user_id:
+                # User was cached in MongoDB at login time — look them up
+                user_doc = await db.users.find_one({"user_id": webapp_user_id}, {"_id": 0})
+                if user_doc:
+                    # Refresh session cache
+                    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+                    await db.user_sessions.update_one(
+                        {"session_token": token},
+                        {"$set": {"user_id": webapp_user_id, "expires_at": expires_at}},
+                        upsert=True
+                    )
+                    logger.info(f"Auth via local JWT for user {user_doc.get('email')}")
+                    return User(**user_doc)
+        except pyjwt.ExpiredSignatureError:
+            raise HTTPException(status_code=401, detail="Token expired")
+        except pyjwt.InvalidTokenError as e:
+            logger.debug(f"Local JWT decode failed (will try webapp): {e}")
+    
+    # 4. Fallback: validate with webapp
     user_info = await validate_token_with_webapp(token)
     if not user_info:
         raise HTTPException(status_code=401, detail="Invalid or expired session token")
     
-    # 4. Sync user and session
+    # 5. Sync user and session
     webapp_user_id = user_info.get("id")
     email = user_info.get("email")
     name = user_info.get("name", "User")
@@ -272,6 +298,7 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
     )
     
     return User(**user_doc)
+
 
 
 # ==================== AUTH ROUTES ====================
