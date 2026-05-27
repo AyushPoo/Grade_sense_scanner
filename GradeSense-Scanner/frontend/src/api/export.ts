@@ -1,7 +1,7 @@
 import { ScanSession, ScannedPage, ScanPhase } from '../types';
 import { useScanStore } from '../store/scanStore';
 import { useAuthStore } from '../store/authStore';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 
 async function uploadPageFile(
   sessionId: string,
