@@ -1,0 +1,11 @@
+# Ignore local build folders and node_modules in the monorepo root
+GradeSense-Scanner/frontend/android/
+GradeSense-Scanner/frontend/ios/
+GradeSense-Scanner/frontend/node_modules/
+GradeSense-Scanner/frontend/.expo/
+GradeSense-Scanner/frontend/dist/
+GradeSense-Scanner/frontend/web-build/
+GradeSense-Scanner/backend/venv/
+GradeSense-Scanner/backend/uploads/
+*.apk
+*.aab
