@@ -3,6 +3,7 @@ services:
     name: gradesense-scanner-backend
     env: python
     plan: free
+    rootDir: GradeSense-Scanner/backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
     envVars:
