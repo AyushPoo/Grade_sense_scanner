@@ -1,0 +1,9 @@
+# Ignore local build folders when uploading to EAS
+android/
+ios/
+node_modules/
+.expo/
+dist/
+web-build/
+*.apk
+*.aab
