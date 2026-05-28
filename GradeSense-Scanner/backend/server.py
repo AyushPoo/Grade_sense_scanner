@@ -1122,10 +1122,10 @@ async def compile_pdf_and_upload_to_webapp(session_id: str, user_id: str, token:
                         if upload_res.status_code != 201:
                             logger.error(f"Failed to upload Model Answer PDF: {upload_res.status_code} - {upload_res.text}")
 
-            # 5. Upload Students Submissions (if present)
-            students = session.get("students", [])
-            submission_files = []
-            file_handles = []
+            # Determine source paper mode dynamically
+            source_paper_mode = "separate"
+            if not qp_pages and ma_pages:
+                source_paper_mode = "combined_model_answer"
 
             # Create the upload flow state payload template
             flow_payload = {
@@ -1145,12 +1145,46 @@ async def compile_pdf_and_upload_to_webapp(session_id: str, user_id: str, token:
                         "gradingInstructions": "",
                         "feedbackEnabled": True
                     },
-                    "sourcePaperMode": "separate",
+                    "sourcePaperMode": source_paper_mode,
                     "pilotReviewFirst": False,
                     "activeJobId": None,
                     "sessionSubmissionIds": []
                 }
             }
+
+            # 5. Auto-extract and Lock blueprint first so bulk upload grading jobs don't fail with 'blueprint not found'
+            blueprint_extracted_and_locked = False
+            if ma_pages:
+                try:
+                    logger.info(f"Triggering auto-extraction of blueprint on webapp for mode: {source_paper_mode}...")
+                    extract_res = await client_http.post(
+                        f"{webapp_url.rstrip('/')}/api/v1/exams/{exam_id}/blueprint/extract",
+                        json={"sourceMode": source_paper_mode},
+                        headers={"Authorization": f"Bearer {token}"},
+                        timeout=90.0
+                    )
+                    if extract_res.status_code not in (200, 201):
+                        logger.error(f"Failed to auto-extract blueprint: {extract_res.status_code} - {extract_res.text}")
+                    else:
+                        logger.info("Blueprint auto-extracted successfully! Locking it...")
+                        lock_res = await client_http.post(
+                            f"{webapp_url.rstrip('/')}/api/v1/exams/{exam_id}/blueprint/lock",
+                            json={"locked": True},
+                            headers={"Authorization": f"Bearer {token}"},
+                            timeout=30.0
+                        )
+                        if lock_res.status_code not in (200, 201):
+                            logger.error(f"Failed to lock blueprint: {lock_res.status_code} - {lock_res.text}")
+                        else:
+                            logger.info("Blueprint locked successfully!")
+                            blueprint_extracted_and_locked = True
+                except Exception as ex:
+                    logger.error(f"Error during blueprint extraction/locking: {ex}")
+
+            # 6. Upload Students Submissions (if present)
+            students = session.get("students", [])
+            submission_files = []
+            file_handles = []
 
             try:
                 for idx, student in enumerate(students):
@@ -1201,12 +1235,28 @@ async def compile_pdf_and_upload_to_webapp(session_id: str, user_id: str, token:
                             job = bulk_data.get("job")
                             active_job_id = job.get("id") if (job and isinstance(job, dict)) else None
                             
-                            flow_payload["currentStep"] = 5
-                            flow_payload["maxCompletedStep"] = 5
+                            if blueprint_extracted_and_locked:
+                                flow_payload["currentStep"] = 5
+                                flow_payload["maxCompletedStep"] = 5
+                                flow_payload["status"] = "draft"
+                            else:
+                                flow_payload["currentStep"] = 4
+                                flow_payload["maxCompletedStep"] = 2
+                                flow_payload["status"] = "draft"
+                                
                             flow_payload["state"]["activeJobId"] = active_job_id
                             flow_payload["state"]["sessionSubmissionIds"] = all_sub_ids
                         except Exception as ex:
                             logger.error(f"Error parsing bulk upload response for flow state: {ex}")
+                else:
+                    if blueprint_extracted_and_locked:
+                        flow_payload["currentStep"] = 5
+                        flow_payload["maxCompletedStep"] = 4
+                        flow_payload["status"] = "draft"
+                    else:
+                        flow_payload["currentStep"] = 4
+                        flow_payload["maxCompletedStep"] = 2
+                        flow_payload["status"] = "draft"
             finally:
                 for fh in file_handles:
                     try:
@@ -1214,7 +1264,7 @@ async def compile_pdf_and_upload_to_webapp(session_id: str, user_id: str, token:
                     except Exception:
                         pass
 
-            # 6. Create Upload Flow Session card on webapp
+            # 7. Create Upload Flow Session card on webapp
             try:
                 logger.info("Creating upload flow session card on webapp...")
                 flow_res = await client_http.post(
