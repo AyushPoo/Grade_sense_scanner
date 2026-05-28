@@ -1515,7 +1515,11 @@ async def root():
 
 @api_router.get("/health")
 async def health_check():
-    return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
+    return {
+        "status": "healthy", 
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "webapp_url": os.environ.get("WEBAPP_URL")
+    }
 
 
 # Include the router
