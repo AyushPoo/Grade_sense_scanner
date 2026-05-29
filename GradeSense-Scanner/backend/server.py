@@ -988,10 +988,17 @@ async def compile_pdf_and_upload_to_webapp(session_id: str, user_id: str, token:
     exam_payload = {
         "name": session["session_name"],
         "batchId": session["batch_id"],
-        "subjectId": session.get("subject_id") or None,
-        "totalMarks": session.get("total_marks") or None,
-        "examDate": session.get("exam_date") or None
     }
+    if session.get("subject_id"):
+        exam_payload["subjectId"] = session["subject_id"]
+    if session.get("total_marks") is not None:
+        try:
+            exam_payload["totalMarks"] = float(session["total_marks"])
+        except (ValueError, TypeError):
+            pass
+    if session.get("exam_date"):
+        exam_payload["examDate"] = session["exam_date"]
+
     
     headers = {
         "Authorization": f"Bearer {token}",
