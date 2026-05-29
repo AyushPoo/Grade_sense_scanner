@@ -1016,7 +1016,7 @@ async def create_exam_on_webapp(session_id: str, user_id: str, token: str) -> st
         return exam_id
 
 
-async def async_sync_session_data(session_id: str, user_id: str, token: str, exam_id: str):
+async def async_sync_session_data(session_id: str, user_id: str, token: str, exam_id: str, flow_session_id: Optional[str] = None):
     """
     Background task to compile PDFs, upload papers/submissions, extract blueprint, 
     and update webapp flow session.
@@ -1206,6 +1206,30 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                     except Exception as ex:
                         logger.error(f"Error during blueprint extraction/locking in background: {ex}")
 
+                # Update progress to Step 5 if blueprint ready (meaning we are starting to upload student submissions)
+                if blueprint_extracted_and_locked and flow_session_id:
+                    try:
+                        logger.info("Updating upload flow session progress to Step 5 mid-way...")
+                        patch_payload = {
+                            "currentStep": 5,
+                            "maxCompletedStep": 4,
+                            "state": {
+                                "form": flow_payload["state"]["form"],
+                                "sourcePaperMode": source_paper_mode,
+                                "pilotReviewFirst": False,
+                                "activeJobId": None,
+                                "sessionSubmissionIds": []
+                            }
+                        }
+                        await client_http.patch(
+                            f"{webapp_url.rstrip('/')}/api/v1/exams/upload-flows/{flow_session_id}",
+                            json=patch_payload,
+                            headers={"Authorization": f"Bearer {token}", "Bypass-Tunnel-Reminder": "true"},
+                            timeout=10.0
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to PATCH flow session progress mid-way: {e}")
+
                 # 5. Upload Students Submissions (if present)
                 students = session.get("students", [])
                 submission_files = []
@@ -1289,21 +1313,34 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                         except Exception:
                             pass
 
-                # 6. Create Upload Flow Session card on webapp
+                 # 6. Create or Update Upload Flow Session card on webapp
                 try:
-                    logger.info("Creating upload flow session card on webapp...")
-                    flow_res = await client_http.post(
-                        f"{webapp_url.rstrip('/')}/api/v1/exams/upload-flows",
-                        json=flow_payload,
-                        headers={"Authorization": f"Bearer {token}"},
-                        timeout=60.0
-                    )
-                    if flow_res.status_code not in (200, 201):
-                        logger.error(f"Failed to create upload flow session: {flow_res.status_code} - {flow_res.text}")
+                    if flow_session_id:
+                        logger.info(f"Updating existing upload flow session card {flow_session_id} on webapp...")
+                        flow_res = await client_http.patch(
+                            f"{webapp_url.rstrip('/')}/api/v1/exams/upload-flows/{flow_session_id}",
+                            json=flow_payload,
+                            headers={"Authorization": f"Bearer {token}", "Bypass-Tunnel-Reminder": "true"},
+                            timeout=60.0
+                        )
+                        if flow_res.status_code not in (200, 201):
+                            logger.error(f"Failed to update upload flow session: {flow_res.status_code} - {flow_res.text}")
+                        else:
+                            logger.info("Upload flow session card updated successfully!")
                     else:
-                        logger.info("Upload flow session card created successfully!")
+                        logger.info("Creating new upload flow session card on webapp...")
+                        flow_res = await client_http.post(
+                            f"{webapp_url.rstrip('/')}/api/v1/exams/upload-flows",
+                            json=flow_payload,
+                            headers={"Authorization": f"Bearer {token}", "Bypass-Tunnel-Reminder": "true"},
+                            timeout=60.0
+                        )
+                        if flow_res.status_code not in (200, 201):
+                            logger.error(f"Failed to create upload flow session: {flow_res.status_code} - {flow_res.text}")
+                        else:
+                            logger.info("Upload flow session card created successfully!")
                 except Exception as e:
-                    logger.error(f"Error creating upload flow session card: {e}")
+                    logger.error(f"Error saving/updating upload flow session card: {e}")
     except Exception as e:
         logger.error(f"Exception in async_sync_session_data background task: {e}")
 
@@ -1330,8 +1367,58 @@ async def complete_scan_session(
             # Create exam synchronously first (takes ~1s)
             exam_id = await create_exam_on_webapp(session_id, user.user_id, token)
             
+            # Fetch scan session details to build flow session card
+            session = await db.scan_sessions.find_one({"session_id": session_id, "user_id": user.user_id})
+            flow_session_id = None
+            if session:
+                qp_pages = session.get("question_paper", {}).get("pages", [])
+                ma_pages = session.get("model_answer", {}).get("pages", [])
+                source_paper_mode = "combined_model_answer" if (not qp_pages and ma_pages) else "separate"
+                
+                webapp_url = os.environ.get("WEBAPP_URL")
+                if webapp_url:
+                    try:
+                        logger.info("Creating initial upload flow session synchronously...")
+                        flow_payload = {
+                            "examId": exam_id,
+                            "title": session["session_name"],
+                            "status": "draft",
+                            "currentStep": 4,  # Step 4: Extracting blueprint
+                            "maxCompletedStep": 3,
+                            "state": {
+                                "form": {
+                                    "name": session["session_name"],
+                                    "batchId": session["batch_id"],
+                                    "subjectId": session.get("subject_id") or "",
+                                    "totalMarks": str(session.get("total_marks") or 100),
+                                    "examDate": session.get("exam_date") or "",
+                                    "gradingMode": "balanced",
+                                    "gradingInstructions": "",
+                                    "feedbackEnabled": True
+                                },
+                                "sourcePaperMode": source_paper_mode,
+                                "pilotReviewFirst": False,
+                                "activeJobId": None,
+                                "sessionSubmissionIds": []
+                            }
+                        }
+                        async with httpx.AsyncClient() as client_http:
+                            flow_res = await client_http.post(
+                                f"{webapp_url.rstrip('/')}/api/v1/exams/upload-flows",
+                                json=flow_payload,
+                                headers={"Authorization": f"Bearer {token}", "Bypass-Tunnel-Reminder": "true"},
+                                timeout=10.0
+                            )
+                            if flow_res.status_code in (200, 201):
+                                flow_session_id = flow_res.json().get("data", {}).get("id")
+                                logger.info(f"Initial upload flow session created synchronously with ID: {flow_session_id}")
+                            else:
+                                logger.error(f"Failed to create initial upload flow session card synchronously: {flow_res.status_code} - {flow_res.text}")
+                    except Exception as e:
+                        logger.error(f"Error creating initial upload flow session card synchronously: {e}")
+            
             # Enqueue compilation and sync as background task
-            background_tasks.add_task(async_sync_session_data, session_id, user.user_id, token, exam_id)
+            background_tasks.add_task(async_sync_session_data, session_id, user.user_id, token, exam_id, flow_session_id)
             
             return {"exam_id": exam_id, "status": "completed"}
         except Exception as e:
