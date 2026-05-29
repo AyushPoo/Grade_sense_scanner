@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Header
+from fastapi import FastAPI, APIRouter, HTTPException, Header, BackgroundTasks
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -963,28 +963,20 @@ async def upload_student_papers(session_id: str, data: UploadStudentRequest, aut
     return {"status": "success", "pages_received": len(data.student.pages)}
 
 
-async def compile_pdf_and_upload_to_webapp(session_id: str, user_id: str, token: str) -> str:
+async def create_exam_on_webapp(session_id: str, user_id: str, token: str) -> str:
     """
-    Compiles JPEG scans from a scan session into PDFs and uploads them to the webapp.
-    Creates an Exam on the webapp first, uploads QP/Model PDFs, and then bulk uploads student PDFs.
-    Returns the created webapp exam_id.
+    Creates an Exam on the webapp and returns the created webapp exam_id.
     """
-    import tempfile
-    import shutil
-    import asyncio
-    from PIL import Image
-    
     webapp_url = os.environ.get("WEBAPP_URL")
     if not webapp_url:
-        logger.warning("WEBAPP_URL not set, skipping webapp sync")
         return f"exam_mock_{uuid.uuid4().hex[:8]}"
 
-    # 1. Fetch the scan session details from MongoDB
+    # Fetch the scan session details from MongoDB
     session = await db.scan_sessions.find_one({"session_id": session_id, "user_id": user_id})
     if not session:
         raise ValueError("Scan session not found")
 
-    # 2. Call the webapp to create the exam
+    # Call the webapp to create the exam
     exam_payload = {
         "name": session["session_name"],
         "batchId": session["batch_id"],
@@ -999,33 +991,57 @@ async def compile_pdf_and_upload_to_webapp(session_id: str, user_id: str, token:
     if session.get("exam_date"):
         exam_payload["examDate"] = session["exam_date"]
 
-    
     headers = {
         "Authorization": f"Bearer {token}",
         "Bypass-Tunnel-Reminder": "true"
     }
 
     async with httpx.AsyncClient() as client_http:
-        try:
-            logger.info(f"Creating exam on webapp for batch {session['batch_id']}...")
-            res = await client_http.post(
-                f"{webapp_url.rstrip('/')}/api/v1/exams",
-                json=exam_payload,
-                headers=headers,
-                timeout=30.0
-            )
-            if res.status_code != 201:
-                logger.error(f"Failed to create exam on webapp: {res.status_code} - {res.text}")
-                raise ValueError(f"Failed to create exam on webapp: {res.text}")
-            
-            exam_data = res.json().get("data", {})
-            exam_id = exam_data.get("id")
-            if not exam_id:
-                raise ValueError("Exam creation response missing ID")
-            logger.info(f"Exam created successfully on webapp: {exam_id}")
-        except Exception as e:
-            logger.error(f"Error creating exam: {e}")
-            raise
+        logger.info(f"Creating exam on webapp for batch {session['batch_id']}...")
+        res = await client_http.post(
+            f"{webapp_url.rstrip('/')}/api/v1/exams",
+            json=exam_payload,
+            headers=headers,
+            timeout=30.0
+        )
+        if res.status_code != 201:
+            logger.error(f"Failed to create exam on webapp: {res.status_code} - {res.text}")
+            raise ValueError(f"Failed to create exam on webapp: {res.text}")
+        
+        exam_data = res.json().get("data", {})
+        exam_id = exam_data.get("id")
+        if not exam_id:
+            raise ValueError("Exam creation response missing ID")
+        logger.info(f"Exam created successfully on webapp: {exam_id}")
+        return exam_id
+
+
+async def async_sync_session_data(session_id: str, user_id: str, token: str, exam_id: str):
+    """
+    Background task to compile PDFs, upload papers/submissions, extract blueprint, 
+    and update webapp flow session.
+    """
+    import tempfile
+    import shutil
+    import asyncio
+    from PIL import Image
+    
+    webapp_url = os.environ.get("WEBAPP_URL")
+    if not webapp_url:
+        logger.warning("WEBAPP_URL not set, skipping background webapp sync")
+        return
+
+    try:
+        # 1. Fetch the scan session details from MongoDB
+        session = await db.scan_sessions.find_one({"session_id": session_id, "user_id": user_id})
+        if not session:
+            logger.error(f"Scan session {session_id} not found in background sync")
+            return
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Bypass-Tunnel-Reminder": "true"
+        }
 
         # Helper to download a page file from storage (Local or GCS)
         async def download_file_locally(p_metadata: dict, temp_dir: str) -> Optional[Path]:
@@ -1091,207 +1107,213 @@ async def compile_pdf_and_upload_to_webapp(session_id: str, user_id: str, token:
                 return True
             return False
 
-        # Create a temp directory for compiling PDFs
-        with tempfile.TemporaryDirectory() as compile_temp_dir:
-            temp_dir_path = Path(compile_temp_dir)
+        async with httpx.AsyncClient() as client_http:
+            # Create a temp directory for compiling PDFs
+            with tempfile.TemporaryDirectory() as compile_temp_dir:
+                temp_dir_path = Path(compile_temp_dir)
 
-            # 3. Upload Question Paper (if present)
-            qp_pages = session.get("question_paper", {}).get("pages", [])
-            if qp_pages:
-                qp_pdf_path = temp_dir_path / "question_paper.pdf"
-                logger.info(f"Compiling QP PDF with {len(qp_pages)} pages...")
-                if await compile_pages_to_pdf(qp_pages, qp_pdf_path, compile_temp_dir):
-                    logger.info("Uploading QP PDF to webapp...")
-                    with open(qp_pdf_path, "rb") as f:
-                        upload_res = await client_http.post(
-                            f"{webapp_url.rstrip('/')}/api/v1/exams/{exam_id}/files/question_paper",
-                            files={"file": ("question_paper.pdf", f, "application/pdf")},
-                            headers={"Authorization": f"Bearer {token}"},
-                            timeout=60.0
-                        )
-                        if upload_res.status_code != 201:
-                            logger.error(f"Failed to upload QP PDF: {upload_res.status_code} - {upload_res.text}")
+                # 2. Upload Question Paper (if present)
+                qp_pages = session.get("question_paper", {}).get("pages", [])
+                if qp_pages:
+                    qp_pdf_path = temp_dir_path / "question_paper.pdf"
+                    logger.info(f"Compiling QP PDF with {len(qp_pages)} pages...")
+                    if await compile_pages_to_pdf(qp_pages, qp_pdf_path, compile_temp_dir):
+                        logger.info("Uploading QP PDF to webapp...")
+                        with open(qp_pdf_path, "rb") as f:
+                            upload_res = await client_http.post(
+                                f"{webapp_url.rstrip('/')}/api/v1/exams/{exam_id}/files/question_paper",
+                                files={"file": ("question_paper.pdf", f, "application/pdf")},
+                                headers={"Authorization": f"Bearer {token}"},
+                                timeout=120.0
+                            )
+                            if upload_res.status_code != 201:
+                                logger.error(f"Failed to upload QP PDF: {upload_res.status_code} - {upload_res.text}")
 
-            # 4. Upload Model Answer (if present)
-            ma_pages = session.get("model_answer", {}).get("pages", [])
-            if ma_pages:
-                ma_pdf_path = temp_dir_path / "model_answer.pdf"
-                logger.info(f"Compiling Model Answer PDF with {len(ma_pages)} pages...")
-                if await compile_pages_to_pdf(ma_pages, ma_pdf_path, compile_temp_dir):
-                    logger.info("Uploading Model Answer PDF to webapp...")
-                    with open(ma_pdf_path, "rb") as f:
-                        upload_res = await client_http.post(
-                            f"{webapp_url.rstrip('/')}/api/v1/exams/{exam_id}/files/model_answer",
-                            files={"file": ("model_answer.pdf", f, "application/pdf")},
-                            headers={"Authorization": f"Bearer {token}"},
-                            timeout=60.0
-                        )
-                        if upload_res.status_code != 201:
-                            logger.error(f"Failed to upload Model Answer PDF: {upload_res.status_code} - {upload_res.text}")
+                # 3. Upload Model Answer (if present)
+                ma_pages = session.get("model_answer", {}).get("pages", [])
+                if ma_pages:
+                    ma_pdf_path = temp_dir_path / "model_answer.pdf"
+                    logger.info(f"Compiling Model Answer PDF with {len(ma_pages)} pages...")
+                    if await compile_pages_to_pdf(ma_pages, ma_pdf_path, compile_temp_dir):
+                        logger.info("Uploading Model Answer PDF to webapp...")
+                        with open(ma_pdf_path, "rb") as f:
+                            upload_res = await client_http.post(
+                                f"{webapp_url.rstrip('/')}/api/v1/exams/{exam_id}/files/model_answer",
+                                files={"file": ("model_answer.pdf", f, "application/pdf")},
+                                headers={"Authorization": f"Bearer {token}"},
+                                timeout=120.0
+                            )
+                            if upload_res.status_code != 201:
+                                logger.error(f"Failed to upload Model Answer PDF: {upload_res.status_code} - {upload_res.text}")
 
-            # Determine source paper mode dynamically
-            source_paper_mode = "separate"
-            if not qp_pages and ma_pages:
-                source_paper_mode = "combined_model_answer"
+                # Determine source paper mode dynamically
+                source_paper_mode = "separate"
+                if not qp_pages and ma_pages:
+                    source_paper_mode = "combined_model_answer"
 
-            # Create the upload flow state payload template
-            flow_payload = {
-                "examId": exam_id,
-                "title": session["session_name"],
-                "status": "draft",
-                "currentStep": 3,
-                "maxCompletedStep": 2,
-                "state": {
-                    "form": {
-                        "name": session["session_name"],
-                        "batchId": session["batch_id"],
-                        "subjectId": session.get("subject_id") or "",
-                        "totalMarks": str(session.get("total_marks") or 100),
-                        "examDate": session.get("exam_date") or "",
-                        "gradingMode": "balanced",
-                        "gradingInstructions": "",
-                        "feedbackEnabled": True
-                    },
-                    "sourcePaperMode": source_paper_mode,
-                    "pilotReviewFirst": False,
-                    "activeJobId": None,
-                    "sessionSubmissionIds": []
+                # Create the upload flow state payload template
+                flow_payload = {
+                    "examId": exam_id,
+                    "title": session["session_name"],
+                    "status": "draft",
+                    "currentStep": 3,
+                    "maxCompletedStep": 2,
+                    "state": {
+                        "form": {
+                            "name": session["session_name"],
+                            "batchId": session["batch_id"],
+                            "subjectId": session.get("subject_id") or "",
+                            "totalMarks": str(session.get("total_marks") or 100),
+                            "examDate": session.get("exam_date") or "",
+                            "gradingMode": "balanced",
+                            "gradingInstructions": "",
+                            "feedbackEnabled": True
+                        },
+                        "sourcePaperMode": source_paper_mode,
+                        "pilotReviewFirst": False,
+                        "activeJobId": None,
+                        "sessionSubmissionIds": []
+                    }
                 }
-            }
 
-            # 5. Auto-extract and Lock blueprint first so bulk upload grading jobs don't fail with 'blueprint not found'
-            blueprint_extracted_and_locked = False
-            if ma_pages:
-                try:
-                    logger.info(f"Triggering auto-extraction of blueprint on webapp for mode: {source_paper_mode}...")
-                    extract_res = await client_http.post(
-                        f"{webapp_url.rstrip('/')}/api/v1/exams/{exam_id}/blueprint/extract",
-                        json={"sourceMode": source_paper_mode},
-                        headers={"Authorization": f"Bearer {token}"},
-                        timeout=90.0
-                    )
-                    if extract_res.status_code not in (200, 201):
-                        logger.error(f"Failed to auto-extract blueprint: {extract_res.status_code} - {extract_res.text}")
-                    else:
-                        logger.info("Blueprint auto-extracted successfully! Locking it...")
-                        lock_res = await client_http.post(
-                            f"{webapp_url.rstrip('/')}/api/v1/exams/{exam_id}/blueprint/lock",
-                            json={"locked": True},
-                            headers={"Authorization": f"Bearer {token}"},
-                            timeout=30.0
-                        )
-                        if lock_res.status_code not in (200, 201):
-                            logger.error(f"Failed to lock blueprint: {lock_res.status_code} - {lock_res.text}")
-                        else:
-                            logger.info("Blueprint locked successfully!")
-                            blueprint_extracted_and_locked = True
-                except Exception as ex:
-                    logger.error(f"Error during blueprint extraction/locking: {ex}")
-
-            # 6. Upload Students Submissions (if present)
-            students = session.get("students", [])
-            submission_files = []
-            file_handles = []
-
-            try:
-                for idx, student in enumerate(students):
-                    st_pages = student.get("pages", [])
-                    if st_pages:
-                        st_label = student.get("label") or f"student_{idx}"
-                        clean_label = "".join(c for c in st_label if c.isalnum() or c in (" ", "_", "-")).strip()
-                        clean_label = clean_label.replace(" ", "_")
-                        
-                        pdf_name = f"{clean_label}.pdf"
-                        st_pdf_path = temp_dir_path / pdf_name
-                        
-                        logger.info(f"Compiling Student {clean_label} PDF with {len(st_pages)} pages...")
-                        if await compile_pages_to_pdf(st_pages, st_pdf_path, compile_temp_dir):
-                            f_handle = open(st_pdf_path, "rb")
-                            file_handles.append(f_handle)
-                            submission_files.append(("files", (pdf_name, f_handle, "application/pdf")))
-
-                if submission_files:
-                    logger.info(f"Bulk uploading {len(submission_files)} student submissions to webapp...")
-                    upload_res = await client_http.post(
-                        f"{webapp_url.rstrip('/')}/api/v1/exams/{exam_id}/submissions/bulk",
-                        files=submission_files,
-                        data={"autoQueue": "true"},
-                        headers={"Authorization": f"Bearer {token}"},
-                        timeout=120.0
-                    )
-                    if upload_res.status_code not in (200, 201):
-                        logger.error(f"Failed to bulk upload student papers: {upload_res.status_code} - {upload_res.text}")
-                    else:
-                        logger.info("Bulk upload completed successfully!")
-                        try:
-                            bulk_data = upload_res.json().get("data", {})
-                            created_ids = bulk_data.get("createdSubmissionIds", [])
-                            dup_ids = bulk_data.get("duplicateSubmissionIds", [])
-                            submissions_list = bulk_data.get("submissions", [])
-                            
-                            sub_ids = []
-                            for sub_detail in submissions_list:
-                                sub = sub_detail.get("submission") if isinstance(sub_detail, dict) else None
-                                if sub and "id" in sub:
-                                    sub_ids.append(sub["id"])
-                                elif isinstance(sub_detail, dict) and "id" in sub_detail:
-                                    sub_ids.append(sub_detail["id"])
-                                    
-                            all_sub_ids = list(set(created_ids + dup_ids + sub_ids))
-                            
-                            job = bulk_data.get("job")
-                            active_job_id = job.get("id") if (job and isinstance(job, dict)) else None
-                            
-                            if blueprint_extracted_and_locked:
-                                flow_payload["currentStep"] = 5
-                                flow_payload["maxCompletedStep"] = 5
-                                flow_payload["status"] = "draft"
-                            else:
-                                flow_payload["currentStep"] = 4
-                                flow_payload["maxCompletedStep"] = 2
-                                flow_payload["status"] = "draft"
-                                
-                            flow_payload["state"]["activeJobId"] = active_job_id
-                            flow_payload["state"]["sessionSubmissionIds"] = all_sub_ids
-                        except Exception as ex:
-                            logger.error(f"Error parsing bulk upload response for flow state: {ex}")
-                else:
-                    if blueprint_extracted_and_locked:
-                        flow_payload["currentStep"] = 5
-                        flow_payload["maxCompletedStep"] = 4
-                        flow_payload["status"] = "draft"
-                    else:
-                        flow_payload["currentStep"] = 4
-                        flow_payload["maxCompletedStep"] = 2
-                        flow_payload["status"] = "draft"
-            finally:
-                for fh in file_handles:
+                # 4. Auto-extract and Lock blueprint first so bulk upload grading jobs don't fail with 'blueprint not found'
+                blueprint_extracted_and_locked = False
+                if ma_pages:
                     try:
-                        fh.close()
-                    except Exception:
-                        pass
+                        logger.info(f"Triggering auto-extraction of blueprint on webapp for mode: {source_paper_mode}...")
+                        # Extended timeout of 10 minutes to accommodate double/separate paper processing
+                        extract_res = await client_http.post(
+                            f"{webapp_url.rstrip('/')}/api/v1/exams/{exam_id}/blueprint/extract",
+                            json={"sourceMode": source_paper_mode},
+                            headers={"Authorization": f"Bearer {token}"},
+                            timeout=600.0
+                        )
+                        if extract_res.status_code not in (200, 201):
+                            logger.error(f"Failed to auto-extract blueprint: {extract_res.status_code} - {extract_res.text}")
+                        else:
+                            logger.info("Blueprint auto-extracted successfully! Locking it...")
+                            lock_res = await client_http.post(
+                                f"{webapp_url.rstrip('/')}/api/v1/exams/{exam_id}/blueprint/lock",
+                                json={"locked": True},
+                                headers={"Authorization": f"Bearer {token}"},
+                                timeout=60.0
+                            )
+                            if lock_res.status_code not in (200, 201):
+                                logger.error(f"Failed to lock blueprint: {lock_res.status_code} - {lock_res.text}")
+                            else:
+                                logger.info("Blueprint locked successfully!")
+                                blueprint_extracted_and_locked = True
+                    except Exception as ex:
+                        logger.error(f"Error during blueprint extraction/locking in background: {ex}")
 
-            # 7. Create Upload Flow Session card on webapp
-            try:
-                logger.info("Creating upload flow session card on webapp...")
-                flow_res = await client_http.post(
-                    f"{webapp_url.rstrip('/')}/api/v1/exams/upload-flows",
-                    json=flow_payload,
-                    headers={"Authorization": f"Bearer {token}"},
-                    timeout=30.0
-                )
-                if flow_res.status_code not in (200, 201):
-                    logger.error(f"Failed to create upload flow session: {flow_res.status_code} - {flow_res.text}")
-                else:
-                    logger.info("Upload flow session card created successfully!")
-            except Exception as e:
-                logger.error(f"Error creating upload flow session card: {e}")
+                # 5. Upload Students Submissions (if present)
+                students = session.get("students", [])
+                submission_files = []
+                file_handles = []
 
-        return exam_id
+                try:
+                    for idx, student in enumerate(students):
+                        st_pages = student.get("pages", [])
+                        if st_pages:
+                            st_label = student.get("label") or f"student_{idx}"
+                            clean_label = "".join(c for c in st_label if c.isalnum() or c in (" ", "_", "-")).strip()
+                            clean_label = clean_label.replace(" ", "_")
+                            
+                            pdf_name = f"{clean_label}.pdf"
+                            st_pdf_path = temp_dir_path / pdf_name
+                            
+                            logger.info(f"Compiling Student {clean_label} PDF with {len(st_pages)} pages...")
+                            if await compile_pages_to_pdf(st_pages, st_pdf_path, compile_temp_dir):
+                                f_handle = open(st_pdf_path, "rb")
+                                file_handles.append(f_handle)
+                                submission_files.append(("files", (pdf_name, f_handle, "application/pdf")))
+
+                    if submission_files:
+                        logger.info(f"Bulk uploading {len(submission_files)} student submissions to webapp...")
+                        upload_res = await client_http.post(
+                            f"{webapp_url.rstrip('/')}/api/v1/exams/{exam_id}/submissions/bulk",
+                            files=submission_files,
+                            data={"autoQueue": "true"},
+                            headers={"Authorization": f"Bearer {token}"},
+                            timeout=300.0
+                        )
+                        if upload_res.status_code not in (200, 201):
+                            logger.error(f"Failed to bulk upload student papers: {upload_res.status_code} - {upload_res.text}")
+                        else:
+                            logger.info("Bulk upload completed successfully!")
+                            try:
+                                bulk_data = upload_res.json().get("data", {})
+                                created_ids = bulk_data.get("createdSubmissionIds", [])
+                                dup_ids = bulk_data.get("duplicateSubmissionIds", [])
+                                submissions_list = bulk_data.get("submissions", [])
+                                
+                                sub_ids = []
+                                for sub_detail in submissions_list:
+                                    sub = sub_detail.get("submission") if isinstance(sub_detail, dict) else None
+                                    if sub and "id" in sub:
+                                        sub_ids.append(sub["id"])
+                                    elif isinstance(sub_detail, dict) and "id" in sub_detail:
+                                        sub_ids.append(sub_detail["id"])
+                                        
+                                all_sub_ids = list(set(created_ids + dup_ids + sub_ids))
+                                
+                                job = bulk_data.get("job")
+                                active_job_id = job.get("id") if (job and isinstance(job, dict)) else None
+                                
+                                if blueprint_extracted_and_locked:
+                                    flow_payload["currentStep"] = 5
+                                    flow_payload["maxCompletedStep"] = 5
+                                    flow_payload["status"] = "draft"
+                                else:
+                                    flow_payload["currentStep"] = 4
+                                    flow_payload["maxCompletedStep"] = 2
+                                    flow_payload["status"] = "draft"
+                                    
+                                flow_payload["state"]["activeJobId"] = active_job_id
+                                flow_payload["state"]["sessionSubmissionIds"] = all_sub_ids
+                            except Exception as ex:
+                                logger.error(f"Error parsing bulk upload response for flow state: {ex}")
+                    else:
+                        if blueprint_extracted_and_locked:
+                            flow_payload["currentStep"] = 5
+                            flow_payload["maxCompletedStep"] = 4
+                            flow_payload["status"] = "draft"
+                        else:
+                            flow_payload["currentStep"] = 4
+                            flow_payload["maxCompletedStep"] = 2
+                            flow_payload["status"] = "draft"
+                finally:
+                    for fh in file_handles:
+                        try:
+                            fh.close()
+                        except Exception:
+                            pass
+
+                # 6. Create Upload Flow Session card on webapp
+                try:
+                    logger.info("Creating upload flow session card on webapp...")
+                    flow_res = await client_http.post(
+                        f"{webapp_url.rstrip('/')}/api/v1/exams/upload-flows",
+                        json=flow_payload,
+                        headers={"Authorization": f"Bearer {token}"},
+                        timeout=60.0
+                    )
+                    if flow_res.status_code not in (200, 201):
+                        logger.error(f"Failed to create upload flow session: {flow_res.status_code} - {flow_res.text}")
+                    else:
+                        logger.info("Upload flow session card created successfully!")
+                except Exception as e:
+                    logger.error(f"Error creating upload flow session card: {e}")
+    except Exception as e:
+        logger.error(f"Exception in async_sync_session_data background task: {e}")
 
 
 @api_router.post("/scan-sessions/{session_id}/complete")
-async def complete_scan_session(session_id: str, authorization: Optional[str] = Header(None)):
+async def complete_scan_session(
+    session_id: str,
+    background_tasks: BackgroundTasks,
+    authorization: Optional[str] = Header(None)
+):
     """Mark scan session as complete and sync to webapp"""
     user = await get_current_user(authorization)
     token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
@@ -1305,8 +1327,12 @@ async def complete_scan_session(session_id: str, authorization: Optional[str] = 
     # 2. Compile scanned JPEGs to PDFs and sync to main webapp (if not guest mode)
     if token != "sess_mock_token_12345":
         try:
-            # We run the PDF compilation and sync
-            exam_id = await compile_pdf_and_upload_to_webapp(session_id, user.user_id, token)
+            # Create exam synchronously first (takes ~1s)
+            exam_id = await create_exam_on_webapp(session_id, user.user_id, token)
+            
+            # Enqueue compilation and sync as background task
+            background_tasks.add_task(async_sync_session_data, session_id, user.user_id, token, exam_id)
+            
             return {"exam_id": exam_id, "status": "completed"}
         except Exception as e:
             logger.error(f"Failed to sync scan session to webapp: {e}")
