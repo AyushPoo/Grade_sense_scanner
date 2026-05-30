@@ -41,26 +41,71 @@ export const CONFIG = {
   BARCODE_TYPES: ['qr', 'code128', 'code39'] as const,
 };
 
-// Theme colors - Orange and White
+// ─── Design System ────────────────────────────────────────────────────
+// Premium EdTech palette inspired by Toddle, Turnitin, Magic School AI
 export const COLORS = {
+  // Brand
   primary: '#FF6B35',
-  primaryDark: '#E55A2B',
-  primaryLight: '#FF8F66',
-  secondary: '#FFFFFF',
+  primaryDark: '#E04E1A',
+  primaryLight: '#FF9166',
+  primaryXLight: '#FFF0EB',
+
+  // Backgrounds (light, airy)
   background: '#FFFFFF',
-  backgroundDark: '#F5F5F5',
-  text: '#1A1A1A',
-  textLight: '#666666',
-  textMuted: '#999999',
-  success: '#4CAF50',
-  warning: '#FFC107',
-  error: '#F44336',
-  danger: '#E24B4A',
-  border: '#E0E0E0',
+  backgroundDark: '#F7F8FA',
+  surface: '#FFFFFF',
+  surfaceElevated: '#F0F2F5',
+
+  // Text hierarchy
+  text: '#111827',          // near black
+  textLight: '#4B5563',     // secondary text
+  textMuted: '#9CA3AF',     // disabled/placeholder
+  textInverse: '#FFFFFF',
+
+  // Semantic
+  success: '#10B981',       // emerald
+  successLight: '#D1FAE5',
+  warning: '#F59E0B',       // amber
+  warningLight: '#FEF3C7',
+  error: '#EF4444',         // red
+  errorLight: '#FEE2E2',
+  info: '#3B82F6',          // blue
+  infoLight: '#DBEAFE',
+
+  // Deprecated aliases (backward compat)
+  danger: '#EF4444',
+  border: '#E5E7EB',
+  borderLight: '#F3F4F6',
   cardBg: '#FFFFFF',
   card: '#FFFFFF',
-  textPrimary: '#1A1A1A',
-  overlay: 'rgba(0, 0, 0, 0.5)',
+  textPrimary: '#111827',
+  overlay: 'rgba(0, 0, 0, 0.45)',
+  overlayLight: 'rgba(0, 0, 0, 0.2)',
+};
+
+// Typography scale
+export const TYPOGRAPHY = {
+  displayLg: { fontSize: 32, fontWeight: '800' as const, letterSpacing: -0.5 },
+  displayMd: { fontSize: 26, fontWeight: '700' as const, letterSpacing: -0.3 },
+  headingLg: { fontSize: 22, fontWeight: '700' as const },
+  headingMd: { fontSize: 18, fontWeight: '700' as const },
+  headingSm: { fontSize: 16, fontWeight: '600' as const },
+  bodyLg: { fontSize: 16, fontWeight: '400' as const, lineHeight: 24 },
+  bodyMd: { fontSize: 14, fontWeight: '400' as const, lineHeight: 20 },
+  bodySm: { fontSize: 13, fontWeight: '400' as const, lineHeight: 18 },
+  labelMd: { fontSize: 12, fontWeight: '600' as const, letterSpacing: 0.5 },
+  labelSm: { fontSize: 11, fontWeight: '600' as const, letterSpacing: 0.8 },
+  caption: { fontSize: 11, fontWeight: '400' as const },
+};
+
+// Spacing
+export const SPACING = {
+  xs: 4, sm: 8, md: 12, lg: 16, xl: 20, xxl: 24, xxxl: 32,
+};
+
+// Border radius
+export const RADIUS = {
+  sm: 8, md: 12, lg: 16, xl: 20, xxl: 24, full: 9999,
 };
 
 export const FONTS = {

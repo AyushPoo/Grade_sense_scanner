@@ -51,6 +51,7 @@ export default function SessionSetupScreen() {
     blur_detection: false,
     flash_mode: 'auto',
     page_mode: 'single', // default to single page
+    grading_mode: 'balanced', // default to balanced
   });
 
   // Populate existing session details if in edit mode
@@ -75,7 +76,10 @@ export default function SessionSetupScreen() {
         
         setTotalMarks(existing.total_marks?.toString() || '100');
         setExamDate(existing.exam_date || new Date().toISOString().split('T')[0]);
-        setSettings(existing.settings);
+        setSettings({
+          ...existing.settings,
+          grading_mode: existing.settings.grading_mode || 'balanced',
+        });
       }
     }
   }, [sessionId, savedSessions, savedBatches, savedSubjects]);
@@ -306,6 +310,40 @@ export default function SessionSetupScreen() {
                 ))}
               </View>
             )}
+          </View>
+
+          {/* Grading Mode / Correction Type Selection */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>GRADING MODE</Text>
+            <View style={styles.gradingGrid}>
+              {[
+                { key: 'strict', title: 'Strict', icon: 'shield-half-outline', desc: 'Exact rubric matching', color: '#E53935' },
+                { key: 'balanced', title: 'Balanced', icon: 'scale-outline', desc: 'Standard balance (recommended)', color: COLORS.primary },
+                { key: 'conceptual', title: 'Conceptual', icon: 'bulb-outline', desc: 'Focuses on keyword & concepts', color: '#5E35B1' },
+                { key: 'lenient', title: 'Lenient', icon: 'heart-outline', desc: 'Generous scoring criteria', color: '#43A047' }
+              ].map((mode) => {
+                const isSelected = settings.grading_mode === mode.key;
+                return (
+                  <TouchableOpacity
+                    key={mode.key}
+                    style={[
+                      styles.gradingOptionCard,
+                      isSelected && { borderColor: mode.color, backgroundColor: `${mode.color}08` }
+                    ]}
+                    onPress={() => updateSetting('grading_mode', mode.key)}
+                    activeOpacity={0.8}
+                  >
+                    <View style={[styles.gradingIconContainer, { backgroundColor: isSelected ? mode.color : '#F5F5F5' }]}>
+                      <Ionicons name={mode.icon as any} size={20} color={isSelected ? '#fff' : '#666'} />
+                    </View>
+                    <View style={styles.gradingTextContainer}>
+                      <Text style={[styles.gradingTitle, isSelected && { color: mode.color, fontWeight: '700' }]}>{mode.title}</Text>
+                      <Text style={styles.gradingDesc}>{mode.desc}</Text>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
           </View>
 
           {/* Scan Options */}
@@ -550,7 +588,7 @@ export default function SessionSetupScreen() {
                 keyboardType="number-pad"
               />
               <Text style={styles.modalHint}>
-                Leave empty if you don't know yet. Students will be auto-created as you scan.
+                Leave empty if you don{"'"}t know yet. Students will be auto-created as you scan.
               </Text>
             </View>
 
@@ -974,5 +1012,44 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     fontSize: 13,
     fontStyle: 'italic',
+  },
+  gradingGrid: {
+    gap: 10,
+    marginBottom: 8,
+  },
+  gradingOptionCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.cardBg,
+    borderRadius: 16,
+    padding: 14,
+    borderWidth: 2,
+    borderColor: COLORS.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  gradingIconContainer: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 14,
+  },
+  gradingTextContainer: {
+    flex: 1,
+  },
+  gradingTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  gradingDesc: {
+    fontSize: 12,
+    color: COLORS.textMuted,
+    marginTop: 2,
   },
 });

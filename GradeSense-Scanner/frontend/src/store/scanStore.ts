@@ -69,7 +69,7 @@ interface ScanState {
   clearCurrentSession: () => void;
   deleteSession: (sessionId: string) => Promise<void>;
   loadSession: (sessionId: string) => void;
-  updateSessionStatus: (sessionId: string, status: ScanSession['status'], progress: number) => void;
+  updateSessionStatus: (sessionId: string, status: ScanSession['status'], progress: number, examId?: string) => void;
   fetchSessions: () => Promise<void>;
   fetchBatches: () => Promise<void>;
   fetchSubjects: () => Promise<void>;
@@ -790,17 +790,27 @@ export const useScanStore = create<ScanState>()(
         }
       },
 
-      updateSessionStatus: (sessionId, status, progress = 0) => {
+      updateSessionStatus: (sessionId, status, progress = 0, examId) => {
         const { savedSessions, currentSession } = get();
 
-        const newSavedSessions = savedSessions.map(s =>
-          s.session_id === sessionId ? { ...s, status, upload_progress: progress } : s
-        );
+        const newSavedSessions = savedSessions.map(s => {
+          if (s.session_id === sessionId) {
+            const updated: any = { ...s, status, upload_progress: progress };
+            if (examId) updated.exam_id = examId;
+            return updated;
+          }
+          return s;
+        });
 
         set({
           savedSessions: newSavedSessions,
           currentSession: currentSession?.session_id === sessionId
-            ? { ...currentSession, status, upload_progress: progress }
+            ? { 
+                ...currentSession, 
+                status, 
+                upload_progress: progress, 
+                exam_id: examId || currentSession.exam_id 
+              }
             : currentSession,
         });
       },

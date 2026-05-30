@@ -990,6 +990,10 @@ async def create_exam_on_webapp(session_id: str, user_id: str, token: str) -> st
             pass
     if session.get("exam_date"):
         exam_payload["examDate"] = session["exam_date"]
+    
+    settings = session.get("settings", {})
+    if isinstance(settings, dict) and settings.get("grading_mode"):
+        exam_payload["gradingMode"] = settings["grading_mode"]
 
     headers = {
         "Authorization": f"Bearer {token}",

@@ -9,13 +9,12 @@ import {
   KeyboardAvoidingView,
   ScrollView,
   Platform,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as WebBrowser from 'expo-web-browser';
 import * as Google from 'expo-auth-session/providers/google';
-import { makeRedirectUri } from 'expo-auth-session';
 import { useRouter } from 'expo-router';
 import { COLORS } from '../../src/config';
 import { useAuthStore } from '../../src/store/authStore';
@@ -36,36 +35,25 @@ export default function LoginScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [focusedField, setFocusedField] = useState<'email' | 'password' | null>(null);
   const router = useRouter();
   const { setUser, setSessionToken, setIsAuthenticated } = useAuthStore();
 
-  // Native Google OAuth request - uses Expo proxy for development
-  // In production, replace clientId with your Android OAuth client ID from Google Cloud Console
+  // Native Google OAuth
   const [request, response, promptAsync] = Google.useAuthRequest({
     clientId: GOOGLE_CLIENT_ID,
     androidClientId: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID || GOOGLE_CLIENT_ID,
     iosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID || GOOGLE_CLIENT_ID,
     scopes: ['openid', 'profile', 'email'],
-    // Use responseType token+id_token to ensure we get the id_token
-    extraParams: {
-      access_type: 'online',
-    },
+    extraParams: { access_type: 'online' },
   });
 
-  React.useEffect(() => {
-    if (request) {
-      console.log('Google Auth Request Redirect URI:', request.redirectUri);
-    }
-  }, [request]);
-
-  // Handle Google OAuth response
   React.useEffect(() => {
     if (response?.type === 'success') {
       const { authentication } = response;
       if (authentication?.idToken) {
         handleGoogleIdToken(authentication.idToken);
       } else if (authentication?.accessToken) {
-        // Fallback: use access token to fetch user info then create token
         fetchUserInfoAndAuth(authentication.accessToken);
       } else {
         setError('Google sign-in did not return an ID token. Please try again.');
@@ -81,148 +69,85 @@ export default function LoginScreen() {
 
   const fetchUserInfoAndAuth = async (accessToken: string) => {
     try {
-      // Use Google tokeninfo endpoint with access_token to verify and get user info
       const tokenInfoRes = await fetch(
         `https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${accessToken}`
       );
       if (!tokenInfoRes.ok) throw new Error('Failed to verify Google access token');
       const tokenInfo = await tokenInfoRes.json();
-      
-      // Send to backend - it will validate the token info
+
       const backendRes = await fetch(`${BACKEND_URL}/api/auth/google-idtoken`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Bypass-Tunnel-Reminder': 'true',
-        },
-        // Pass access_token as alternative verification method
+        headers: { 'Content-Type': 'application/json', 'Bypass-Tunnel-Reminder': 'true' },
         body: JSON.stringify({ access_token: accessToken, token_info: tokenInfo }),
       });
-      
       if (!backendRes.ok) {
         const errData = await backendRes.json().catch(() => ({}));
         throw new Error(errData.detail || 'Google authentication failed');
       }
-      
       const data = await backendRes.json();
-      setUser(data.user);
-      setSessionToken(data.session_token);
-      setIsAuthenticated(true);
+      setUser(data.user); setSessionToken(data.session_token); setIsAuthenticated(true);
       router.replace('/(tabs)/home');
     } catch (err: any) {
       setError(err.message || 'Google sign-in could not complete. Please use email/password instead.');
-    } finally {
-      setIsLoading(false);
-    }
+    } finally { setIsLoading(false); }
   };
 
   const handleGoogleIdToken = async (idToken: string) => {
     try {
-      const response = await fetch(`${BACKEND_URL}/api/auth/google-idtoken`, {
+      const res = await fetch(`${BACKEND_URL}/api/auth/google-idtoken`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Bypass-Tunnel-Reminder': 'true',
-        },
+        headers: { 'Content-Type': 'application/json', 'Bypass-Tunnel-Reminder': 'true' },
         body: JSON.stringify({ id_token: idToken }),
       });
-
-      if (!response.ok) {
-        let errorMsg = 'Google authentication failed';
-        try {
-          const errorData = await response.json();
-          errorMsg = errorData.detail || errorMsg;
-        } catch {
-          // ignore parsing error
-        }
-        throw new Error(errorMsg);
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || 'Google authentication failed');
       }
-
-      const data = await response.json();
-      console.log('Google login successful:', data.user?.email);
-
-      setUser(data.user);
-      setSessionToken(data.session_token);
-      setIsAuthenticated(true);
+      const data = await res.json();
+      setUser(data.user); setSessionToken(data.session_token); setIsAuthenticated(true);
       router.replace('/(tabs)/home');
     } catch (err: any) {
-      console.error('Google token exchange error:', err);
       setError(err.message || 'Failed to complete Google sign-in.');
-    } finally {
-      setIsLoading(false);
-    }
+    } finally { setIsLoading(false); }
   };
 
   const handleEmailLogin = async () => {
-    if (!email.trim() || !password.trim()) {
-      setError('Please enter both email and password');
-      return;
-    }
-    
+    if (!email.trim() || !password.trim()) { setError('Please enter both email and password'); return; }
     try {
-      setIsLoading(true);
-      setError(null);
-      
-      const response = await fetch(`${BACKEND_URL}/api/auth/login`, {
+      setIsLoading(true); setError(null);
+      const res = await fetch(`${BACKEND_URL}/api/auth/login`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Bypass-Tunnel-Reminder': 'true',
-        },
+        headers: { 'Content-Type': 'application/json', 'Bypass-Tunnel-Reminder': 'true' },
         body: JSON.stringify({ email: email.trim(), password }),
       });
-      
-      if (!response.ok) {
-        let errorMsg = 'Authentication failed';
-        try {
-          const errorData = await response.json();
-          errorMsg = errorData.detail || errorMsg;
-        } catch {
-          // ignore parsing error
-        }
-        throw new Error(errorMsg);
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || 'Authentication failed');
       }
-      
-      const data = await response.json();
-      console.log('Login successful:', data.user?.email);
-      
-      // Store auth data
-      setUser(data.user);
-      setSessionToken(data.session_token);
-      setIsAuthenticated(true);
-      
-      // Navigate to home
+      const data = await res.json();
+      setUser(data.user); setSessionToken(data.session_token); setIsAuthenticated(true);
       router.replace('/(tabs)/home');
     } catch (err: any) {
-      console.error('Email login error:', err);
       setError(err.message || 'Failed to authenticate. Please check your credentials.');
-    } finally {
-      setIsLoading(false);
-    }
+    } finally { setIsLoading(false); }
   };
 
   const handleGoogleLogin = () => {
-    if (!GOOGLE_CLIENT_ID) {
-      setError('Google sign-in is not configured. Please use email/password.');
-      return;
-    }
-    setIsLoading(true);
-    setError(null);
+    if (!GOOGLE_CLIENT_ID) { setError('Google sign-in is not configured. Please use email/password.'); return; }
+    setIsLoading(true); setError(null);
     promptAsync();
   };
 
   const handleMockLogin = () => {
-    console.log('Using mock login bypass...');
     const mockUser = {
       user_id: 'user_mock_001',
-      email: 'rahul.kumar@gradesense.com',
-      name: 'Rahul Kumar',
-      picture: 'https://ui-avatars.com/api/?name=Rahul+Kumar&background=FF6B35&color=fff',
+      email: 'teacher@gradesense.io',
+      name: 'Demo Teacher',
+      picture: null,
       role: 'teacher',
       org_name: 'GradeSense Academy',
-      created_at: new Date().toISOString()
+      created_at: new Date().toISOString(),
     };
-
     setUser(mockUser as any);
     setSessionToken('sess_mock_token_12345');
     setIsAuthenticated(true);
@@ -230,67 +155,54 @@ export default function LoginScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={{ flex: 1 }}
-      >
-        <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
-          <LinearGradient
-            colors={[COLORS.primary, COLORS.primaryDark]}
-            style={styles.headerGradient}
-          >
-            <View style={styles.logoContainer}>
-              <View style={styles.logoCircle}>
-                <Ionicons name="scan" size={44} color={COLORS.primary} />
-              </View>
-              <Text style={styles.appName}>GradeSense</Text>
-              <Text style={styles.tagline}>Scanner</Text>
+    <SafeAreaView style={styles.root} edges={['top', 'left', 'right']}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+
+          {/* Wordmark */}
+          <View style={styles.wordmark}>
+            <View style={styles.logoBox}>
+              <Text style={styles.logoG}>G</Text>
             </View>
-          </LinearGradient>
+            <Text style={styles.appName}>GradeSense</Text>
+            <Text style={styles.appTag}>Scanner</Text>
+          </View>
 
-          <View style={styles.contentContainer}>
-            <Text style={styles.welcomeTitle}>Sign In</Text>
-            <Text style={styles.welcomeSubtitle}>
-              Access your batches and sync student papers seamlessly
-            </Text>
+          {/* Card */}
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Sign in</Text>
+            <Text style={styles.cardSub}>Access your batches and sync student papers</Text>
 
+            {/* Error */}
             {error && (
-              <View style={styles.errorContainer}>
-                <Ionicons name="alert-circle" size={20} color={COLORS.error} />
+              <View style={styles.errorBox}>
+                <Ionicons name="alert-circle" size={16} color={COLORS.error} />
                 <Text style={styles.errorText}>{error}</Text>
               </View>
             )}
 
-            {/* Email Input */}
-            <View style={styles.inputContainer}>
-              <Ionicons 
-                name="mail-outline" 
-                size={20} 
-                color={COLORS.textLight} 
-                style={styles.inputIcon}
-              />
+            {/* Email */}
+            <View style={[styles.inputWrap, focusedField === 'email' && styles.inputFocused]}>
+              <Ionicons name="mail-outline" size={18} color={focusedField === 'email' ? COLORS.primary : COLORS.textMuted} style={styles.inputIcon} />
               <TextInput
                 style={styles.input}
-                placeholder="Email Address"
+                placeholder="Email address"
                 placeholderTextColor={COLORS.textMuted}
                 keyboardType="email-address"
                 autoCapitalize="none"
                 autoCorrect={false}
                 value={email}
-                onChangeText={setEmail}
+                onChangeText={t => { setEmail(t); setError(null); }}
+                onFocus={() => setFocusedField('email')}
+                onBlur={() => setFocusedField(null)}
                 editable={!isLoading}
+                returnKeyType="next"
               />
             </View>
 
-            {/* Password Input */}
-            <View style={styles.inputContainer}>
-              <Ionicons 
-                name="lock-closed-outline" 
-                size={20} 
-                color={COLORS.textLight} 
-                style={styles.inputIcon}
-              />
+            {/* Password */}
+            <View style={[styles.inputWrap, focusedField === 'password' && styles.inputFocused]}>
+              <Ionicons name="lock-closed-outline" size={18} color={focusedField === 'password' ? COLORS.primary : COLORS.textMuted} style={styles.inputIcon} />
               <TextInput
                 style={styles.input}
                 placeholder="Password"
@@ -299,78 +211,54 @@ export default function LoginScreen() {
                 autoCapitalize="none"
                 autoCorrect={false}
                 value={password}
-                onChangeText={setPassword}
+                onChangeText={t => { setPassword(t); setError(null); }}
+                onFocus={() => setFocusedField('password')}
+                onBlur={() => setFocusedField(null)}
                 editable={!isLoading}
+                returnKeyType="done"
+                onSubmitEditing={handleEmailLogin}
               />
-              <TouchableOpacity
-                onPress={() => setShowPassword(!showPassword)}
-                style={styles.passwordToggle}
-              >
-                <Ionicons 
-                  name={showPassword ? "eye-off-outline" : "eye-outline"} 
-                  size={20} 
-                  color={COLORS.textLight} 
-                />
+              <TouchableOpacity onPress={() => setShowPassword(v => !v)} style={styles.eyeBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={18} color={COLORS.textMuted} />
               </TouchableOpacity>
             </View>
 
-            {/* Sign In Button */}
-            <TouchableOpacity
-              style={styles.signInButton}
-              onPress={handleEmailLogin}
-              disabled={isLoading}
-              activeOpacity={0.8}
-            >
+            {/* Primary button */}
+            <TouchableOpacity style={[styles.primaryBtn, isLoading && { opacity: 0.7 }]} onPress={handleEmailLogin} disabled={isLoading} activeOpacity={0.85}>
               {isLoading ? (
                 <ActivityIndicator color="#fff" size="small" />
               ) : (
-                <LinearGradient
-                  colors={[COLORS.primary, COLORS.primaryDark]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={styles.gradientButtonContent}
-                >
-                  <Text style={styles.signInButtonText}>Sign In</Text>
-                  <Ionicons name="arrow-forward" size={20} color="#fff" />
-                </LinearGradient>
+                <>
+                  <Text style={styles.primaryBtnText}>Sign In</Text>
+                  <Ionicons name="arrow-forward" size={18} color="#fff" />
+                </>
               )}
             </TouchableOpacity>
 
-            <View style={styles.dividerContainer}>
+            {/* Divider */}
+            <View style={styles.divider}>
               <View style={styles.dividerLine} />
-              <Text style={styles.dividerText}>OR</Text>
+              <Text style={styles.dividerText}>or continue with</Text>
               <View style={styles.dividerLine} />
             </View>
 
-            {/* Google Login Button */}
-            <TouchableOpacity
-              style={styles.googleButton}
-              onPress={handleGoogleLogin}
-              disabled={isLoading}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="logo-google" size={20} color={COLORS.primary} style={styles.googleIcon} />
-              <Text style={styles.googleButtonText}>Continue with Google</Text>
+            {/* Google */}
+            <TouchableOpacity style={styles.googleBtn} onPress={handleGoogleLogin} disabled={isLoading} activeOpacity={0.82}>
+              <Ionicons name="logo-google" size={18} color="#4285F4" />
+              <Text style={styles.googleBtnText}>Google</Text>
             </TouchableOpacity>
 
-            {/* Bypass Button */}
-            <TouchableOpacity
-              style={styles.bypassButton}
-              onPress={handleMockLogin}
-              disabled={isLoading}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.bypassButtonText}>Continue as Guest (Skip Login)</Text>
+            {/* Guest / Demo */}
+            <TouchableOpacity style={styles.guestBtn} onPress={handleMockLogin} disabled={isLoading} activeOpacity={0.75}>
+              <Text style={styles.guestBtnText}>Continue as Guest (Demo)</Text>
             </TouchableOpacity>
 
-            <Text style={styles.termsText}>
-              By continuing, you agree to our Terms of Service and Privacy Policy
+            <Text style={styles.terms}>
+              By continuing you agree to our Terms of Service and Privacy Policy.
             </Text>
           </View>
 
-          <View style={styles.footer}>
-            <Text style={styles.footerText}>Powered by GradeSense</Text>
-          </View>
+          <Text style={styles.footer}>Powered by GradeSense</Text>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -378,195 +266,168 @@ export default function LoginScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#FFFFFF',
-  },
-  scrollContent: {
+  root: { flex: 1, backgroundColor: COLORS.backgroundDark },
+
+  scroll: {
     flexGrow: 1,
-  },
-  headerGradient: {
-    paddingTop: 50,
-    paddingBottom: 40,
-    alignItems: 'center',
-    borderBottomLeftRadius: 32,
-    borderBottomRightRadius: 32,
-  },
-  logoContainer: {
+    paddingHorizontal: 20,
+    paddingBottom: 32,
     alignItems: 'center',
   },
-  logoCircle: {
-    width: 84,
-    height: 84,
-    borderRadius: 42,
-    backgroundColor: '#FFFFFF',
+
+  // Wordmark
+  wordmark: {
+    alignItems: 'center',
+    marginTop: 48,
+    marginBottom: 32,
+  },
+  logoBox: {
+    width: 76,
+    height: 76,
+    borderRadius: 22,
+    backgroundColor: COLORS.surface,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 14,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 6,
-    elevation: 5,
+    shadowOpacity: 0.10,
+    shadowRadius: 10,
+    elevation: 4,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+  },
+  logoG: {
+    fontSize: 44,
+    fontWeight: '800',
+    color: COLORS.primary,
+    lineHeight: 52,
   },
   appName: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    letterSpacing: 0.5,
+    fontSize: 26,
+    fontWeight: '800',
+    color: COLORS.text,
+    letterSpacing: -0.3,
   },
-  tagline: {
-    fontSize: 16,
-    color: 'rgba(255, 255, 255, 0.9)',
-    marginTop: 2,
+  appTag: {
+    fontSize: 15,
+    color: COLORS.textMuted,
     fontWeight: '500',
+    marginTop: 2,
   },
-  contentContainer: {
-    flex: 1,
-    paddingHorizontal: 24,
-    paddingTop: 30,
+
+  // Card
+  card: {
+    width: '100%',
+    backgroundColor: COLORS.surface,
+    borderRadius: 24,
+    padding: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.07,
+    shadowRadius: 12,
+    elevation: 4,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
   },
-  welcomeTitle: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#1A1A1A',
-    textAlign: 'center',
-  },
-  welcomeSubtitle: {
-    fontSize: 14,
-    color: '#666666',
-    textAlign: 'center',
-    marginTop: 6,
-    marginBottom: 24,
-    lineHeight: 20,
-  },
-  errorContainer: {
+  cardTitle: { fontSize: 22, fontWeight: '800', color: COLORS.text, marginBottom: 4 },
+  cardSub: { fontSize: 13, color: COLORS.textLight, lineHeight: 19, marginBottom: 20 },
+
+  // Error
+  errorBox: {
     flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFEBEE',
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 16,
+    alignItems: 'flex-start',
     gap: 8,
+    backgroundColor: COLORS.errorLight,
+    padding: 12,
+    borderRadius: 10,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: `${COLORS.error}30`,
   },
-  errorText: {
-    color: COLORS.error,
-    fontSize: 13,
-    flex: 1,
-  },
-  inputContainer: {
+  errorText: { flex: 1, fontSize: 13, color: COLORS.error, lineHeight: 18 },
+
+  // Input
+  inputWrap: {
     flexDirection: 'row',
     alignItems: 'center',
     borderWidth: 1.5,
-    borderColor: '#E0E0E0',
+    borderColor: COLORS.border,
     borderRadius: 12,
-    backgroundColor: '#FAFAFA',
-    marginBottom: 16,
-    paddingHorizontal: 16,
-    height: 56,
+    backgroundColor: COLORS.backgroundDark,
+    marginBottom: 12,
+    height: 54,
+    paddingHorizontal: 14,
   },
-  inputIcon: {
-    marginRight: 12,
+  inputFocused: {
+    borderColor: COLORS.primary,
+    backgroundColor: COLORS.primaryXLight,
   },
-  input: {
-    flex: 1,
-    fontSize: 15,
-    color: '#1A1A1A',
-    height: '100%',
-  },
-  passwordToggle: {
-    padding: 4,
-  },
-  signInButton: {
+  inputIcon: { marginRight: 10 },
+  input: { flex: 1, fontSize: 15, color: COLORS.text },
+  eyeBtn: { padding: 4 },
+
+  // Primary button
+  primaryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: COLORS.primary,
     borderRadius: 12,
-    height: 56,
-    overflow: 'hidden',
-    marginTop: 8,
+    height: 54,
+    marginTop: 4,
     shadowColor: COLORS.primary,
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 6,
-    elevation: 3,
+    shadowOpacity: 0.30,
+    shadowRadius: 8,
+    elevation: 5,
   },
-  gradientButtonContent: {
-    flex: 1,
+  primaryBtnText: { fontSize: 16, fontWeight: '700', color: '#fff' },
+
+  // Divider
+  divider: { flexDirection: 'row', alignItems: 'center', marginVertical: 20 },
+  dividerLine: { flex: 1, height: 1, backgroundColor: COLORS.border },
+  dividerText: { marginHorizontal: 12, fontSize: 12, color: COLORS.textMuted, fontWeight: '600' },
+
+  // Google
+  googleBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
-  },
-  signInButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  dividerContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginVertical: 24,
-  },
-  dividerLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: '#E0E0E0',
-  },
-  dividerText: {
-    marginHorizontal: 16,
-    color: '#999999',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  googleButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
+    gap: 10,
     borderWidth: 1.5,
-    borderColor: COLORS.primary,
+    borderColor: COLORS.border,
     borderRadius: 12,
-    height: 54,
-    backgroundColor: '#FFFFFF',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 1,
+    height: 52,
+    backgroundColor: COLORS.surface,
+    marginBottom: 10,
   },
-  googleIcon: {
-    marginRight: 10,
-  },
-  googleButtonText: {
-    color: COLORS.primary,
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  bypassButton: {
-    marginTop: 16,
-    height: 54,
+  googleBtnText: { fontSize: 15, fontWeight: '600', color: COLORS.text },
+
+  // Guest
+  guestBtn: {
     alignItems: 'center',
-    justifyContent: 'center',
+    paddingVertical: 12,
     borderRadius: 12,
-    borderWidth: 1.5,
-    borderColor: '#E0E0E0',
-    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    backgroundColor: COLORS.backgroundDark,
   },
-  bypassButtonText: {
-    color: '#666666',
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  termsText: {
+  guestBtnText: { fontSize: 14, color: COLORS.textLight, fontWeight: '500' },
+
+  terms: {
     fontSize: 11,
-    color: '#999999',
+    color: COLORS.textMuted,
     textAlign: 'center',
-    marginTop: 24,
+    marginTop: 16,
     lineHeight: 16,
   },
+
   footer: {
-    padding: 24,
-    alignItems: 'center',
-  },
-  footerText: {
     fontSize: 12,
-    color: '#999999',
+    color: COLORS.textMuted,
+    marginTop: 24,
+    textAlign: 'center',
   },
 });

@@ -81,11 +81,9 @@ const PageThumb = memo(({
           <Ionicons name="camera-outline" size={14} color={COLORS.primary} />
         </TouchableOpacity>
 
-        {page.raw_file_path && (
-          <TouchableOpacity style={styles.thumbActionBtn} onPress={() => onCrop(student, page, pageIndex)}>
-            <Ionicons name="crop-outline" size={14} color={COLORS.primary} />
-          </TouchableOpacity>
-        )}
+        <TouchableOpacity style={styles.thumbActionBtn} onPress={() => onCrop(student, page, pageIndex)}>
+          <Ionicons name="crop-outline" size={14} color={COLORS.primary} />
+        </TouchableOpacity>
 
         <TouchableOpacity style={styles.thumbActionBtn} onPress={() => {
             Alert.alert('Delete page', 'Remove this scan?', [
@@ -656,16 +654,16 @@ export default function ReviewScreen() {
         </TouchableOpacity>
       </View>
 
-      {cropTarget && cropTarget.page.raw_file_path && (
+      {cropTarget && (cropTarget.page.raw_file_path || cropTarget.page.file_path) && (
         <View style={StyleSheet.absoluteFill}>
           <CropOverlay
-            imageUri={cropTarget.page.raw_file_path}
+            imageUri={cropTarget.page.raw_file_path || cropTarget.page.file_path}
             initialQuad={cropTarget.page.crop_quad}
             onCancel={() => setCropTarget(null)}
             onCropComplete={async (quad) => {
               try {
                 setIsProcessingCrop(true);
-                const rawUri = cropTarget.page.raw_file_path!;
+                const rawUri = cropTarget.page.raw_file_path || cropTarget.page.file_path;
                 
                 // TASK 1A: EXIF-bake the raw image before normalization
                 // This ensures dimensions match what OpenCV sees (same as CropOverlay)

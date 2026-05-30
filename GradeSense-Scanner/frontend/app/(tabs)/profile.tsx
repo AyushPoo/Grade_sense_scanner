@@ -12,216 +12,249 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { COLORS } from '../../src/config';
 import { useAuthStore } from '../../src/store/authStore';
 import { useScanStore } from '../../src/store/scanStore';
 
+type SettingRowProps = {
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  label: string;
+  sublabel?: string;
+  onPress?: () => void;
+  iconBg?: string;
+  iconColor?: string;
+  rightElement?: React.ReactNode;
+  isDestructive?: boolean;
+};
+
+function SettingRow({ icon, label, sublabel, onPress, iconBg, iconColor, rightElement, isDestructive }: SettingRowProps) {
+  return (
+    <TouchableOpacity
+      style={rowStyles.row}
+      onPress={onPress}
+      activeOpacity={onPress ? 0.75 : 1}
+      disabled={!onPress}
+    >
+      <View style={[rowStyles.iconWrap, { backgroundColor: iconBg ?? COLORS.surfaceElevated }]}>
+        <Ionicons name={icon} size={18} color={iconColor ?? (isDestructive ? COLORS.error : COLORS.text)} />
+      </View>
+      <View style={rowStyles.labelWrap}>
+        <Text style={[rowStyles.label, isDestructive && { color: COLORS.error }]}>{label}</Text>
+        {sublabel ? <Text style={rowStyles.sublabel}>{sublabel}</Text> : null}
+      </View>
+      {rightElement ?? (
+        onPress && <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
+      )}
+    </TouchableOpacity>
+  );
+}
+
+const rowStyles = StyleSheet.create({
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.borderLight,
+  },
+  iconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 9,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 14,
+  },
+  labelWrap: { flex: 1 },
+  label: { fontSize: 15, fontWeight: '500', color: COLORS.text },
+  sublabel: { fontSize: 12, color: COLORS.textMuted, marginTop: 1 },
+});
+
 export default function ProfileScreen() {
   const router = useRouter();
   const { user, logout, updateUserOrgName } = useAuthStore();
   const { savedSessions } = useScanStore();
-  
+
   const [showOrgModal, setShowOrgModal] = useState(false);
   const [orgInput, setOrgInput] = useState(user?.org_name || '');
 
-  const totalPages = savedSessions.reduce((sum, s) => sum + s.stats.total_pages, 0);
-  const totalStudents = savedSessions.reduce((sum, s) => sum + s.stats.total_students, 0);
-  const uploadedSessions = savedSessions.filter(s => s.status === 'uploaded').length;
+  const sessions = Array.isArray(savedSessions) ? savedSessions : [];
+  const totalPages = sessions.reduce((sum, s) => sum + (s.stats?.total_pages || 0), 0);
+  const totalStudents = sessions.reduce((sum, s) => sum + (s.stats?.total_students || 0), 0);
+  const uploadedSessions = sessions.filter(s => s.status === 'uploaded').length;
 
   const handleSaveOrg = () => {
-    if (!orgInput.trim()) {
-      Alert.alert('Error', 'Institute name cannot be empty');
-      return;
-    }
+    if (!orgInput.trim()) { Alert.alert('Error', 'Institute name cannot be empty'); return; }
     updateUserOrgName(orgInput.trim());
     setShowOrgModal(false);
-    Alert.alert('Success', 'Institute name updated successfully');
   };
 
   const handleLogout = () => {
-    logout();
-    router.replace('/(auth)/login');
+    Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Sign Out', style: 'destructive', onPress: () => { logout(); router.replace('/(auth)/login'); } },
+    ]);
   };
 
+  const initials = (user?.name ?? 'T').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
+
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.root} edges={['top']}>
       <ScrollView showsVerticalScrollIndicator={false}>
-        <View style={styles.header}>
+        {/* Hero */}
+        <LinearGradient
+          colors={[COLORS.backgroundDark, COLORS.background]}
+          style={styles.hero}
+        >
           <View style={styles.avatarContainer}>
             {user?.picture ? (
               <Image source={{ uri: user.picture }} style={styles.avatar} />
             ) : (
-              <View style={styles.avatarPlaceholder}>
-                <Text style={styles.avatarText}>
-                  {user?.name?.charAt(0).toUpperCase() || 'U'}
-                </Text>
-              </View>
+              <LinearGradient
+                colors={[COLORS.primary, COLORS.primaryDark]}
+                style={styles.avatarGradient}
+              >
+                <Text style={styles.avatarText}>{initials}</Text>
+              </LinearGradient>
             )}
+            <View style={styles.avatarBadge}>
+              <Ionicons name="checkmark" size={10} color="#fff" />
+            </View>
           </View>
+
           <Text style={styles.userName}>{user?.name || 'Teacher'}</Text>
-          <Text style={styles.userEmail}>{user?.email || 'email@example.com'}</Text>
-          <TouchableOpacity 
-            style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 6 }}
-            onPress={() => {
-              setOrgInput(user?.org_name || '');
-              setShowOrgModal(true);
-            }}
-            activeOpacity={0.7}
+          <Text style={styles.userEmail}>{user?.email || ''}</Text>
+
+          <TouchableOpacity
+            style={styles.orgChip}
+            onPress={() => { setOrgInput(user?.org_name || ''); setShowOrgModal(true); }}
+            activeOpacity={0.78}
           >
-            <Text style={styles.orgName}>{user?.org_name || 'Set Institute Name'}</Text>
-            <Ionicons name="create-outline" size={14} color={COLORS.primary} />
+            <Ionicons name="business" size={13} color={COLORS.primary} />
+            <Text style={styles.orgChipText}>{user?.org_name || 'Set institute name'}</Text>
+            <Ionicons name="create" size={12} color={COLORS.primary} />
           </TouchableOpacity>
+        </LinearGradient>
+
+        {/* Stats bar */}
+        <View style={styles.statsBar}>
+          {[
+            { val: sessions.length, lbl: 'Sessions' },
+            { val: uploadedSessions, lbl: 'Uploaded' },
+            { val: totalStudents, lbl: 'Students' },
+            { val: totalPages, lbl: 'Pages' },
+          ].map((item, idx, arr) => (
+            <React.Fragment key={item.lbl}>
+              <View style={styles.stat}>
+                <Text style={styles.statVal}>{item.val}</Text>
+                <Text style={styles.statLbl}>{item.lbl}</Text>
+              </View>
+              {idx < arr.length - 1 && <View style={styles.statSep} />}
+            </React.Fragment>
+          ))}
         </View>
 
-        <View style={styles.statsContainer}>
-          <View style={styles.statBox}>
-            <Text style={styles.statValue}>{savedSessions.length}</Text>
-            <Text style={styles.statLabel}>Sessions</Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.statBox}>
-            <Text style={styles.statValue}>{totalStudents}</Text>
-            <Text style={styles.statLabel}>Students</Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.statBox}>
-            <Text style={styles.statValue}>{totalPages}</Text>
-            <Text style={styles.statLabel}>Pages</Text>
-          </View>
-        </View>
-
+        {/* Account section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Activity</Text>
-          
-          <View style={styles.activityCard}>
-            <View style={styles.activityItem}>
-              <View style={[styles.activityIcon, { backgroundColor: `${COLORS.success}20` }]}>
-                <Ionicons name="checkmark-circle" size={24} color={COLORS.success} />
-              </View>
-              <View style={styles.activityInfo}>
-                <Text style={styles.activityLabel}>Uploaded Sessions</Text>
-                <Text style={styles.activityValue}>{uploadedSessions}</Text>
-              </View>
-            </View>
-
-            <View style={styles.activityItem}>
-              <View style={[styles.activityIcon, { backgroundColor: `${COLORS.warning}20` }]}>
-                <Ionicons name="time" size={24} color={COLORS.warning} />
-              </View>
-              <View style={styles.activityInfo}>
-                <Text style={styles.activityLabel}>Pending Uploads</Text>
-                <Text style={styles.activityValue}>
-                  {savedSessions.filter(s => s.status === 'ready').length}
-                </Text>
-              </View>
-            </View>
+          <Text style={styles.sectionLabel}>ACCOUNT</Text>
+          <View style={styles.card}>
+            <SettingRow
+              icon="business-outline"
+              label="Edit Institute Name"
+              sublabel={user?.org_name || 'Not set'}
+              iconBg={COLORS.primaryXLight}
+              iconColor={COLORS.primary}
+              onPress={() => { setOrgInput(user?.org_name || ''); setShowOrgModal(true); }}
+            />
+            <SettingRow
+              icon="mail-outline"
+              label="Email"
+              sublabel={user?.email || ''}
+              iconBg={COLORS.infoLight}
+              iconColor={COLORS.info}
+            />
           </View>
         </View>
 
+        {/* App section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Settings</Text>
-          
-          <View style={styles.settingsCard}>
-            <TouchableOpacity 
-              style={styles.settingItem}
-              onPress={() => {
-                setOrgInput(user?.org_name || '');
-                setShowOrgModal(true);
-              }}
-              activeOpacity={0.7}
-            >
-              <View style={styles.settingLeft}>
-                <Ionicons name="business-outline" size={22} color={COLORS.text} />
-                <Text style={styles.settingLabel}>Edit Institute Name</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.settingItem}>
-              <View style={styles.settingLeft}>
-                <Ionicons name="notifications-outline" size={22} color={COLORS.text} />
-                <Text style={styles.settingLabel}>Notifications</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.settingItem}>
-              <View style={styles.settingLeft}>
-                <Ionicons name="camera-outline" size={22} color={COLORS.text} />
-                <Text style={styles.settingLabel}>Scan Settings</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.settingItem}>
-              <View style={styles.settingLeft}>
-                <Ionicons name="help-circle-outline" size={22} color={COLORS.text} />
-                <Text style={styles.settingLabel}>Help & Support</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.settingItem}>
-              <View style={styles.settingLeft}>
-                <Ionicons name="information-circle-outline" size={22} color={COLORS.text} />
-                <Text style={styles.settingLabel}>About</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
-            </TouchableOpacity>
+          <Text style={styles.sectionLabel}>APP</Text>
+          <View style={styles.card}>
+            <SettingRow
+              icon="notifications-outline"
+              label="Notifications"
+              iconBg={COLORS.warningLight}
+              iconColor={COLORS.warning}
+              onPress={() => Alert.alert('Coming soon', 'Notification settings coming in a future update.')}
+            />
+            <SettingRow
+              icon="camera-outline"
+              label="Scanner Settings"
+              iconBg={COLORS.surfaceElevated}
+              iconColor={COLORS.textLight}
+              onPress={() => Alert.alert('Coming soon', 'Scanner configuration coming in a future update.')}
+            />
+            <SettingRow
+              icon="help-circle-outline"
+              label="Help & Support"
+              iconBg={COLORS.surfaceElevated}
+              iconColor={COLORS.textLight}
+              onPress={() => Alert.alert('Help', 'Contact support@gradesense.io')}
+            />
+            <SettingRow
+              icon="information-circle-outline"
+              label="About"
+              sublabel="GradeSense Scanner v1.0.0"
+              iconBg={COLORS.surfaceElevated}
+              iconColor={COLORS.textLight}
+            />
           </View>
         </View>
 
-        <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-          <Ionicons name="log-out-outline" size={22} color={COLORS.error} />
-          <Text style={styles.logoutText}>Sign Out</Text>
-        </TouchableOpacity>
+        {/* Sign out */}
+        <View style={styles.section}>
+          <View style={[styles.card, { overflow: 'hidden' }]}>
+            <SettingRow
+              icon="log-out-outline"
+              label="Sign Out"
+              isDestructive
+              onPress={handleLogout}
+              rightElement={<View />}
+            />
+          </View>
+        </View>
 
         <Text style={styles.version}>GradeSense Scanner v1.0.0</Text>
-        
         <View style={{ height: 32 }} />
       </ScrollView>
 
-      <Modal
-        visible={showOrgModal}
-        transparent={true}
-        animationType="slide"
-        onRequestClose={() => setShowOrgModal(false)}
-      >
-        <View style={modalStyles.overlay}>
-          <View style={modalStyles.content}>
-            <View style={modalStyles.header}>
-              <Text style={modalStyles.title}>Edit Institute Name</Text>
-              <TouchableOpacity onPress={() => setShowOrgModal(false)} style={modalStyles.closeBtn}>
-                <Ionicons name="close" size={24} color={COLORS.text} />
+      {/* Org Name Modal */}
+      <Modal visible={showOrgModal} transparent animationType="slide" onRequestClose={() => setShowOrgModal(false)}>
+        <View style={modalStyles.backdrop}>
+          <View style={modalStyles.sheet}>
+            <View style={modalStyles.handle} />
+            <Text style={modalStyles.sheetTitle}>Institute Name</Text>
+            <Text style={modalStyles.sheetSub}>Enter the name of your school or organisation.</Text>
+            <TextInput
+              style={modalStyles.input}
+              value={orgInput}
+              onChangeText={setOrgInput}
+              placeholder="e.g. Greenwood High School"
+              placeholderTextColor={COLORS.textMuted}
+              autoFocus
+              returnKeyType="done"
+              onSubmitEditing={handleSaveOrg}
+            />
+            <View style={modalStyles.buttons}>
+              <TouchableOpacity style={[modalStyles.btn, modalStyles.cancelBtn]} onPress={() => setShowOrgModal(false)}>
+                <Text style={modalStyles.cancelText}>Cancel</Text>
               </TouchableOpacity>
-            </View>
-            <View style={modalStyles.body}>
-              <Text style={modalStyles.subtitle}>
-                Update the name of the school or institute you are associated with.
-              </Text>
-              <TextInput
-                style={modalStyles.input}
-                value={orgInput}
-                onChangeText={setOrgInput}
-                placeholder="e.g. Greenwood High School"
-                placeholderTextColor={COLORS.textMuted}
-                autoFocus={true}
-              />
-              <View style={modalStyles.buttonRow}>
-                <TouchableOpacity 
-                  style={[modalStyles.button, modalStyles.cancelBtn]} 
-                  onPress={() => setShowOrgModal(false)}
-                >
-                  <Text style={modalStyles.cancelBtnText}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity 
-                  style={[modalStyles.button, modalStyles.saveBtn]} 
-                  onPress={handleSaveOrg}
-                >
-                  <Text style={modalStyles.saveBtnText}>Save</Text>
-                </TouchableOpacity>
-              </View>
+              <TouchableOpacity style={[modalStyles.btn, modalStyles.saveBtn]} onPress={handleSaveOrg}>
+                <Text style={modalStyles.saveText}>Save</Text>
+              </TouchableOpacity>
             </View>
           </View>
         </View>
@@ -231,159 +264,82 @@ export default function ProfileScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.backgroundDark,
-  },
-  header: {
+  root: { flex: 1, backgroundColor: COLORS.backgroundDark },
+
+  // Hero
+  hero: {
     alignItems: 'center',
-    paddingVertical: 32,
-    backgroundColor: COLORS.background,
+    paddingTop: 28,
+    paddingBottom: 24,
+    paddingHorizontal: 20,
   },
-  avatarContainer: {
-    marginBottom: 16,
+  avatarContainer: { position: 'relative', marginBottom: 14 },
+  avatar: { width: 90, height: 90, borderRadius: 45 },
+  avatarGradient: {
+    width: 90, height: 90, borderRadius: 45,
+    justifyContent: 'center', alignItems: 'center',
   },
-  avatar: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
+  avatarText: { fontSize: 34, fontWeight: '800', color: '#fff' },
+  avatarBadge: {
+    position: 'absolute', bottom: 2, right: 2,
+    width: 22, height: 22, borderRadius: 11,
+    backgroundColor: COLORS.success,
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 2, borderColor: COLORS.background,
   },
-  avatarPlaceholder: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    backgroundColor: COLORS.primary,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  avatarText: {
-    fontSize: 40,
-    fontWeight: '700',
-    color: '#fff',
-  },
-  userName: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: COLORS.text,
-  },
-  userEmail: {
-    fontSize: 14,
-    color: COLORS.textLight,
-    marginTop: 4,
-  },
-  orgName: {
-    fontSize: 14,
-    color: COLORS.primary,
-    marginTop: 4,
-    fontWeight: '500',
-  },
-  statsContainer: {
+
+  userName: { fontSize: 22, fontWeight: '800', color: COLORS.text },
+  userEmail: { fontSize: 13, color: COLORS.textMuted, marginTop: 3, marginBottom: 12 },
+
+  orgChip: {
     flexDirection: 'row',
-    backgroundColor: COLORS.background,
-    marginTop: 1,
-    paddingVertical: 20,
-  },
-  statBox: {
-    flex: 1,
     alignItems: 'center',
+    gap: 6,
+    backgroundColor: COLORS.primaryXLight,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: `${COLORS.primary}30`,
   },
-  statValue: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: COLORS.primary,
+  orgChipText: { fontSize: 13, color: COLORS.primary, fontWeight: '600' },
+
+  // Stats bar
+  statsBar: {
+    flexDirection: 'row',
+    backgroundColor: COLORS.surface,
+    paddingVertical: 18,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: COLORS.borderLight,
   },
-  statLabel: {
-    fontSize: 13,
-    color: COLORS.textLight,
-    marginTop: 4,
-  },
-  statDivider: {
-    width: 1,
-    backgroundColor: COLORS.border,
-  },
-  section: {
-    marginTop: 24,
-    paddingHorizontal: 16,
-  },
-  sectionTitle: {
-    fontSize: 13,
+  stat: { flex: 1, alignItems: 'center' },
+  statVal: { fontSize: 22, fontWeight: '800', color: COLORS.primary },
+  statLbl: { fontSize: 11, color: COLORS.textMuted, marginTop: 3, fontWeight: '500' },
+  statSep: { width: 1, backgroundColor: COLORS.border, marginVertical: 4 },
+
+  // Sections
+  section: { marginTop: 24, paddingHorizontal: 16 },
+  sectionLabel: {
+    fontSize: 11,
     fontWeight: '700',
     color: COLORS.textMuted,
     letterSpacing: 1,
-    marginBottom: 12,
-    textTransform: 'uppercase',
+    marginBottom: 10,
   },
-  activityCard: {
-    backgroundColor: COLORS.cardBg,
+  card: {
+    backgroundColor: COLORS.surface,
     borderRadius: 16,
     overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 5,
+    elevation: 2,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
   },
-  activityItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-  },
-  activityIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
-  },
-  activityInfo: {
-    flex: 1,
-  },
-  activityLabel: {
-    fontSize: 15,
-    color: COLORS.text,
-  },
-  activityValue: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: COLORS.text,
-    marginTop: 2,
-  },
-  settingsCard: {
-    backgroundColor: COLORS.cardBg,
-    borderRadius: 16,
-    overflow: 'hidden',
-  },
-  settingItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-  },
-  settingLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  settingLabel: {
-    fontSize: 16,
-    color: COLORS.text,
-  },
-  logoutButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    marginTop: 32,
-    marginHorizontal: 16,
-    paddingVertical: 16,
-    backgroundColor: COLORS.cardBg,
-    borderRadius: 12,
-  },
-  logoutText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: COLORS.error,
-  },
+
   version: {
     fontSize: 12,
     color: COLORS.textMuted,
@@ -393,78 +349,42 @@ const styles = StyleSheet.create({
 });
 
 const modalStyles = StyleSheet.create({
-  overlay: {
+  backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: 'rgba(0,0,0,0.45)',
     justifyContent: 'flex-end',
   },
-  content: {
+  sheet: {
     backgroundColor: COLORS.background,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingHorizontal: 24,
     paddingBottom: 40,
+    paddingTop: 16,
   },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+  handle: {
+    width: 40, height: 4,
+    borderRadius: 2,
+    backgroundColor: COLORS.border,
+    alignSelf: 'center',
+    marginBottom: 20,
   },
-  title: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: COLORS.text,
-  },
-  closeBtn: {
-    padding: 4,
-  },
-  body: {
-    padding: 20,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: COLORS.textLight,
-    marginBottom: 16,
-  },
+  sheetTitle: { fontSize: 20, fontWeight: '800', color: COLORS.text, marginBottom: 6 },
+  sheetSub: { fontSize: 14, color: COLORS.textLight, lineHeight: 20, marginBottom: 20 },
   input: {
-    backgroundColor: COLORS.backgroundDark || '#F5F5F5',
+    backgroundColor: COLORS.backgroundDark,
     borderRadius: 12,
-    padding: 16,
+    padding: 15,
     fontSize: 16,
     color: COLORS.text,
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: COLORS.border,
     marginBottom: 20,
   },
-  buttonRow: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  button: {
-    flex: 1,
-    paddingVertical: 14,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  cancelBtn: {
-    backgroundColor: COLORS.backgroundDark || '#F5F5F5',
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  cancelBtnText: {
-    color: COLORS.text,
-    fontWeight: '600',
-    fontSize: 16,
-  },
-  saveBtn: {
-    backgroundColor: COLORS.primary,
-  },
-  saveBtnText: {
-    color: '#FFF',
-    fontWeight: '600',
-    fontSize: 16,
-  },
+  buttons: { flexDirection: 'row', gap: 12 },
+  btn: { flex: 1, paddingVertical: 14, borderRadius: 12, alignItems: 'center' },
+  cancelBtn: { backgroundColor: COLORS.surfaceElevated, borderWidth: 1, borderColor: COLORS.border },
+  saveBtn: { backgroundColor: COLORS.primary, shadowColor: COLORS.primary, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.25, shadowRadius: 8, elevation: 4 },
+  cancelText: { fontSize: 15, fontWeight: '600', color: COLORS.textLight },
+  saveText: { fontSize: 15, fontWeight: '700', color: '#fff' },
 });

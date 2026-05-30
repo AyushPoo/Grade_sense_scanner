@@ -76,6 +76,7 @@ export interface ScanSessionSettings {
   scan_question_paper: boolean;
   scan_model_answer: boolean;
   page_mode: 'single' | 'double'; // single = 1 page per capture, double = 2 pages (split left/right)
+  grading_mode?: 'strict' | 'balanced' | 'conceptual' | 'lenient';
 }
 
 export interface ScanSession {
@@ -88,6 +89,7 @@ export interface ScanSession {
   exam_date?: string | null;
   org_id?: string;
   user_id?: string;
+  exam_id?: string;
   created_at: string;
   status: 'scanning' | 'ready' | 'uploading' | 'uploaded' | 'failed';
   upload_progress: number;

@@ -219,8 +219,14 @@ export async function uploadSessionToWebApp(
       throw new Error(`Failed to finalize/grade session: Status ${compRes.status} - ${txt}`);
     }
 
-    updateStatus(currentSessionId, 'uploaded', 100);
-    console.log(`Session ${currentSessionId} successfully synced via multipart upload.`);
+    let examId = undefined;
+    try {
+      const compData = await compRes.json();
+      examId = compData.exam_id;
+    } catch (_) {}
+
+    updateStatus(currentSessionId, 'uploaded', 100, examId);
+    console.log(`Session ${currentSessionId} successfully synced via multipart upload. exam_id=${examId}`);
 
   } catch (error) {
     console.error('Upload failed:', error);
