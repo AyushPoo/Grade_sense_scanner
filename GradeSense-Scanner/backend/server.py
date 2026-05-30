@@ -1793,159 +1793,187 @@ async def enhance_image_file_endpoint(
 
 @api_router.get("/v1/exams/{exam_id}/submissions")
 async def get_exam_submissions_proxy(exam_id: str, authorization: Optional[str] = Header(None)):
-    """Get exam submissions (proxied to webapp or fallback to mock)"""
-    webapp_url = os.environ.get("WEBAPP_URL")
-    token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
-    
-    if webapp_url and token != "sess_mock_token_12345":
-        try:
-            async with httpx.AsyncClient() as client_http:
-                response = await client_http.get(
-                    f"{webapp_url.rstrip('/')}/api/v1/exams/{exam_id}/submissions",
-                    headers={"Authorization": f"Bearer {token}", "Bypass-Tunnel-Reminder": "true"},
-                    timeout=30.0
-                )
-                if response.status_code == 200:
-                    return response.json()
-                logger.warn(f"Proxy submissions returned status {response.status_code}: {response.text}")
-        except Exception as e:
-            logger.error(f"Error proxying exam submissions: {e}")
+    """Get exam submissions - reads directly from Neon PostgreSQL (always reachable from Render)"""
+    user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
 
-    # Mock Fallback: Lookup by exam_id in scan_sessions
+    if webapp_db_url:
+        try:
+            conn = await asyncpg.connect(webapp_db_url)
+            rows = await conn.fetch(
+                '''
+                SELECT s.id, s.student_name, s.roll_number, s.total_score, e.total_marks, s.status
+                FROM submissions s
+                JOIN exams e ON e.id = s.exam_id
+                WHERE s.exam_id = $1
+                ORDER BY s.roll_number ASC NULLS LAST
+                ''',
+                exam_id
+            )
+            await conn.close()
+            submissions = [
+                {
+                    "id": str(r["id"]),
+                    "studentName": r["student_name"] or "Unknown",
+                    "studentRollNumber": r["roll_number"] or "",
+                    "totalScore": r["total_score"] or 0,
+                    "totalMarks": r["total_marks"] or 100,
+                    "status": r["status"] or "graded"
+                }
+                for r in rows
+            ]
+            return {"data": submissions, "total": len(submissions)}
+        except Exception as e:
+            logger.error(f"Error querying Neon for submissions list: {e}")
+
+    # MongoDB fallback
     session = await db.scan_sessions.find_one({"exam_id": exam_id})
     if not session:
-        # Fallback to look up any completed session
-        session = await db.scan_sessions.find_one({"status": "completed"})
+        session = await db.scan_sessions.find_one({"status": "completed", "user_id": user.user_id})
 
     students_list = []
     if session:
         students = session.get("students", [])
         for idx, student in enumerate(students):
             students_list.append({
-                "id": f"sub_mock_{exam_id}_{idx}",
+                "id": f"sub_local_{exam_id}_{idx}",
                 "studentName": student.get("label") or f"Student #{idx + 1}",
                 "studentRollNumber": student.get("roll_number") or str(10 + idx),
-                "totalScore": 16 + (idx * 3) % 9,
-                "totalMarks": session.get("total_marks") or 25,
-                "status": "graded"
+                "totalScore": 0,
+                "totalMarks": session.get("total_marks") or 100,
+                "status": "pending"
             })
-    else:
-        # Hardcoded mocks if no session exists at all
-        students_list = [
-            {"id": f"sub_mock_{exam_id}_0", "studentName": "Aarav Sharma", "studentRollNumber": "10", "totalScore": 18, "totalMarks": 25, "status": "graded"},
-            {"id": f"sub_mock_{exam_id}_1", "studentName": "Aditi Patel", "studentRollNumber": "11", "totalScore": 22, "totalMarks": 25, "status": "graded"},
-            {"id": f"sub_mock_{exam_id}_2", "studentName": "Amit Kumar", "studentRollNumber": "12", "totalScore": 14, "totalMarks": 25, "status": "graded"}
-        ]
-    return {"data": students_list}
+    return {"data": students_list, "total": len(students_list)}
+
+
+
 
 
 @api_router.get("/v1/submissions/{submission_id}")
 async def get_submission_detail_proxy(submission_id: str, authorization: Optional[str] = Header(None)):
-    """Get submission details (proxied to webapp or fallback to mock)"""
-    webapp_url = os.environ.get("WEBAPP_URL")
-    token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
-    
-    if webapp_url and token != "sess_mock_token_12345" and not submission_id.startswith("sub_mock_"):
-        try:
-            async with httpx.AsyncClient() as client_http:
-                response = await client_http.get(
-                    f"{webapp_url.rstrip('/')}/api/v1/submissions/{submission_id}",
-                    headers={"Authorization": f"Bearer {token}", "Bypass-Tunnel-Reminder": "true"},
-                    timeout=30.0
-                )
-                if response.status_code == 200:
-                    return response.json()
-                logger.warn(f"Proxy submission detail returned status {response.status_code}: {response.text}")
-        except Exception as e:
-            logger.error(f"Error proxying submission detail: {e}")
+    """Get submission details - reads directly from Neon PostgreSQL (always reachable from Render)"""
+    user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
 
-    # Mock Fallback
-    exam_id = "mock"
-    student_idx = 0
-    if submission_id.startswith("sub_mock_"):
+    if webapp_db_url and not submission_id.startswith("sub_local_"):
+        try:
+            conn = await asyncpg.connect(webapp_db_url)
+            # Get submission + scores
+            sub_row = await conn.fetchrow(
+                '''
+                SELECT s.id, s.student_name, s.roll_number, s.total_score, s.status,
+                       s.teacher_feedback, e.total_marks
+                FROM submissions s
+                JOIN exams e ON e.id = s.exam_id
+                WHERE s.id = $1
+                ''',
+                submission_id
+            )
+            if sub_row:
+                score_rows = await conn.fetch(
+                    '''
+                    SELECT sc.id, sc.question_number, sc.obtained_marks, sc.max_marks,
+                           sc.question_text, sc.ai_feedback, sc.teacher_correction
+                    FROM scores sc
+                    WHERE sc.submission_id = $1
+                    ORDER BY sc.question_number ASC
+                    ''',
+                    submission_id
+                )
+                file_rows = await conn.fetch(
+                    '''
+                    SELECT f.id, f.signed_url, f.annotation_signed_url
+                    FROM submission_files f
+                    WHERE f.submission_id = $1
+                    ORDER BY f.page_number ASC
+                    ''',
+                    submission_id
+                )
+                await conn.close()
+                return {
+                    "data": {
+                        "submission": {
+                            "id": str(sub_row["id"]),
+                            "studentName": sub_row["student_name"] or "Unknown",
+                            "studentRollNumber": sub_row["roll_number"] or "",
+                            "totalScore": sub_row["total_score"] or 0,
+                            "totalMarks": sub_row["total_marks"] or 100,
+                            "status": sub_row["status"] or "graded",
+                            "teacherFeedback": sub_row["teacher_feedback"] or ""
+                        },
+                        "files": [
+                            {
+                                "id": str(f["id"]),
+                                "signedUrl": f["signed_url"],
+                                "annotationSignedUrl": f["annotation_signed_url"]
+                            }
+                            for f in file_rows
+                        ],
+                        "scores": [
+                            {
+                                "id": str(sc["id"]),
+                                "questionNumber": sc["question_number"],
+                                "obtainedMarks": sc["obtained_marks"] or 0,
+                                "maxMarks": sc["max_marks"] or 0,
+                                "questionText": sc["question_text"] or "",
+                                "aiFeedback": sc["ai_feedback"],
+                                "teacherCorrection": sc["teacher_correction"]
+                            }
+                            for sc in score_rows
+                        ]
+                    }
+                }
+            await conn.close()
+        except Exception as e:
+            logger.error(f"Error querying Neon for submission detail: {e}")
+
+    # MongoDB / local fallback
+    student_name = "Unknown Student"
+    student_roll = ""
+    pages_urls = []
+    exam_id = "local"
+
+    if submission_id.startswith("sub_local_"):
         parts = submission_id.split("_")
         if len(parts) >= 4:
             exam_id = parts[2]
             try:
                 student_idx = int(parts[3])
             except ValueError:
-                pass
+                student_idx = 0
+            session = await db.scan_sessions.find_one({"exam_id": exam_id})
+            if session:
+                students = session.get("students", [])
+                if student_idx < len(students):
+                    student = students[student_idx]
+                    student_name = student.get("label") or f"Student #{student_idx + 1}"
+                    student_roll = student.get("roll_number") or str(10 + student_idx)
+                    for p in student.get("pages", []):
+                        file_url = p.get("file_url")
+                        if file_url:
+                            pages_urls.append(file_url)
 
-    session = await db.scan_sessions.find_one({"exam_id": exam_id})
-    if not session:
-        session = await db.scan_sessions.find_one({"status": "completed"})
-
-    student_name = "Aarav Sharma"
-    student_roll = "10"
-    pages_urls = []
-    
-    if session:
-        students = session.get("students", [])
-        if student_idx < len(students):
-            student = students[student_idx]
-            student_name = student.get("label") or f"Student #{student_idx + 1}"
-            student_roll = student.get("roll_number") or str(10 + student_idx)
-            for p in student.get("pages", []):
-                file_url = p.get("file_url")
-                if file_url:
-                    pages_urls.append(file_url)
-    
     if not pages_urls:
-        pages_urls = ["https://placehold.co/600x800/png?text=Mock+Answer+Sheet"]
+        pages_urls = ["https://placehold.co/600x800/png?text=Answer+Sheet+Loading"]
 
-    scores = [
-        {
-            "id": f"sc_{submission_id}_1",
-            "questionNumber": "Q1",
-            "obtainedMarks": 4,
-            "maxMarks": 5,
-            "questionText": "Explain the concept of photosynthesis and write its balanced chemical equation.",
-            "aiFeedback": "The student correctly explained the role of chlorophyll and light, and provided the chemical equation: 6CO2 + 6H2O -> C6H12O6 + 6O2. Marks awarded for chemical formula correctness.",
-            "teacherCorrection": None
-        },
-        {
-            "id": f"sc_{submission_id}_2",
-            "questionNumber": "Q2",
-            "obtainedMarks": 3,
-            "maxMarks": 5,
-            "questionText": "Define Newton's Second Law of Motion and provide a real-life example.",
-            "aiFeedback": "Defined F=ma correctly. The example of pushing a car was generic but valid. Partially missed the acceleration proportionality explanation.",
-            "teacherCorrection": None
-        },
-        {
-            "id": f"sc_{submission_id}_3",
-            "questionNumber": "Q3",
-            "obtainedMarks": 5,
-            "maxMarks": 5,
-            "questionText": "Differentiate between mitosis and meiosis division with three distinct points.",
-            "aiFeedback": "Excellent response. Described daughter cells count (2 vs 4), chromosome number preservation, and somatic vs sex cell context flawlessly.",
-            "teacherCorrection": None
-        }
-    ]
-
-    files = []
-    for p_idx, url in enumerate(pages_urls):
-        files.append({
-            "id": f"f_{submission_id}_{p_idx}",
-            "signedUrl": url,
-            "annotationSignedUrl": None
-        })
-
+    files = [{"id": f"f_{submission_id}_{i}", "signedUrl": url, "annotationSignedUrl": None} for i, url in enumerate(pages_urls)]
     return {
         "data": {
             "submission": {
                 "id": submission_id,
                 "studentName": student_name,
                 "studentRollNumber": student_roll,
-                "totalScore": sum(s["obtainedMarks"] for s in scores),
-                "totalMarks": sum(s["maxMarks"] for s in scores),
-                "status": "graded",
-                "teacherFeedback": "Well organized and clear explanations."
+                "totalScore": 0,
+                "totalMarks": 100,
+                "status": "pending",
+                "teacherFeedback": ""
             },
             "files": files,
-            "scores": scores
+            "scores": []
         }
     }
+
+
 
 
 @api_router.post("/v1/submissions/{submission_id}/review")
@@ -1975,48 +2003,78 @@ async def post_submission_review_proxy(submission_id: str, data: dict, authoriza
 
 @api_router.get("/v1/analytics/overview")
 async def get_analytics_overview_proxy(authorization: Optional[str] = Header(None)):
-    """Get analytics overview (proxied to webapp or fallback to mock)"""
-    webapp_url = os.environ.get("WEBAPP_URL")
-    token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
-    
-    if webapp_url and token != "sess_mock_token_12345":
-        try:
-            async with httpx.AsyncClient() as client_http:
-                response = await client_http.get(
-                    f"{webapp_url.rstrip('/')}/api/v1/analytics/overview",
-                    headers={"Authorization": f"Bearer {token}", "Bypass-Tunnel-Reminder": "true"},
-                    timeout=30.0
-                )
-                if response.status_code == 200:
-                    return response.json()
-                logger.warn(f"Proxy analytics overview returned status {response.status_code}: {response.text}")
-        except Exception as e:
-            logger.error(f"Error proxying analytics overview: {e}")
+    """Get analytics overview - reads directly from Neon PostgreSQL (always reachable from Render)"""
+    user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
 
-    # Fallback / Mock
-    sessions = await db.scan_sessions.find({"status": "completed"}).to_list(100)
+    if webapp_db_url:
+        try:
+            conn = await asyncpg.connect(webapp_db_url)
+            # Get exam stats for this teacher
+            rows = await conn.fetch(
+                '''
+                SELECT e.id, e.name, e.exam_date, e.total_marks, e.status,
+                       COUNT(s.id) as submission_count,
+                       COUNT(CASE WHEN s.is_reviewed = true THEN 1 END) as reviewed_count,
+                       AVG(s.total_score::float / NULLIF(e.total_marks, 0) * 100) as avg_pct
+                FROM exams e
+                LEFT JOIN submissions s ON s.exam_id = e.id
+                WHERE e.teacher_id = $1
+                GROUP BY e.id, e.name, e.exam_date, e.total_marks, e.status
+                ORDER BY e.created_at DESC
+                LIMIT 10
+                ''',
+                user.user_id
+            )
+            await conn.close()
+
+            recent_exams = []
+            total_submissions = 0
+            total_reviewed = 0
+            avg_list = []
+            for r in rows:
+                recent_exams.append({
+                    "id": str(r["id"]),
+                    "name": r["name"],
+                    "examDate": r["exam_date"].isoformat() if r["exam_date"] else None,
+                    "totalMarks": r["total_marks"],
+                    "status": r["status"] or "graded"
+                })
+                total_submissions += r["submission_count"] or 0
+                total_reviewed += r["reviewed_count"] or 0
+                if r["avg_pct"] is not None:
+                    avg_list.append(float(r["avg_pct"]))
+
+            avg_pct = round(sum(avg_list) / len(avg_list), 1) if avg_list else 0.0
+            return {
+                "data": {
+                    "examsCount": len(recent_exams),
+                    "submissionsCount": total_submissions,
+                    "reviewedCount": total_reviewed,
+                    "averagePercentage": avg_pct,
+                    "recentExams": recent_exams
+                }
+            }
+        except Exception as e:
+            logger.error(f"Error querying Neon for analytics: {e}")
+
+    # Fallback: MongoDB scan sessions
+    sessions = await db.scan_sessions.find({"status": "completed", "user_id": user.user_id}).to_list(100)
     recent_exams = []
     for s in sessions:
         recent_exams.append({
-            "id": s.get("exam_id") or f"exam_mock_{s['session_id']}",
+            "id": s.get("exam_id") or f"exam_local_{s['session_id']}",
             "name": s["session_name"],
             "examDate": s.get("exam_date"),
             "totalMarks": s.get("total_marks") or 100,
             "status": "graded"
         })
-
-    if not recent_exams:
-        recent_exams = [
-            {"id": "exam_mock_1", "name": "Grade 10 Science Midterm", "examDate": "2026-05-15", "totalMarks": 100, "status": "graded"},
-            {"id": "exam_mock_2", "name": "Grade 11 Physics Quiz 1", "examDate": "2026-05-20", "totalMarks": 50, "status": "graded"}
-        ]
-
     return {
         "data": {
             "examsCount": len(recent_exams),
             "submissionsCount": len(recent_exams) * 5,
-            "reviewedCount": len(recent_exams) * 3,
-            "averagePercentage": 78.5,
+            "reviewedCount": 0,
+            "averagePercentage": 0.0,
             "recentExams": recent_exams
         }
     }
@@ -2024,104 +2082,102 @@ async def get_analytics_overview_proxy(authorization: Optional[str] = Header(Non
 
 @api_router.get("/v1/exams")
 async def list_exams_v1(authorization: Optional[str] = Header(None)):
-    """List exams (proxied to webapp or fallback)"""
-    webapp_url = os.environ.get("WEBAPP_URL")
-    token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
-    
-    if webapp_url and token != "sess_mock_token_12345":
+    """List exams - reads directly from Neon PostgreSQL (always reachable from Render)"""
+    user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+
+    if webapp_db_url:
         try:
-            async with httpx.AsyncClient() as client_http:
-                response = await client_http.get(
-                    f"{webapp_url.rstrip('/')}/api/v1/exams",
-                    headers={"Authorization": f"Bearer {token}", "Bypass-Tunnel-Reminder": "true"},
-                    timeout=15.0
-                )
-                if response.status_code == 200:
-                    return response.json()
-                logger.warn(f"Proxy list exams returned status {response.status_code}: {response.text}")
+            conn = await asyncpg.connect(webapp_db_url)
+            rows = await conn.fetch(
+                '''
+                SELECT id, name, batch_id, subject_id, total_marks, exam_date, status, grading_mode
+                FROM exams
+                WHERE teacher_id = $1
+                ORDER BY created_at DESC
+                LIMIT 50
+                ''',
+                user.user_id
+            )
+            await conn.close()
+            exams = [
+                {
+                    "id": str(r["id"]),
+                    "name": r["name"],
+                    "batchId": str(r["batch_id"]) if r["batch_id"] else None,
+                    "subjectId": str(r["subject_id"]) if r["subject_id"] else None,
+                    "totalMarks": r["total_marks"],
+                    "examDate": r["exam_date"].isoformat() if r["exam_date"] else None,
+                    "status": r["status"] or "graded",
+                    "gradingMode": r["grading_mode"]
+                }
+                for r in rows
+            ]
+            return {"data": exams}
         except Exception as e:
-            logger.error(f"Error fetching exams: {e}")
-            
-    # Mock / Fallback: List scan sessions or mock exams
-    sessions = await db.scan_sessions.find({"status": "completed"}).to_list(100)
-    exams = []
-    for s in sessions:
-        exams.append({
-            "id": s.get("exam_id") or f"exam_mock_{s['session_id']}",
+            logger.error(f"Error querying Neon for exams list: {e}")
+
+    # MongoDB fallback
+    sessions = await db.scan_sessions.find({"status": "completed", "user_id": user.user_id}).to_list(100)
+    exams = [
+        {
+            "id": s.get("exam_id") or f"exam_local_{s['session_id']}",
             "name": s["session_name"],
-            "batchId": s.get("batch_id") or "bat_4fgazfn34Vc9F6",
-            "subjectId": s.get("subject_id") or "",
+            "batchId": s.get("batch_id"),
+            "subjectId": s.get("subject_id"),
             "totalMarks": s.get("total_marks") or 100,
             "examDate": s.get("exam_date"),
             "status": "graded"
-        })
-        
-    if not exams:
-        exams = [
-            {"id": "exam_mock_1", "name": "Grade 10 Science Midterm", "batchId": "bat_4fgazfn34Vc9F6", "subjectId": "sub_science", "totalMarks": 100, "examDate": "2026-05-15", "status": "graded"},
-            {"id": "exam_mock_2", "name": "Grade 11 Physics Quiz 1", "batchId": "bat_physics11", "subjectId": "sub_physics", "totalMarks": 50, "examDate": "2026-05-20", "status": "graded"}
-        ]
+        }
+        for s in sessions
+    ]
     return {"data": exams}
 
 
 @api_router.get("/v1/re-evaluations")
 async def list_reevaluations_proxy(exam_id: Optional[str] = None, authorization: Optional[str] = Header(None)):
-    """List student reevaluation requests (proxied to webapp or fallback)"""
-    webapp_url = os.environ.get("WEBAPP_URL")
-    token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
-    
-    if webapp_url and token != "sess_mock_token_12345":
+    """List student reevaluation requests - reads directly from Neon PostgreSQL"""
+    user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+
+    if webapp_db_url:
         try:
-            async with httpx.AsyncClient() as client_http:
-                url = f"{webapp_url.rstrip('/')}/api/v1/re-evaluations"
-                params = {}
-                if exam_id:
-                    params["examId"] = exam_id
-                response = await client_http.get(
-                    url,
-                    params=params,
-                    headers={"Authorization": f"Bearer {token}", "Bypass-Tunnel-Reminder": "true"},
-                    timeout=15.0
-                )
-                if response.status_code == 200:
-                    return response.json()
-                logger.warn(f"Proxy list re-evaluations returned status {response.status_code}: {response.text}")
+            conn = await asyncpg.connect(webapp_db_url)
+            query = '''
+                SELECT r.id, r.student_name, r.roll_number, r.reason, r.status,
+                       r.teacher_response, r.created_at, e.name as exam_name, e.id as exam_id
+                FROM re_evaluations r
+                JOIN submissions s ON s.id = r.submission_id
+                JOIN exams e ON e.id = s.exam_id
+                WHERE e.teacher_id = $1
+            '''
+            params = [user.user_id]
+            if exam_id:
+                query += " AND e.id = $2"
+                params.append(exam_id)
+            query += " ORDER BY r.created_at DESC LIMIT 50"
+
+            rows = await conn.fetch(query, *params)
+            await conn.close()
+            data = [
+                {
+                    "id": str(r["id"]),
+                    "studentName": r["student_name"] or "Unknown",
+                    "rollNumber": r["roll_number"] or "",
+                    "reason": r["reason"] or "",
+                    "status": r["status"] or "pending",
+                    "teacherResponse": r["teacher_response"],
+                    "examName": r["exam_name"],
+                    "examId": str(r["exam_id"])
+                }
+                for r in rows
+            ]
+            return {"data": data}
         except Exception as e:
-            logger.error(f"Error proxying list re-evaluations: {e}")
-            
-    # Mock Fallback
-    return {
-        "data": [
-            {
-                "id": "re_mock_1",
-                "submissionId": "sub_mock_1",
-                "examId": "exam_mock_1",
-                "studentId": "user_mock_student",
-                "studentName": "Aarav Sharma",
-                "examName": "Grade 10 Science Midterm",
-                "questionNumbersJson": "[\"Q2\", \"Q4\"]",
-                "reason": "AI missed my calculation step in Q2 which should give me +2 marks.",
-                "status": "pending",
-                "teacherResponse": None,
-                "resolvedAt": None,
-                "createdAt": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
-            },
-            {
-                "id": "re_mock_2",
-                "submissionId": "sub_mock_2",
-                "examId": "exam_mock_1",
-                "studentId": "user_mock_student_2",
-                "studentName": "Aditi Patel",
-                "examName": "Grade 10 Science Midterm",
-                "questionNumbersJson": "[\"Q1\"]",
-                "reason": "My explanation is conceptual but strict mode marked it 0.",
-                "status": "resolved",
-                "teacherResponse": "Reviewed and updated marks to 4/5.",
-                "resolvedAt": datetime.now(timezone.utc).isoformat(),
-                "createdAt": (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
-            }
-        ]
-    }
+            logger.error(f"Error querying Neon for re-evaluations: {e}")
+
+    return {"data": []}
+
 
 
 class ResolveReEvaluationRequest(BaseModel):
@@ -2160,37 +2216,54 @@ async def resolve_reevaluation_proxy(
 
 @api_router.get("/v1/exams/{exam_id}/jobs")
 async def get_exam_jobs_proxy(exam_id: str, authorization: Optional[str] = Header(None)):
-    """Get jobs for an exam (proxied to webapp or fallback to mock)"""
-    webapp_url = os.environ.get("WEBAPP_URL")
-    token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
-    
-    if webapp_url and token != "sess_mock_token_12345":
-        try:
-            async with httpx.AsyncClient() as client_http:
-                response = await client_http.get(
-                    f"{webapp_url.rstrip('/')}/api/v1/exams/{exam_id}/jobs",
-                    headers={"Authorization": f"Bearer {token}", "Bypass-Tunnel-Reminder": "true"},
-                    timeout=30.0
-                )
-                if response.status_code == 200:
-                    return response.json()
-                logger.warn(f"Proxy exam jobs returned status {response.status_code}: {response.text}")
-        except Exception as e:
-            logger.error(f"Error proxying exam jobs: {e}")
+    """Get grading jobs for an exam - reads directly from Neon PostgreSQL (always reachable from Render)"""
+    user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
 
-    # Fallback completed mock
-    return {
-        "data": [
-            {
-                "id": f"job_mock_{exam_id}",
+    if webapp_db_url:
+        try:
+            conn = await asyncpg.connect(webapp_db_url)
+            rows = await conn.fetch(
+                '''
+                SELECT j.id, j.type, j.status, j.progress, j.processed_items, j.total_items, j.updated_at
+                FROM jobs j
+                WHERE j.exam_id = $1
+                ORDER BY j.created_at DESC
+                LIMIT 5
+                ''',
+                exam_id
+            )
+            await conn.close()
+            if rows:
+                jobs = [
+                    {
+                        "id": str(r["id"]),
+                        "type": r["type"] or "bulk_grade",
+                        "status": r["status"] or "processing",
+                        "progress": float(r["progress"]) if r["progress"] is not None else 0.0,
+                        "processedItems": r["processed_items"] or 0,
+                        "totalItems": r["total_items"] or 0
+                    }
+                    for r in rows
+                ]
+                return {"data": jobs}
+        except Exception as e:
+            logger.error(f"Error querying Neon for exam jobs: {e}")
+
+    # Fallback: check scan session status in MongoDB
+    session = await db.scan_sessions.find_one({"exam_id": exam_id})
+    if session and session.get("status") == "completed":
+        return {
+            "data": [{
+                "id": f"job_local_{exam_id}",
                 "type": "bulk_grade",
-                "status": "completed",
-                "progress": 1.0,
-                "processedItems": 5,
-                "totalItems": 5
-            }
-        ]
-    }
+                "status": "processing",
+                "progress": 0.1,
+                "processedItems": 0,
+                "totalItems": len(session.get("students", []))
+            }]
+        }
+    return {"data": []}
 
 
 @api_router.post("/v1/exams/{exam_id}/regrade")
