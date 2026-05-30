@@ -14,7 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import { COLORS, getBackendUrl, getWebappUrl } from '../../src/config';
+import { COLORS } from '../../src/config';
 import { useAuthStore } from '../../src/store/authStore';
 import { useScanStore } from '../../src/store/scanStore';
 
@@ -79,12 +79,8 @@ export default function ProfileScreen() {
     user, 
     logout, 
     updateUserOrgName,
-    customBackendUrl,
-    customWebappUrl,
     defaultGradingMode,
     cameraResolution,
-    setCustomBackendUrl,
-    setCustomWebappUrl,
     setDefaultGradingMode,
     setCameraResolution
   } = useAuthStore();
@@ -93,11 +89,6 @@ export default function ProfileScreen() {
   // Org modal
   const [showOrgModal, setShowOrgModal] = useState(false);
   const [orgInput, setOrgInput] = useState(user?.org_name || '');
-
-  // Endpoint settings modal
-  const [showEndpointModal, setShowEndpointModal] = useState(false);
-  const [backendInput, setBackendInput] = useState(customBackendUrl || getBackendUrl());
-  const [webappInput, setWebappInput] = useState(customWebappUrl || getWebappUrl());
 
   // Scanner settings modal
   const [showScannerModal, setShowScannerModal] = useState(false);
@@ -115,25 +106,7 @@ export default function ProfileScreen() {
     setShowOrgModal(false);
   };
 
-  const handleSaveEndpoints = () => {
-    if (!backendInput.trim() || !webappInput.trim()) {
-      Alert.alert('Error', 'API endpoints cannot be blank.');
-      return;
-    }
-    setCustomBackendUrl(backendInput.trim());
-    setCustomWebappUrl(webappInput.trim());
-    setShowEndpointModal(false);
-    Alert.alert('Success', 'Server connection endpoints updated.');
-  };
 
-  const handleResetEndpoints = () => {
-    setCustomBackendUrl(null);
-    setCustomWebappUrl(null);
-    setBackendInput('https://gradesense-scanner-backend.onrender.com');
-    setWebappInput('http://8.231.83.249:8000');
-    setShowEndpointModal(false);
-    Alert.alert('Endpoints Reset', 'Using default Render production hosts.');
-  };
 
   const handleSaveScannerSettings = () => {
     setDefaultGradingMode(selectedGradingMode);
@@ -258,18 +231,6 @@ export default function ProfileScreen() {
           <Text style={styles.sectionLabel}>APP CONFIGURATION</Text>
           <View style={styles.card}>
             <SettingRow
-              icon="link-outline"
-              label="Server Connection URLs"
-              sublabel={customBackendUrl ? 'Custom enrouted' : 'Production hosts'}
-              iconBg={COLORS.infoLight}
-              iconColor={COLORS.info}
-              onPress={() => {
-                setBackendInput(customBackendUrl || getBackendUrl());
-                setWebappInput(customWebappUrl || getWebappUrl());
-                setShowEndpointModal(true);
-              }}
-            />
-            <SettingRow
               icon="camera-outline"
               label="Scanner Preferences"
               sublabel={`Mode: ${defaultGradingMode.toUpperCase()} • Res: ${cameraResolution.toUpperCase()}`}
@@ -359,47 +320,6 @@ export default function ProfileScreen() {
         </View>
       </Modal>
 
-      {/* Endpoint URL Config Modal */}
-      <Modal visible={showEndpointModal} transparent animationType="slide" onRequestClose={() => setShowEndpointModal(false)}>
-        <View style={modalStyles.backdrop}>
-          <View style={modalStyles.sheet}>
-            <View style={modalStyles.handle} />
-            <Text style={modalStyles.sheetTitle}>Server Connection URLs</Text>
-            <Text style={modalStyles.sheetSub}>Configure target API endpoints for local testing or custom deployments.</Text>
-            
-            <Text style={styles.fieldLabel}>BACKEND API URL</Text>
-            <TextInput
-              style={modalStyles.input}
-              value={backendInput}
-              onChangeText={setBackendInput}
-              placeholder="https://your-backend.com"
-              placeholderTextColor={COLORS.textMuted}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-            
-            <Text style={styles.fieldLabel}>WEBAPP URL</Text>
-            <TextInput
-              style={modalStyles.input}
-              value={webappInput}
-              onChangeText={setWebappInput}
-              placeholder="http://your-webapp-ip:8000"
-              placeholderTextColor={COLORS.textMuted}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-
-            <View style={modalStyles.buttons}>
-              <TouchableOpacity style={[modalStyles.btn, modalStyles.cancelBtn, { flex: 0.8 }]} onPress={handleResetEndpoints}>
-                <Text style={[modalStyles.cancelText, { color: COLORS.error }]}>Reset Defaults</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[modalStyles.btn, modalStyles.saveBtn]} onPress={handleSaveEndpoints}>
-                <Text style={modalStyles.saveText}>Save Connections</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
 
       {/* Scanner Preferences Modal */}
       <Modal visible={showScannerModal} transparent animationType="slide" onRequestClose={() => setShowScannerModal(false)}>

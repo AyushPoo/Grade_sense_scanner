@@ -197,25 +197,31 @@ export default function ManageScreen() {
     };
   }, [savedSessions]);
 
-  const fetchOverview = async () => {
+  const fetchOverview = async (silent = false) => {
     if (!token) {
       setIsLoading(false);
       setIsOffline(true);
       return;
     }
+    if (!silent) setIsLoading(true);
     try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
       const res = await fetch(`${getBackendUrl()}/api/v1/analytics/overview`, {
         headers: { 'Authorization': `Bearer ${token}` },
+        signal: controller.signal,
       });
+      clearTimeout(timeout);
       if (res.ok) {
         const json = await res.json();
         setOverview(json.data);
         setIsOffline(false);
       } else {
-        setIsOffline(true);
+        // Only mark offline if we have no cached data to show
+        if (!overview) setIsOffline(true);
       }
     } catch {
-      setIsOffline(true);
+      if (!overview) setIsOffline(true);
     } finally {
       setIsLoading(false);
       setRefreshing(false);
@@ -615,10 +621,17 @@ export default function ManageScreen() {
             // ==================== ANALYTICS VIEW ====================
             <View>
               {isOffline && (
-                <View style={styles.offlineBanner}>
+                <TouchableOpacity 
+                  style={styles.offlineBanner}
+                  onPress={() => fetchOverview(true)}
+                  activeOpacity={0.8}
+                >
                   <Ionicons name="cloud-offline" size={16} color={COLORS.warning} />
-                  <Text style={styles.offlineText}>Offline – showing local data only</Text>
-                </View>
+                  <Text style={styles.offlineText}>Could not reach server – showing local data</Text>
+                  <View style={{ backgroundColor: COLORS.warning, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 }}>
+                    <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>Retry</Text>
+                  </View>
+                </TouchableOpacity>
               )}
 
               {!isOffline && overview && (

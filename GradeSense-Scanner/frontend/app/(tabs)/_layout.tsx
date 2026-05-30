@@ -65,7 +65,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="manage"
         options={{
-          title: 'Analytics',
+          title: 'Manage',
           tabBarIcon: ({ color, focused }) => (
             <TabIcon name={focused ? 'bar-chart' : 'bar-chart-outline'} color={color} focused={focused} />
           ),
