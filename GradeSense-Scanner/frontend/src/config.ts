@@ -1,13 +1,30 @@
-// GradeSense Scanner Configuration
-const API_BASE_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+import { useAuthStore } from './store/authStore';
 
-if (!API_BASE_URL) {
-  throw new Error('Missing required environment variable: EXPO_PUBLIC_BACKEND_URL');
-}
+// Dynamic URL Getters
+export const getBackendUrl = (): string => {
+  try {
+    const custom = useAuthStore.getState().customBackendUrl;
+    if (custom) return custom;
+  } catch (_) {}
+  return process.env.EXPO_PUBLIC_BACKEND_URL || 'https://gradesense-scanner-backend.onrender.com';
+};
+
+export const getWebappUrl = (): string => {
+  try {
+    const custom = useAuthStore.getState().customWebappUrl;
+    if (custom) return custom;
+  } catch (_) {}
+  return process.env.EXPO_PUBLIC_WEBAPP_URL || "http://8.231.83.249:8000";
+};
+
+// Backwards compatibility static mappings with dynamic evaluation
+export const WEBAPP_URL = getWebappUrl();
 
 export const CONFIG = {
   // API
-  API_BASE_URL,
+  get API_BASE_URL() {
+    return getBackendUrl();
+  },
 
   // Camera
   CAMERA_RESOLUTION: 'medium' as const,

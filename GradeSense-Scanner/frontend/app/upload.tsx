@@ -12,13 +12,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { COLORS } from '../src/config';
+import { COLORS, WEBAPP_URL } from '../src/config';
 import { useScanStore } from '../src/store/scanStore';
 import { useShallow } from 'zustand/react/shallow';
 import { ScanSession } from '../src/types';
 import { uploadSessionToWebApp } from '../src/api/export';
-
-const WEBAPP_URL = 'https://app.gradesense.in';
 
 // Simple Progress Bar Component
 const ProgressBar = ({ progress }: { progress: number }) => (
@@ -212,27 +210,30 @@ export default function UploadScreen() {
               All {session.stats.total_pages} pages uploaded successfully
             </Text>
 
-            <View style={styles.nextSteps}>
-              <Text style={styles.nextStepsTitle}>Next Steps:</Text>
-              <Text style={styles.nextStepsItem}>1. Open GradeSense webapp</Text>
-              <Text style={styles.nextStepsItem}>2. Go to the exam</Text>
-              <Text style={styles.nextStepsItem}>3. Start AI grading</Text>
+            <View style={[styles.nextSteps, { backgroundColor: '#F0F9FF', borderColor: '#BEE3F8', borderWidth: 1 }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <Ionicons name="sparkles" size={18} color={COLORS.primary} />
+                <Text style={[styles.nextStepsTitle, { color: COLORS.primary, marginBottom: 0 }]}>AI Grading Started</Text>
+              </View>
+              <Text style={styles.nextStepsItem}>• Submissions are being graded by AI in the background.</Text>
+              <Text style={styles.nextStepsItem}>• A live progress card will appear on your Home tab.</Text>
+              <Text style={styles.nextStepsItem}>• When done, tap the card to review student marks on your phone.</Text>
             </View>
 
             <TouchableOpacity
               style={styles.openWebappButton}
-              onPress={() => Linking.openURL(WEBAPP_URL)}
+              onPress={() => router.replace('/(tabs)/home')}
             >
-              <Ionicons name="globe" size={20} color="#fff" />
-              <Text style={styles.openWebappText}>Open GradeSense Webapp</Text>
+              <Ionicons name="home" size={20} color="#fff" />
+              <Text style={styles.openWebappText}>Back to Home & Track Progress</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={styles.homeButton}
-              onPress={() => router.replace('/(tabs)/home')}
+              style={[styles.homeButton, { borderColor: COLORS.border, borderWidth: 1, marginTop: 8 }]}
+              onPress={() => Linking.openURL(WEBAPP_URL)}
             >
-              <Ionicons name="home" size={20} color={COLORS.primary} />
-              <Text style={styles.homeButtonText}>Back to Home</Text>
+              <Ionicons name="globe-outline" size={20} color={COLORS.textLight} style={{ marginRight: 8 }} />
+              <Text style={[styles.homeButtonText, { color: COLORS.textLight }]}>Open GradeSense Webapp</Text>
             </TouchableOpacity>
           </View>
         ) : isUploading ? (

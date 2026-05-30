@@ -7,12 +7,16 @@ import {
   ScrollView,
   ActivityIndicator,
   RefreshControl,
+  Alert,
+  Modal,
+  TextInput,
+  LayoutAnimation,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import { COLORS } from '../../src/config';
+import { COLORS, getBackendUrl } from '../../src/config';
 import { useAuthStore } from '../../src/store/authStore';
 import { useScanStore } from '../../src/store/scanStore';
 
@@ -28,6 +32,19 @@ interface TeacherOverview {
     totalMarks: number;
     status: string;
   }>;
+}
+
+interface Batch {
+  batch_id: string;
+  name: string;
+  student_count: number;
+}
+
+interface Student {
+  student_id: string;
+  name: string;
+  roll_number: string;
+  email?: string;
 }
 
 function MetricCard({ value, label, icon, color, bg }: {
@@ -136,13 +153,39 @@ const examStyles = StyleSheet.create({
 export default function ManageScreen() {
   const router = useRouter();
   const token = useAuthStore(s => s.sessionToken);
-  const webappUrl = process.env.EXPO_PUBLIC_WEBAPP_URL;
   const { savedSessions } = useScanStore();
 
+  const [activeTab, setActiveTab] = useState<'analytics' | 'classroom' | 'reevaluation'>('analytics');
   const [overview, setOverview] = useState<TeacherOverview | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [isOffline, setIsOffline] = useState(false);
+
+  // Classroom Management States
+  const [batches, setBatches] = useState<Batch[]>([]);
+  const [loadingBatches, setLoadingBatches] = useState(false);
+  const [expandedBatchId, setExpandedBatchId] = useState<string | null>(null);
+  const [studentsByBatch, setStudentsByBatch] = useState<Record<string, Student[]>>({});
+  const [loadingStudents, setLoadingStudents] = useState<string | null>(null);
+
+  // Re-evaluation States
+  const [reevaluations, setReevaluations] = useState<any[]>([]);
+  const [loadingReevaluations, setLoadingReevaluations] = useState(false);
+  const [showResolveModal, setShowResolveModal] = useState(false);
+  const [activeReeval, setActiveReeval] = useState<any | null>(null);
+  const [resolveAction, setResolveAction] = useState<'approved' | 'rejected'>('approved');
+  const [teacherResponse, setTeacherResponse] = useState('');
+  const [isResolving, setIsResolving] = useState(false);
+
+  // Modals
+  const [showAddBatchModal, setShowAddBatchModal] = useState(false);
+  const [newBatchName, setNewBatchName] = useState('');
+  
+  const [showAddStudentModal, setShowAddStudentModal] = useState(false);
+  const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
+  const [newStudentName, setNewStudentName] = useState('');
+  const [newStudentRoll, setNewStudentRoll] = useState('');
+  const [newStudentEmail, setNewStudentEmail] = useState('');
 
   const localStats = React.useMemo(() => {
     const sessions = Array.isArray(savedSessions) ? savedSessions : [];
@@ -154,15 +197,15 @@ export default function ManageScreen() {
     };
   }, [savedSessions]);
 
-  const fetchData = async () => {
-    if (!token || !webappUrl) {
+  const fetchOverview = async () => {
+    if (!token) {
       setIsLoading(false);
       setIsOffline(true);
       return;
     }
     try {
-      const res = await fetch(`${webappUrl}/api/v1/analytics/overview`, {
-        headers: { 'Authorization': `Bearer ${token}`, 'Bypass-Tunnel-Reminder': 'true' },
+      const res = await fetch(`${getBackendUrl()}/api/v1/analytics/overview`, {
+        headers: { 'Authorization': `Bearer ${token}` },
       });
       if (res.ok) {
         const json = await res.json();
@@ -179,27 +222,388 @@ export default function ManageScreen() {
     }
   };
 
-  useEffect(() => { fetchData(); }, []);
+  const fetchBatches = async () => {
+    if (!token) return;
+    setLoadingBatches(true);
+    try {
+      const res = await fetch(`${getBackendUrl()}/api/batches`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const json = await res.json();
+        setBatches(json.batches || []);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingBatches(false);
+      setRefreshing(false);
+    }
+  };
 
-  const onRefresh = () => { setRefreshing(true); fetchData(); };
+  const fetchStudents = async (batchId: string) => {
+    if (!token) return;
+    setLoadingStudents(batchId);
+    try {
+      const res = await fetch(`${getBackendUrl()}/api/batches/${batchId}/students`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const json = await res.json();
+        setStudentsByBatch(prev => ({ ...prev, [batchId]: json.students || [] }));
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingStudents(null);
+    }
+  };
+
+  const fetchReevaluations = async () => {
+    if (!token) return;
+    setLoadingReevaluations(true);
+    try {
+      const res = await fetch(`${getBackendUrl()}/api/v1/re-evaluations`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const json = await res.json();
+        setReevaluations(json.data || []);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingReevaluations(false);
+      setRefreshing(false);
+    }
+  };
+
+  const handleResolveReeval = async () => {
+    if (!activeReeval || !token) return;
+    if (!teacherResponse.trim()) {
+      Alert.alert('Error', 'Please enter a response/explanation for the student.');
+      return;
+    }
+    setIsResolving(true);
+    try {
+      const res = await fetch(`${getBackendUrl()}/api/v1/re-evaluations/${activeReeval.id}/resolve`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          status: resolveAction,
+          teacherResponse: teacherResponse.trim()
+        })
+      });
+      if (res.ok) {
+        Alert.alert('Success', `Re-evaluation request resolved successfully.`);
+        setShowResolveModal(false);
+        setTeacherResponse('');
+        setActiveReeval(null);
+        fetchReevaluations();
+      } else {
+        const txt = await res.text();
+        Alert.alert('Failed', `Could not resolve re-evaluation: ${txt}`);
+      }
+    } catch (err: any) {
+      Alert.alert('Error', err.message);
+    } finally {
+      setIsResolving(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'analytics') {
+      fetchOverview();
+    } else if (activeTab === 'classroom') {
+      fetchBatches();
+    } else if (activeTab === 'reevaluation') {
+      fetchReevaluations();
+    }
+  }, [activeTab]);
+
+  const onRefresh = () => {
+    setRefreshing(true);
+    if (activeTab === 'analytics') {
+      fetchOverview();
+    } else if (activeTab === 'classroom') {
+      fetchBatches();
+      if (expandedBatchId) {
+        fetchStudents(expandedBatchId);
+      }
+    } else if (activeTab === 'reevaluation') {
+      fetchReevaluations();
+    }
+  };
+
+  const handleAddBatch = async () => {
+    if (!newBatchName.trim()) {
+      Alert.alert('Error', 'Please enter a batch name');
+      return;
+    }
+    try {
+      const res = await fetch(`${getBackendUrl()}/api/batches`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ name: newBatchName })
+      });
+      if (res.ok) {
+        Alert.alert('Success', 'Batch created successfully!');
+        setNewBatchName('');
+        setShowAddBatchModal(false);
+        fetchBatches();
+      } else {
+        const txt = await res.text();
+        Alert.alert('Failed', `Could not create batch: ${txt}`);
+      }
+    } catch (err: any) {
+      Alert.alert('Error', err.message);
+    }
+  };
+
+  const handleDeleteBatch = async (batchId: string, name: string) => {
+    Alert.alert(
+      'Delete Class Batch?',
+      `Are you sure you want to delete "${name}"? All student assignments in this class will be detached.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const res = await fetch(`${getBackendUrl()}/api/batches/${batchId}`, {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${token}` }
+              });
+              if (res.ok) {
+                Alert.alert('Success', 'Batch deleted successfully.');
+                fetchBatches();
+              }
+            } catch (err: any) {
+              Alert.alert('Error', err.message);
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const handleAddStudent = async () => {
+    if (!newStudentName.trim() || !newStudentRoll.trim() || !selectedBatchId) {
+      Alert.alert('Error', 'Name and Roll Number are required.');
+      return;
+    }
+    try {
+      const res = await fetch(`${getBackendUrl()}/api/batches/${selectedBatchId}/students`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          name: newStudentName,
+          rollNumber: newStudentRoll,
+          email: newStudentEmail || undefined
+        })
+      });
+      if (res.ok) {
+        Alert.alert('Success', 'Student added successfully!');
+        setNewStudentName('');
+        setNewStudentRoll('');
+        setNewStudentEmail('');
+        setShowAddStudentModal(false);
+        fetchStudents(selectedBatchId);
+        fetchBatches();
+      } else {
+        const txt = await res.text();
+        Alert.alert('Failed', `Could not invite student: ${txt}`);
+      }
+    } catch (err: any) {
+      Alert.alert('Error', err.message);
+    }
+  };
+
+  const handleDeleteStudent = async (batchId: string, studentId: string, name: string) => {
+    Alert.alert(
+      'Remove Student?',
+      `Are you sure you want to remove "${name}" from this batch?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const res = await fetch(`${getBackendUrl()}/api/batches/${batchId}/students/${studentId}`, {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${token}` }
+              });
+              if (res.ok) {
+                Alert.alert('Success', 'Student removed successfully.');
+                fetchStudents(batchId);
+                fetchBatches();
+              }
+            } catch (err: any) {
+              Alert.alert('Error', err.message);
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const toggleBatchExpand = (batchId: string) => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    if (expandedBatchId === batchId) {
+      setExpandedBatchId(null);
+    } else {
+      setExpandedBatchId(batchId);
+      if (!studentsByBatch[batchId]) {
+        fetchStudents(batchId);
+      }
+    }
+  };
+
+  // Sandbox operations
+  const triggerSandboxSeed = async () => {
+    Alert.alert(
+      'Seed Sandbox Data?',
+      'This will populate subjects, class batches, student lists, and a completed scan session for offline/sandbox testing. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Seed Data',
+          onPress: async () => {
+            setIsLoading(true);
+            try {
+              const res = await fetch(`${getBackendUrl()}/api/backdoor/seed`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}` }
+              });
+              if (res.ok) {
+                Alert.alert('Success', 'Sandbox mock data enqueued and seeded successfully! Refreshing...');
+                onRefresh();
+              }
+            } catch (err: any) {
+              Alert.alert('Error', err.message);
+            } finally {
+              setIsLoading(false);
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const triggerSandboxReset = async () => {
+    Alert.alert(
+      'Wipe Local Collections?',
+      'This will permanently clear all scan sessions, enqueued exams, students, and batches from your sandbox MongoDB instance. Are you sure?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear All',
+          style: 'destructive',
+          onPress: async () => {
+            setIsLoading(true);
+            try {
+              const res = await fetch(`${getBackendUrl()}/api/backdoor/reset`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}` }
+              });
+              if (res.ok) {
+                Alert.alert('Success', 'Database reset completed. Local sandbox collection is fresh.');
+                setOverview(null);
+                setBatches([]);
+                onRefresh();
+              }
+            } catch (err: any) {
+              Alert.alert('Error', err.message);
+            } finally {
+              setIsLoading(false);
+            }
+          }
+        }
+      ]
+    );
+  };
 
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
       {/* Header */}
       <View style={styles.header}>
         <View>
-          <Text style={styles.headerTitle}>Analytics</Text>
-          <Text style={styles.headerSub}>Grading insights & exam roster</Text>
+          <Text style={styles.headerTitle}>Manage</Text>
+          <Text style={styles.headerSub}>
+            {activeTab === 'analytics' ? 'Grading insights & exam roster' : activeTab === 'classroom' ? 'Manage batches, students & sandbox' : 'Student grade re-evaluation requests'}
+          </Text>
         </View>
         <TouchableOpacity style={styles.refreshBtn} onPress={onRefresh}>
           <Ionicons name="refresh" size={20} color={COLORS.primary} />
         </TouchableOpacity>
       </View>
 
+      {/* Segmented Control */}
+      <View style={styles.segmentContainer}>
+        <TouchableOpacity
+          style={[styles.segmentBtn, activeTab === 'analytics' && styles.segmentBtnActive]}
+          onPress={() => setActiveTab('analytics')}
+          activeOpacity={0.8}
+        >
+          <Ionicons 
+            name={activeTab === 'analytics' ? 'bar-chart' : 'bar-chart-outline'} 
+            size={16} 
+            color={activeTab === 'analytics' ? '#fff' : COLORS.textLight} 
+            style={{ marginRight: 6 }}
+          />
+          <Text style={[styles.segmentText, activeTab === 'analytics' && styles.segmentTextActive]}>
+            Insights
+          </Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity
+          style={[styles.segmentBtn, activeTab === 'classroom' && styles.segmentBtnActive]}
+          onPress={() => setActiveTab('classroom')}
+          activeOpacity={0.8}
+        >
+          <Ionicons 
+            name={activeTab === 'classroom' ? 'people' : 'people-outline'} 
+            size={16} 
+            color={activeTab === 'classroom' ? '#fff' : COLORS.textLight} 
+            style={{ marginRight: 6 }}
+          />
+          <Text style={[styles.segmentText, activeTab === 'classroom' && styles.segmentTextActive]}>
+            Roster
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.segmentBtn, activeTab === 'reevaluation' && styles.segmentBtnActive]}
+          onPress={() => setActiveTab('reevaluation')}
+          activeOpacity={0.8}
+        >
+          <Ionicons 
+            name={activeTab === 'reevaluation' ? 'alert-circle' : 'alert-circle-outline'} 
+            size={16} 
+            color={activeTab === 'reevaluation' ? '#fff' : COLORS.textLight} 
+            style={{ marginRight: 6 }}
+          />
+          <Text style={[styles.segmentText, activeTab === 'reevaluation' && styles.segmentTextActive]}>
+            Re-evals
+          </Text>
+        </TouchableOpacity>
+      </View>
+
       {isLoading ? (
         <View style={styles.loader}>
           <ActivityIndicator size="large" color={COLORS.primary} />
-          <Text style={styles.loaderText}>Fetching analytics…</Text>
+          <Text style={styles.loaderText}>Loading dashboard...</Text>
         </View>
       ) : (
         <ScrollView
@@ -207,123 +611,462 @@ export default function ManageScreen() {
           showsVerticalScrollIndicator={false}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} />}
         >
-          {/* Offline Banner */}
-          {isOffline && (
-            <View style={styles.offlineBanner}>
-              <Ionicons name="cloud-offline" size={16} color={COLORS.warning} />
-              <Text style={styles.offlineText}>Offline – showing local data only</Text>
-            </View>
-          )}
-
-          {/* Average score spotlight */}
-          {!isOffline && overview && (
-            <LinearGradient
-              colors={[COLORS.primary, COLORS.primaryDark]}
-              start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
-              style={styles.spotlightCard}
-            >
-              <View style={styles.spotlightLeft}>
-                <Text style={styles.spotlightLabel}>Class Average</Text>
-                <Text style={styles.spotlightValue}>{overview.averagePercentage ?? '—'}%</Text>
-                <Text style={styles.spotlightSub}>Across all graded exams</Text>
-              </View>
-              <View style={styles.spotlightIcon}>
-                <Ionicons name="analytics" size={40} color="rgba(255,255,255,0.3)" />
-              </View>
-            </LinearGradient>
-          )}
-
-          {/* Metric grid */}
-          <Text style={styles.sectionLabel}>OVERVIEW</Text>
-          <View style={styles.metricsGrid}>
-            <MetricCard
-              value={overview?.examsCount ?? localStats.sessions}
-              label="Exams"
-              icon="school"
-              color={COLORS.info}
-              bg={COLORS.infoLight}
-            />
-            <MetricCard
-              value={overview?.submissionsCount ?? localStats.pages}
-              label="Submissions"
-              icon="documents"
-              color={COLORS.primary}
-              bg={COLORS.primaryXLight}
-            />
-            <MetricCard
-              value={overview?.reviewedCount ?? localStats.uploaded}
-              label="Reviewed"
-              icon="checkmark-done"
-              color={COLORS.success}
-              bg={COLORS.successLight}
-            />
-          </View>
-
-          {/* Local stats */}
-          <Text style={styles.sectionLabel}>LOCAL SESSIONS</Text>
-          <View style={styles.localCard}>
-            {[
-              { icon: 'folder' as const, label: 'Total Sessions', value: localStats.sessions, color: COLORS.info },
-              { icon: 'cloud-done' as const, label: 'Uploaded', value: localStats.uploaded, color: COLORS.success },
-              { icon: 'time' as const, label: 'Pending Upload', value: localStats.pending, color: COLORS.warning },
-              { icon: 'document-text' as const, label: 'Pages Scanned', value: localStats.pages, color: COLORS.primary },
-            ].map((item, idx, arr) => (
-              <View key={item.label} style={[styles.localRow, idx < arr.length - 1 && { borderBottomWidth: 1, borderBottomColor: COLORS.borderLight }]}>
-                <View style={[styles.localIcon, { backgroundColor: `${item.color}18` }]}>
-                  <Ionicons name={item.icon} size={16} color={item.color} />
+          {activeTab === 'analytics' ? (
+            // ==================== ANALYTICS VIEW ====================
+            <View>
+              {isOffline && (
+                <View style={styles.offlineBanner}>
+                  <Ionicons name="cloud-offline" size={16} color={COLORS.warning} />
+                  <Text style={styles.offlineText}>Offline – showing local data only</Text>
                 </View>
-                <Text style={styles.localLabel}>{item.label}</Text>
-                <Text style={[styles.localValue, { color: item.color }]}>{item.value}</Text>
-              </View>
-            ))}
-          </View>
+              )}
 
-          {/* Quick shortcuts */}
-          <Text style={styles.sectionLabel}>QUICK ACCESS</Text>
-          <View style={styles.shortcutRow}>
-            <TouchableOpacity style={styles.shortcut} onPress={() => router.push('/session-setup')} activeOpacity={0.82}>
-              <View style={[styles.shortcutIcon, { backgroundColor: COLORS.primaryXLight }]}>
-                <Ionicons name="add-circle" size={26} color={COLORS.primary} />
-              </View>
-              <Text style={styles.shortcutTitle}>New Exam</Text>
-              <Text style={styles.shortcutSub}>Scan papers</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.shortcut} onPress={() => router.push('/(tabs)/sessions')} activeOpacity={0.82}>
-              <View style={[styles.shortcutIcon, { backgroundColor: COLORS.successLight }]}>
-                <Ionicons name="folder-open" size={24} color={COLORS.success} />
-              </View>
-              <Text style={styles.shortcutTitle}>Sessions</Text>
-              <Text style={styles.shortcutSub}>Manage drafts</Text>
-            </TouchableOpacity>
-          </View>
+              {!isOffline && overview && (
+                <LinearGradient
+                  colors={[COLORS.primary, COLORS.primaryDark]}
+                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+                  style={styles.spotlightCard}
+                >
+                  <View style={styles.spotlightLeft}>
+                    <Text style={styles.spotlightLabel}>Class Average</Text>
+                    <Text style={styles.spotlightValue}>{overview.averagePercentage ?? '—'}%</Text>
+                    <Text style={styles.spotlightSub}>Across all graded exams</Text>
+                  </View>
+                  <View style={styles.spotlightIcon}>
+                    <Ionicons name="analytics" size={40} color="rgba(255,255,255,0.3)" />
+                  </View>
+                </LinearGradient>
+              )}
 
-          {/* Exam roster */}
-          {overview?.recentExams && overview.recentExams.length > 0 && (
-            <>
-              <Text style={styles.sectionLabel}>EXAM ROSTER</Text>
-              <View style={styles.examListCard}>
-                {overview.recentExams.map(exam => (
-                  <ExamRow
-                    key={exam.id}
-                    exam={exam}
-                    onPress={() => router.push({ pathname: '/review-grading' as any, params: { examId: exam.id, sessionName: exam.name } })}
-                  />
+              <Text style={styles.sectionLabel}>OVERVIEW</Text>
+              <View style={styles.metricsGrid}>
+                <MetricCard
+                  value={overview?.examsCount ?? localStats.sessions}
+                  label="Exams"
+                  icon="school"
+                  color={COLORS.info}
+                  bg={COLORS.infoLight}
+                />
+                <MetricCard
+                  value={overview?.submissionsCount ?? localStats.pages}
+                  label="Submissions"
+                  icon="documents"
+                  color={COLORS.primary}
+                  bg={COLORS.primaryXLight}
+                />
+                <MetricCard
+                  value={overview?.reviewedCount ?? localStats.uploaded}
+                  label="Reviewed"
+                  icon="checkmark-done"
+                  color={COLORS.success}
+                  bg={COLORS.successLight}
+                />
+              </View>
+
+              <Text style={styles.sectionLabel}>LOCAL SESSIONS</Text>
+              <View style={styles.localCard}>
+                {[
+                  { icon: 'folder' as const, label: 'Total Sessions', value: localStats.sessions, color: COLORS.info },
+                  { icon: 'cloud-done' as const, label: 'Uploaded', value: localStats.uploaded, color: COLORS.success },
+                  { icon: 'time' as const, label: 'Pending Upload', value: localStats.pending, color: COLORS.warning },
+                  { icon: 'document-text' as const, label: 'Pages Scanned', value: localStats.pages, color: COLORS.primary },
+                ].map((item, idx, arr) => (
+                  <View key={item.label} style={[styles.localRow, idx < arr.length - 1 && { borderBottomWidth: 1, borderBottomColor: COLORS.borderLight }]}>
+                    <View style={[styles.localIcon, { backgroundColor: `${item.color}18` }]}>
+                      <Ionicons name={item.icon} size={16} color={item.color} />
+                    </View>
+                    <Text style={styles.localLabel}>{item.label}</Text>
+                    <Text style={[styles.localValue, { color: item.color }]}>{item.value}</Text>
+                  </View>
                 ))}
               </View>
-            </>
-          )}
 
-          {isOffline && !overview && (
-            <View style={styles.offlineState}>
-              <Ionicons name="cloud-offline-outline" size={52} color={COLORS.textMuted} />
-              <Text style={styles.offlineStateTitle}>No cloud data available</Text>
-              <Text style={styles.offlineStateSub}>Connect to the internet and pull down to sync your analytics.</Text>
+              <Text style={styles.sectionLabel}>QUICK ACCESS</Text>
+              <View style={styles.shortcutRow}>
+                <TouchableOpacity style={styles.shortcut} onPress={() => router.push('/session-setup')} activeOpacity={0.82}>
+                  <View style={[styles.shortcutIcon, { backgroundColor: COLORS.primaryXLight }]}>
+                    <Ionicons name="add-circle" size={26} color={COLORS.primary} />
+                  </View>
+                  <Text style={styles.shortcutTitle}>New Exam</Text>
+                  <Text style={styles.shortcutSub}>Scan papers</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.shortcut} onPress={() => router.push('/(tabs)/sessions')} activeOpacity={0.82}>
+                  <View style={[styles.shortcutIcon, { backgroundColor: COLORS.successLight }]}>
+                    <Ionicons name="folder-open" size={24} color={COLORS.success} />
+                  </View>
+                  <Text style={styles.shortcutTitle}>Sessions</Text>
+                  <Text style={styles.shortcutSub}>Manage drafts</Text>
+                </TouchableOpacity>
+              </View>
+
+              {overview?.recentExams && overview.recentExams.length > 0 && (
+                <>
+                  <Text style={styles.sectionLabel}>EXAM ROSTER</Text>
+                  <View style={styles.examListCard}>
+                    {overview.recentExams.map(exam => (
+                      <ExamRow
+                        key={exam.id}
+                        exam={exam}
+                        onPress={() => router.push({ pathname: '/review-grading' as any, params: { examId: exam.id, sessionName: exam.name } })}
+                      />
+                    ))}
+                  </View>
+                </>
+              )}
+            </View>
+          ) : activeTab === 'classroom' ? (
+            // ==================== CLASSROOM MANAGEMENT VIEW ====================
+            <View>
+              <View style={styles.classroomHeader}>
+                <Text style={styles.sectionLabel}>BATCHES</Text>
+                <TouchableOpacity
+                  style={styles.addClassBtn}
+                  onPress={() => setShowAddBatchModal(true)}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="add" size={16} color="#fff" />
+                  <Text style={styles.addClassBtnText}>Add Class</Text>
+                </TouchableOpacity>
+              </View>
+
+              {loadingBatches ? (
+                <ActivityIndicator size="small" color={COLORS.primary} style={{ marginVertical: 20 }} />
+              ) : batches.length === 0 ? (
+                <View style={styles.emptyClassRoster}>
+                  <Ionicons name="school-outline" size={40} color={COLORS.textMuted} />
+                  <Text style={styles.noBatchesText}>No batches created yet.</Text>
+                </View>
+              ) : (
+                batches.map(batch => {
+                  const isExpanded = expandedBatchId === batch.batch_id;
+                  const students = studentsByBatch[batch.batch_id] || [];
+
+                  return (
+                    <View key={batch.batch_id} style={styles.manageCard}>
+                      <TouchableOpacity
+                        style={styles.manageHeader}
+                        onPress={() => toggleBatchExpand(batch.batch_id)}
+                        activeOpacity={0.7}
+                      >
+                        <View style={styles.manageInfo}>
+                          <Text style={styles.manageName}>{batch.name}</Text>
+                          <Text style={styles.manageSubtitle}>{batch.student_count || 0} students</Text>
+                        </View>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                          <TouchableOpacity
+                            onPress={() => handleDeleteBatch(batch.batch_id, batch.name)}
+                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          >
+                            <Ionicons name="trash-outline" size={18} color={COLORS.error} />
+                          </TouchableOpacity>
+                          <Ionicons name={isExpanded ? 'chevron-up' : 'chevron-down'} size={20} color={COLORS.textLight} />
+                        </View>
+                      </TouchableOpacity>
+
+                      {isExpanded && (
+                        <View style={styles.studentsList}>
+                          <View style={styles.studentListHeader}>
+                            <Text style={styles.studentListTitle}>Student Roster</Text>
+                            <TouchableOpacity
+                              style={styles.addStudentBtn}
+                              onPress={() => {
+                                setSelectedBatchId(batch.batch_id);
+                                setShowAddStudentModal(true);
+                              }}
+                            >
+                              <Ionicons name="person-add" size={14} color={COLORS.primary} />
+                              <Text style={styles.addStudentBtnText}>Add Student</Text>
+                            </TouchableOpacity>
+                          </View>
+
+                          {loadingStudents === batch.batch_id && (
+                            <ActivityIndicator size="small" color={COLORS.primary} style={{ marginVertical: 12 }} />
+                          )}
+
+                          {students.length === 0 && loadingStudents !== batch.batch_id && (
+                            <Text style={styles.noStudentsText}>Roster is empty. Add your first student.</Text>
+                          )}
+
+                          {students.map(std => (
+                            <View key={std.student_id} style={styles.studentItem}>
+                              <View style={styles.studentAvatar}>
+                                <Text style={styles.studentAvatarText}>{std.name[0]?.toUpperCase()}</Text>
+                              </View>
+                              <View style={{ flex: 1, marginLeft: 10 }}>
+                                <Text style={styles.studentNameText}>{std.name}</Text>
+                                <Text style={styles.studentMetaText}>Roll No: {std.roll_number} {std.email ? `• ${std.email}` : ''}</Text>
+                              </View>
+                              <TouchableOpacity
+                                onPress={() => handleDeleteStudent(batch.batch_id, std.student_id, std.name)}
+                                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                              >
+                                <Ionicons name="close-circle" size={18} color={COLORS.textMuted} />
+                              </TouchableOpacity>
+                            </View>
+                          ))}
+                        </View>
+                      )}
+                    </View>
+                  );
+                })
+              )}
+
+              {/* Backdoor Settings console */}
+              <Text style={[styles.sectionLabel, { marginTop: 32 }]}>BACKDOOR CONSOLE</Text>
+              <View style={styles.sandboxCard}>
+                <Text style={styles.sandboxTitle}>Sandbox Data Seed Controls</Text>
+                <Text style={styles.sandboxSubtitle}>
+                  For offline developer testing, seed completed exams, subjects, and rosters directly into local MongoDB.
+                </Text>
+                
+                <View style={styles.sandboxButtons}>
+                  <TouchableOpacity
+                    style={[styles.sandboxBtn, { backgroundColor: COLORS.primary }]}
+                    onPress={triggerSandboxSeed}
+                    activeOpacity={0.85}
+                  >
+                    <Ionicons name="cloud-download-outline" size={18} color="#fff" />
+                    <Text style={styles.sandboxBtnText}>Seed Sandbox Data</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.sandboxBtn, { backgroundColor: COLORS.surfaceElevated, borderWidth: 1, borderColor: COLORS.border }]}
+                    onPress={triggerSandboxReset}
+                    activeOpacity={0.85}
+                  >
+                    <Ionicons name="trash-outline" size={18} color={COLORS.error} />
+                    <Text style={[styles.sandboxBtnText, { color: COLORS.textLight }]}>Wipe Local Collections</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          ) : (
+            // ==================== RE-EVALUATION VIEW ====================
+            <View>
+              <Text style={styles.sectionLabel}>RE-EVALUATION REQUESTS</Text>
+              {loadingReevaluations ? (
+                <ActivityIndicator size="small" color={COLORS.primary} style={{ marginVertical: 20 }} />
+              ) : reevaluations.length === 0 ? (
+                <View style={styles.emptyClassRoster}>
+                  <Ionicons name="alert-circle-outline" size={40} color={COLORS.textMuted} />
+                  <Text style={styles.noBatchesText}>No re-evaluations found.</Text>
+                </View>
+              ) : (
+                reevaluations.map(item => {
+                  const isPending = item.status === 'pending';
+                  const statusColor = isPending ? COLORS.warning : item.status === 'rejected' ? COLORS.error : COLORS.success;
+                  const statusBg = isPending ? COLORS.warningLight : item.status === 'rejected' ? COLORS.errorLight : COLORS.successLight;
+                  
+                  let qNumbers: string[] = [];
+                  try {
+                    qNumbers = typeof item.questionNumbersJson === 'string' 
+                      ? JSON.parse(item.questionNumbersJson) 
+                      : (Array.isArray(item.questionNumbersJson) ? item.questionNumbersJson : []);
+                  } catch (_) {}
+
+                  return (
+                    <View key={item.id} style={styles.reevalCard}>
+                      <View style={styles.reevalHeader}>
+                        <View style={styles.reevalAvatar}>
+                          <Text style={styles.reevalAvatarText}>
+                            {item.studentName ? item.studentName[0].toUpperCase() : 'S'}
+                          </Text>
+                        </View>
+                        <View style={{ flex: 1, marginLeft: 12 }}>
+                          <Text style={styles.reevalStudentName}>{item.studentName}</Text>
+                          <Text style={styles.reevalExamName}>{item.examName || 'Exam Paper'}</Text>
+                        </View>
+                        <View style={[styles.reevalBadge, { backgroundColor: statusBg }]}>
+                          <Text style={[styles.reevalBadgeText, { color: statusColor }]}>
+                            {item.status.toUpperCase()}
+                          </Text>
+                        </View>
+                      </View>
+
+                      {/* Question tags */}
+                      {qNumbers.length > 0 && (
+                        <View style={styles.reevalQuestionsRow}>
+                          <Text style={styles.reevalQuestionsLabel}>Questions: </Text>
+                          {qNumbers.map((q: string) => (
+                            <View key={q} style={styles.reevalQuestionTag}>
+                              <Text style={styles.reevalQuestionTagText}>{q}</Text>
+                            </View>
+                          ))}
+                        </View>
+                      )}
+
+                      {/* Reason */}
+                      <View style={styles.reevalReasonBox}>
+                        <Text style={styles.reevalReasonText}>"{item.reason}"</Text>
+                      </View>
+
+                      {/* Footer actions / responses */}
+                      {isPending ? (
+                        <TouchableOpacity
+                          style={styles.reevalResolveBtn}
+                          onPress={() => {
+                            setActiveReeval(item);
+                            setResolveAction('approved');
+                            setTeacherResponse('');
+                            setShowResolveModal(true);
+                          }}
+                          activeOpacity={0.8}
+                        >
+                          <Ionicons name="checkmark-circle-outline" size={16} color="#fff" />
+                          <Text style={styles.reevalResolveBtnText}>Resolve Request</Text>
+                        </TouchableOpacity>
+                      ) : (
+                        <View style={styles.reevalResponseBox}>
+                          <Text style={styles.reevalResponseTitle}>Teacher Response:</Text>
+                          <Text style={styles.reevalResponseText}>{item.teacherResponse || 'Grade confirmed.'}</Text>
+                        </View>
+                      )}
+                    </View>
+                  );
+                })
+              )}
             </View>
           )}
 
           <View style={{ height: 40 }} />
         </ScrollView>
       )}
+
+      {/* Add Batch Modal */}
+      <Modal visible={showAddBatchModal} transparent animationType="slide" onRequestClose={() => setShowAddBatchModal(false)}>
+        <View style={modalStyles.backdrop}>
+          <View style={modalStyles.sheet}>
+            <View style={modalStyles.handle} />
+            <Text style={modalStyles.sheetTitle}>Create Class Batch</Text>
+            <Text style={modalStyles.sheetSub}>Enter the name for the new batch/class.</Text>
+            <TextInput
+              style={modalStyles.input}
+              value={newBatchName}
+              onChangeText={setNewBatchName}
+              placeholder="e.g. Class 10 - Section B"
+              placeholderTextColor={COLORS.textMuted}
+              autoFocus
+              returnKeyType="done"
+              onSubmitEditing={handleAddBatch}
+            />
+            <View style={modalStyles.buttons}>
+              <TouchableOpacity style={[modalStyles.btn, modalStyles.cancelBtn]} onPress={() => setShowAddBatchModal(false)}>
+                <Text style={modalStyles.cancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[modalStyles.btn, modalStyles.saveBtn]} onPress={handleAddBatch}>
+                <Text style={modalStyles.saveText}>Create</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Add Student Modal */}
+      <Modal visible={showAddStudentModal} transparent animationType="slide" onRequestClose={() => setShowAddStudentModal(false)}>
+        <View style={modalStyles.backdrop}>
+          <View style={modalStyles.sheet}>
+            <View style={modalStyles.handle} />
+            <Text style={modalStyles.sheetTitle}>Add Student to Roster</Text>
+            <Text style={modalStyles.sheetSub}>Enter student details to add to class batch.</Text>
+            
+            <TextInput
+              style={modalStyles.input}
+              value={newStudentName}
+              onChangeText={setNewStudentName}
+              placeholder="Full Name"
+              placeholderTextColor={COLORS.textMuted}
+              autoFocus
+            />
+            <TextInput
+              style={modalStyles.input}
+              value={newStudentRoll}
+              onChangeText={setNewStudentRoll}
+              placeholder="Roll Number (e.g. 15)"
+              placeholderTextColor={COLORS.textMuted}
+              keyboardType="number-pad"
+            />
+            <TextInput
+              style={modalStyles.input}
+              value={newStudentEmail}
+              onChangeText={setNewStudentEmail}
+              placeholder="Email Address (Optional)"
+              placeholderTextColor={COLORS.textMuted}
+              keyboardType="email-address"
+              autoCapitalize="none"
+            />
+
+            <View style={modalStyles.buttons}>
+              <TouchableOpacity style={[modalStyles.btn, modalStyles.cancelBtn]} onPress={() => setShowAddStudentModal(false)}>
+                <Text style={modalStyles.cancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[modalStyles.btn, modalStyles.saveBtn]} onPress={handleAddStudent}>
+                <Text style={modalStyles.saveText}>Add Student</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Resolve Re-evaluation Modal */}
+      <Modal visible={showResolveModal} transparent animationType="slide" onRequestClose={() => setShowResolveModal(false)}>
+        <View style={modalStyles.backdrop}>
+          <View style={modalStyles.sheet}>
+            <View style={modalStyles.handle} />
+            <Text style={modalStyles.sheetTitle}>Resolve Re-evaluation</Text>
+            <Text style={modalStyles.sheetSub}>
+              Review student request and choose to approve marks update or reject it.
+            </Text>
+
+            <Text style={styles.fieldLabel}>DECISION</Text>
+            <View style={styles.selectOptions}>
+              <TouchableOpacity
+                style={[styles.selectOption, resolveAction === 'approved' && { backgroundColor: COLORS.success, borderColor: COLORS.success }]}
+                onPress={() => setResolveAction('approved')}
+              >
+                <Text style={[styles.selectOptionText, resolveAction === 'approved' && { color: '#fff' }]}>
+                  APPROVE CHANGES
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.selectOption, resolveAction === 'rejected' && { backgroundColor: COLORS.error, borderColor: COLORS.error }]}
+                onPress={() => setResolveAction('rejected')}
+              >
+                <Text style={[styles.selectOptionText, resolveAction === 'rejected' && { color: '#fff' }]}>
+                  REJECT / CONFIRM GRADE
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={[styles.fieldLabel, { marginTop: 12 }]}>EXPLANATION FOR STUDENT</Text>
+            <TextInput
+              style={[modalStyles.input, { height: 100, textAlignVertical: 'top' }]}
+              value={teacherResponse}
+              onChangeText={setTeacherResponse}
+              placeholder="e.g. Recalculated total, updated marks. OR checked paper, grade stands because..."
+              placeholderTextColor={COLORS.textMuted}
+              multiline
+              numberOfLines={4}
+            />
+
+            <View style={modalStyles.buttons}>
+              <TouchableOpacity style={[modalStyles.btn, modalStyles.cancelBtn]} onPress={() => setShowResolveModal(false)}>
+                <Text style={modalStyles.cancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[modalStyles.btn, modalStyles.saveBtn, { backgroundColor: resolveAction === 'approved' ? COLORS.success : COLORS.error }]}
+                onPress={handleResolveReeval}
+                disabled={isResolving}
+              >
+                {isResolving ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={modalStyles.saveText}>Submit Decision</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -353,9 +1096,194 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
 
+  // Segmented Control
+  segmentContainer: {
+    flexDirection: 'row',
+    backgroundColor: COLORS.surfaceElevated,
+    borderRadius: 12,
+    marginHorizontal: 16,
+    marginTop: 14,
+    marginBottom: 6,
+    padding: 3,
+  },
+  segmentBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderRadius: 9,
+  },
+  segmentBtnActive: {
+    backgroundColor: COLORS.primary,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  segmentText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.textLight,
+  },
+  segmentTextActive: {
+    color: '#fff',
+    fontWeight: '700',
+  },
+
   // Loader
   loader: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
   loaderText: { fontSize: 14, color: COLORS.textLight },
+
+  // Re-evaluations styles
+  reevalCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 5,
+    elevation: 1,
+    padding: 16,
+    marginBottom: 12,
+  },
+  reevalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  reevalAvatar: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: COLORS.primaryXLight,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  reevalAvatarText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: COLORS.primary,
+  },
+  reevalStudentName: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  reevalExamName: {
+    fontSize: 12,
+    color: COLORS.textMuted,
+    marginTop: 1,
+  },
+  reevalBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  reevalBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  reevalQuestionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    marginTop: 12,
+    gap: 4,
+  },
+  reevalQuestionsLabel: {
+    fontSize: 12,
+    color: COLORS.textLight,
+    fontWeight: '600',
+  },
+  reevalQuestionTag: {
+    backgroundColor: COLORS.infoLight,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  reevalQuestionTagText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.info,
+  },
+  reevalReasonBox: {
+    backgroundColor: COLORS.backgroundDark,
+    padding: 12,
+    borderRadius: 10,
+    marginTop: 10,
+    borderLeftWidth: 3,
+    borderLeftColor: COLORS.primary,
+  },
+  reevalReasonText: {
+    fontSize: 13,
+    color: COLORS.textLight,
+    fontStyle: 'italic',
+    lineHeight: 18,
+  },
+  reevalResolveBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: COLORS.primary,
+    paddingVertical: 10,
+    borderRadius: 10,
+    marginTop: 12,
+  },
+  reevalResolveBtnText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  reevalResponseBox: {
+    backgroundColor: COLORS.successLight + '20',
+    borderWidth: 1,
+    borderColor: COLORS.success + '30',
+    padding: 12,
+    borderRadius: 10,
+    marginTop: 12,
+  },
+  reevalResponseTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.success,
+    marginBottom: 4,
+  },
+  reevalResponseText: {
+    fontSize: 12,
+    color: COLORS.textLight,
+    lineHeight: 16,
+  },
+  fieldLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: COLORS.textLight,
+    letterSpacing: 0.5,
+    marginBottom: 6,
+    marginLeft: 2,
+  },
+  selectOptions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 12,
+  },
+  selectOption: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: COLORS.backgroundDark,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  selectOptionText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.textLight,
+  },
 
   // Scroll
   scrollContent: { padding: 16 },
@@ -477,12 +1405,221 @@ const styles = StyleSheet.create({
     borderColor: COLORS.borderLight,
   },
 
-  // Offline state
-  offlineState: {
+  // Classroom Tab Headers
+  classroomHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 32,
-    gap: 12,
+    marginBottom: 12,
   },
-  offlineStateTitle: { fontSize: 18, fontWeight: '700', color: COLORS.text },
-  offlineStateSub: { fontSize: 14, color: COLORS.textLight, textAlign: 'center', lineHeight: 20 },
+  addClassBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    shadowColor: COLORS.primary,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  addClassBtnText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  emptyClassRoster: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 32,
+    backgroundColor: COLORS.surface,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+  },
+  noBatchesText: {
+    fontSize: 14,
+    color: COLORS.textMuted,
+    marginTop: 8,
+  },
+
+  // Classroom Management cards
+  manageCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 5,
+    elevation: 1,
+    overflow: 'hidden',
+    marginBottom: 10,
+  },
+  manageHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+  },
+  manageInfo: { flex: 1 },
+  manageName: { fontSize: 16, fontWeight: '700', color: COLORS.text },
+  manageSubtitle: { fontSize: 12, color: COLORS.textMuted, marginTop: 2 },
+
+  // Students Expand List
+  studentsList: {
+    backgroundColor: COLORS.backgroundDark,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.borderLight,
+    padding: 14,
+    gap: 8,
+  },
+  studentListHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+    paddingHorizontal: 4,
+  },
+  studentListTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.textLight,
+    letterSpacing: 0.5,
+  },
+  addStudentBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 4,
+  },
+  addStudentBtnText: {
+    color: COLORS.primary,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  noStudentsText: {
+    fontSize: 13,
+    color: COLORS.textMuted,
+    paddingVertical: 8,
+    textAlign: 'center',
+  },
+  studentItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surface,
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+  },
+  studentAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: COLORS.primaryXLight,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  studentAvatarText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.primary,
+  },
+  studentNameText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  studentMetaText: {
+    fontSize: 11,
+    color: COLORS.textMuted,
+    marginTop: 2,
+  },
+
+  // Sandbox Backdoor
+  sandboxCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1.5,
+    borderColor: COLORS.warning,
+    shadowColor: COLORS.warning,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  sandboxTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: COLORS.text,
+  },
+  sandboxSubtitle: {
+    fontSize: 13,
+    color: COLORS.textLight,
+    lineHeight: 18,
+    marginTop: 6,
+    marginBottom: 16,
+  },
+  sandboxButtons: {
+    gap: 10,
+  },
+  sandboxBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 13,
+    borderRadius: 12,
+  },
+  sandboxBtnText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+});
+
+const modalStyles = StyleSheet.create({
+  backdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'flex-end',
+  },
+  sheet: {
+    backgroundColor: COLORS.background,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingHorizontal: 24,
+    paddingBottom: 40,
+    paddingTop: 16,
+  },
+  handle: {
+    width: 40, height: 4,
+    borderRadius: 2,
+    backgroundColor: COLORS.border,
+    alignSelf: 'center',
+    marginBottom: 20,
+  },
+  sheetTitle: { fontSize: 20, fontWeight: '800', color: COLORS.text, marginBottom: 6 },
+  sheetSub: { fontSize: 14, color: COLORS.textLight, lineHeight: 20, marginBottom: 20 },
+  input: {
+    backgroundColor: COLORS.backgroundDark,
+    borderRadius: 12,
+    padding: 15,
+    fontSize: 16,
+    color: COLORS.text,
+    borderWidth: 1.5,
+    borderColor: COLORS.border,
+    marginBottom: 12,
+  },
+  buttons: { flexDirection: 'row', gap: 12, marginTop: 12 },
+  btn: { flex: 1, paddingVertical: 14, borderRadius: 12, alignItems: 'center' },
+  cancelBtn: { backgroundColor: COLORS.surfaceElevated, borderWidth: 1, borderColor: COLORS.border },
+  saveBtn: { backgroundColor: COLORS.primary, shadowColor: COLORS.primary, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.25, shadowRadius: 8, elevation: 4 },
+  cancelText: { fontSize: 15, fontWeight: '600', color: COLORS.textLight },
+  saveText: { fontSize: 15, fontWeight: '700', color: '#fff' },
 });

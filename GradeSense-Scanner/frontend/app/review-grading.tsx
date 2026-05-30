@@ -17,7 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Image } from 'expo-image';
 import * as Haptics from 'expo-haptics';
-import { COLORS } from '../src/config';
+import { COLORS, getBackendUrl } from '../src/config';
 import { useAuthStore } from '../src/store/authStore';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -51,7 +51,44 @@ export default function ReviewGradingScreen() {
   const router = useRouter();
   const { examId, sessionName } = useLocalSearchParams<{ examId: string; sessionName?: string }>();
   const token = useAuthStore(state => state.sessionToken);
-  const webappUrl = process.env.EXPO_PUBLIC_WEBAPP_URL;
+  const webappUrl = getBackendUrl();
+  const [isReevaluating, setIsReevaluating] = useState(false);
+
+  const handleReevaluate = () => {
+    if (!examId || !token) return;
+    
+    Alert.alert(
+      'Reevaluate Exam?',
+      'This will queue all student papers in this exam to be re-graded by the AI with the selected grading mode. Are you sure?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Reevaluate', 
+          onPress: async () => {
+            setIsReevaluating(true);
+            try {
+              const res = await fetch(`${getBackendUrl()}/api/v1/exams/${examId}/regrade`, {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${token}`
+                }
+              });
+              if (res.ok) {
+                Alert.alert('Success', 'AI reevaluation enqueued successfully! It will run in the background and update shortly.');
+              } else {
+                const txt = await res.text();
+                Alert.alert('Failed', `Could not trigger reevaluation: ${txt}`);
+              }
+            } catch (err: any) {
+              Alert.alert('Error', `Network request failed: ${err.message}`);
+            } finally {
+              setIsReevaluating(false);
+            }
+          }
+        }
+      ]
+    );
+  };
 
   // List of all submissions for the exam
   const [submissions, setSubmissions] = useState<SubmissionListItem[]>([]);
@@ -336,7 +373,18 @@ export default function ReviewGradingScreen() {
             Student {currentSubIndex + 1} of {submissions.length}
           </Text>
         </View>
-        <View style={{ width: 40 }} />
+        {isReevaluating ? (
+          <ActivityIndicator size="small" color={COLORS.primary} style={{ marginRight: 8 }} />
+        ) : (
+          <TouchableOpacity
+            style={styles.headerRegradeBtn}
+            onPress={handleReevaluate}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="sparkles" size={13} color="#fff" />
+            <Text style={styles.headerRegradeBtnText}>Regrade</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* Student Switcher Row */}
@@ -1137,5 +1185,24 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     color: '#fff',
+  },
+  headerRegradeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 14,
+    shadowColor: COLORS.primary,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.18,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  headerRegradeBtnText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '800',
   },
 });

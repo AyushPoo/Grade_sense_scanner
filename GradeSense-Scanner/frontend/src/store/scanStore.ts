@@ -3,6 +3,7 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ScanSession, ScanPhase, ScannedPage, ScanSessionSettings, ScannedStudent, Batch, Subject } from '../types';
 import * as FileSystem from 'expo-file-system';
+import { getBackendUrl } from '../config';
 
 // Simple UUID generator
 export const generateUUID = () => {
@@ -238,7 +239,7 @@ export const useScanStore = create<ScanState>()(
           const token = useAuthStore.getState().sessionToken;
 
           // Call backend to create real session
-          const response = await fetch(`${process.env.EXPO_PUBLIC_BACKEND_URL}/api/scan-sessions/create`, {
+          const response = await fetch(`${getBackendUrl()}/api/scan-sessions/create`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -898,7 +899,7 @@ export const useScanStore = create<ScanState>()(
         try {
           const { useAuthStore } = await import('./authStore');
           const token = useAuthStore.getState().sessionToken;
-          const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
+          const backendUrl = getBackendUrl();
 
           const response = await fetch(`${backendUrl}/api/scan-sessions`, {
             headers: {
@@ -1009,7 +1010,7 @@ export const useScanStore = create<ScanState>()(
         try {
           const { useAuthStore } = await import('./authStore');
           const token = useAuthStore.getState().sessionToken;
-          const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
+          const backendUrl = getBackendUrl();
 
           const response = await fetch(`${backendUrl}/api/batches`, {
             headers: {
@@ -1034,7 +1035,7 @@ export const useScanStore = create<ScanState>()(
         try {
           const { useAuthStore } = await import('./authStore');
           const token = useAuthStore.getState().sessionToken;
-          const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
+          const backendUrl = getBackendUrl();
 
           const response = await fetch(`${backendUrl}/api/subjects`, {
             headers: {
@@ -1069,9 +1070,9 @@ export const useScanStore = create<ScanState>()(
         try {
           const { useAuthStore } = await import('./authStore');
           const token = useAuthStore.getState().sessionToken;
-          const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
+          const backendUrl = getBackendUrl();
 
-          if (!backendUrl) throw new Error("Missing EXPO_PUBLIC_BACKEND_URL");
+          if (!backendUrl) throw new Error("Missing Backend URL configuration");
 
           const authHeaders = {
             'Content-Type': 'application/json',

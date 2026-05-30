@@ -14,13 +14,15 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_BACKEND_URL": "https://gradesense-scanner-backend.onrender.com"
+        "EXPO_PUBLIC_BACKEND_URL": "https://gradesense-scanner-backend.onrender.com",
+        "EXPO_PUBLIC_WEBAPP_URL": "http://8.231.83.249:8000"
       }
     },
     "production": {
       "autoIncrement": true,
       "env": {
-        "EXPO_PUBLIC_BACKEND_URL": "https://gradesense-scanner-backend.onrender.com"
+        "EXPO_PUBLIC_BACKEND_URL": "https://gradesense-scanner-backend.onrender.com",
+        "EXPO_PUBLIC_WEBAPP_URL": "http://8.231.83.249:8000"
       }
     }
   },

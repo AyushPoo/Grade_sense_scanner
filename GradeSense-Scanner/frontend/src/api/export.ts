@@ -2,6 +2,7 @@ import { ScanSession, ScannedPage, ScanPhase } from '../types';
 import { useScanStore } from '../store/scanStore';
 import { useAuthStore } from '../store/authStore';
 import * as FileSystem from 'expo-file-system/legacy';
+import { getBackendUrl } from '../config';
 
 async function uploadPageFile(
   sessionId: string,
@@ -11,9 +12,9 @@ async function uploadPageFile(
   retries = 3
 ): Promise<string> {
   const token = useAuthStore.getState().sessionToken;
-  const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
+  const backendUrl = getBackendUrl();
   
-  if (!backendUrl) throw new Error("Missing EXPO_PUBLIC_BACKEND_URL");
+  if (!backendUrl) throw new Error("Missing Backend URL configuration");
   if (!token) throw new Error("No auth token — please log in again");
 
   let lastError;
@@ -80,9 +81,9 @@ export async function uploadSessionToWebApp(
   try {
     updateStatus(currentSessionId, 'uploading', 0);
     const token = useAuthStore.getState().sessionToken;
-    const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
+    const backendUrl = getBackendUrl();
     
-    if (!backendUrl) throw new Error("Missing EXPO_PUBLIC_BACKEND_URL");
+    if (!backendUrl) throw new Error("Missing Backend URL configuration");
     if (!token) throw new Error("No auth token — please log in again");
 
     const authHeaders = {

@@ -14,7 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { COLORS } from '../../src/config';
+import { COLORS, getBackendUrl } from '../../src/config';
 import { useAuthStore } from '../../src/store/authStore';
 import { useScanStore } from '../../src/store/scanStore';
 
@@ -115,6 +115,8 @@ function GradingProgressCard({ session, job, onPress }: any) {
     );
   }
 
+  const statusLabel = job ? "AI grading in progress…" : "Syncing & starting AI grading…";
+
   return (
     <View style={gradingStyles.card}>
       <View style={gradingStyles.cardTop}>
@@ -122,7 +124,7 @@ function GradingProgressCard({ session, job, onPress }: any) {
           <Text style={gradingStyles.sessionTitle} numberOfLines={1}>{session.session_name}</Text>
           <View style={gradingStyles.statusRow}>
             <Animated.View style={[gradingStyles.pulseDot, { opacity: pulseAnim }]} />
-            <Text style={gradingStyles.statusText}>AI grading in progress…</Text>
+            <Text style={gradingStyles.statusText}>{statusLabel}</Text>
           </View>
         </View>
         <Text style={gradingStyles.percentLabel}>{percent}%</Text>
@@ -130,7 +132,9 @@ function GradingProgressCard({ session, job, onPress }: any) {
       <View style={gradingStyles.barTrack}>
         <Animated.View style={[gradingStyles.barFill, { width: `${Math.max(4, percent)}%` as any }]} />
       </View>
-      <Text style={gradingStyles.countText}>{job.processed} of {job.total} papers checked</Text>
+      <Text style={gradingStyles.countText}>
+        {job ? `${job.processed} of ${job.total} papers checked` : 'Queued / starting grading on server...'}
+      </Text>
     </View>
   );
 }
@@ -319,18 +323,42 @@ export default function HomeScreen() {
   const { savedSessions, fetchSessions } = useScanStore();
   const [refreshing, setRefreshing] = useState(false);
   const [gradingProgress, setGradingProgress] = useState<Record<string, { progress: number, processed: number, total: number, status: string }>>({});
+  const [exams, setExams] = useState<any[]>([]);
+  const [loadingExams, setLoadingExams] = useState(false);
   const fadeAnim = useRef(new Animated.Value(0)).current;
+
+  const fetchExams = async () => {
+    const token = useAuthStore.getState().sessionToken;
+    const backendUrl = getBackendUrl();
+    if (!token || !backendUrl) return;
+    
+    setLoadingExams(true);
+    try {
+      const res = await fetch(`${backendUrl}/api/v1/exams`, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Bypass-Tunnel-Reminder': 'true' }
+      });
+      if (res.ok) {
+        const json = await res.json();
+        setExams(json.data || []);
+      }
+    } catch (err) {
+      console.warn('Failed to fetch exams for home:', err);
+    } finally {
+      setLoadingExams(false);
+    }
+  };
 
   useEffect(() => {
     Animated.timing(fadeAnim, { toValue: 1, duration: 350, useNativeDriver: true }).start();
     fetchSessions().catch(err => console.error('Initial fetch failed:', err));
+    fetchExams().catch(err => console.error('Failed to load exams:', err));
   }, []);
 
   // Poll active grading jobs
   useEffect(() => {
     let active = true;
     const token = useAuthStore.getState().sessionToken;
-    const webappUrl = process.env.EXPO_PUBLIC_WEBAPP_URL;
+    const webappUrl = getBackendUrl();
     if (!token || !webappUrl) return;
 
     const pollJobs = async () => {
@@ -369,7 +397,12 @@ export default function HomeScreen() {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    try { await fetchSessions(); } catch { /* silent */ } finally { setRefreshing(false); }
+    try { 
+      await Promise.all([
+        fetchSessions(),
+        fetchExams()
+      ]);
+    } catch { /* silent */ } finally { setRefreshing(false); }
   };
 
   const greeting = () => {
@@ -435,16 +468,16 @@ export default function HomeScreen() {
         </View>
 
         {/* Grading Progress Cards */}
-        {sessions.some(s => s.status === 'uploaded' && gradingProgress[s.session_id]) && (
+        {sessions.some(s => s.status === 'uploaded') && (
           <View style={styles.section}>
             <Text style={styles.sectionLabel}>GRADING STATUS</Text>
             <View style={styles.cardList}>
               {sessions
-                .filter(s => s.status === 'uploaded' && gradingProgress[s.session_id])
+                .filter(s => s.status === 'uploaded')
                 .slice(0, 3)
                 .map(session => {
                   const job = gradingProgress[session.session_id];
-                  const isComplete = job.status === 'completed';
+                  const isComplete = job?.status === 'completed';
                   return (
                     <GradingProgressCard
                       key={session.session_id}
@@ -457,6 +490,39 @@ export default function HomeScreen() {
                     />
                   );
                 })}
+            </View>
+          </View>
+        )}
+
+        {/* Exams Ready for Review */}
+        {exams.length > 0 && (
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionLabel}>EXAMS READY FOR REVIEW</Text>
+            </View>
+            <View style={styles.cardList}>
+              {exams.slice(0, 3).map(exam => (
+                <TouchableOpacity
+                  key={exam.id}
+                  style={styles.examItem}
+                  onPress={() => router.push({ pathname: '/review-grading' as any, params: { examId: exam.id, sessionName: exam.name } })}
+                  activeOpacity={0.8}
+                >
+                  <View style={styles.examIconWrap}>
+                    <Ionicons name="checkbox-outline" size={20} color={COLORS.success} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.examName} numberOfLines={1}>{exam.name}</Text>
+                    <Text style={styles.examMeta}>
+                      Marks: {exam.totalMarks || 100} • Date: {exam.examDate ? new Date(exam.examDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A'}
+                    </Text>
+                  </View>
+                  <View style={styles.reviewBadge}>
+                    <Text style={styles.reviewBadgeText}>Review</Text>
+                    <Ionicons name="chevron-forward" size={12} color="#fff" />
+                  </View>
+                </TouchableOpacity>
+              ))}
             </View>
           </View>
         )}
@@ -647,5 +713,57 @@ const styles = StyleSheet.create({
     color: COLORS.textLight,
     textAlign: 'center',
     lineHeight: 21,
+  },
+  examItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surface,
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  examIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: COLORS.successLight,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  examName: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  examMeta: {
+    fontSize: 12,
+    color: COLORS.textMuted,
+    marginTop: 2,
+  },
+  reviewBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 16,
+    shadowColor: COLORS.primary,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  reviewBadgeText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '700',
   },
 });

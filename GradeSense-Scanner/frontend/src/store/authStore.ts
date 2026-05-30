@@ -9,6 +9,13 @@ interface AuthState {
   isAuthenticated: boolean;
   isLoading: boolean;
   hasHydrated: boolean;
+  
+  // Custom Settings
+  customBackendUrl: string | null;
+  customWebappUrl: string | null;
+  defaultGradingMode: string;
+  cameraResolution: 'low' | 'medium' | 'high';
+  
   setUser: (user: User | null) => void;
   setSessionToken: (token: string | null) => void;
   setIsAuthenticated: (value: boolean) => void;
@@ -16,6 +23,12 @@ interface AuthState {
   setHasHydrated: (state: boolean) => void;
   logout: () => void;
   updateUserOrgName: (orgName: string) => void;
+  
+  // Custom Settings Setters
+  setCustomBackendUrl: (url: string | null) => void;
+  setCustomWebappUrl: (url: string | null) => void;
+  setDefaultGradingMode: (mode: string) => void;
+  setCameraResolution: (res: 'low' | 'medium' | 'high') => void;
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -26,6 +39,13 @@ export const useAuthStore = create<AuthState>()(
       isAuthenticated: false,
       isLoading: false,
       hasHydrated: false,
+      
+      // Default Custom Settings values
+      customBackendUrl: null,
+      customWebappUrl: null,
+      defaultGradingMode: 'balanced',
+      cameraResolution: 'medium',
+      
       setUser: (user) => set({ user }),
       setSessionToken: (token) => set({ sessionToken: token }),
       setIsAuthenticated: (value) => set({ isAuthenticated: value }),
@@ -43,6 +63,10 @@ export const useAuthStore = create<AuthState>()(
         }
         return {};
       }),
+      setCustomBackendUrl: (url) => set({ customBackendUrl: url }),
+      setCustomWebappUrl: (url) => set({ customWebappUrl: url }),
+      setDefaultGradingMode: (mode) => set({ defaultGradingMode: mode }),
+      setCameraResolution: (res) => set({ cameraResolution: res }),
     }),
     {
       name: 'auth-storage',

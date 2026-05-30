@@ -14,6 +14,7 @@ import * as Linking from 'expo-linking';
 import { useRouter } from 'expo-router';
 import { useAuthStore } from '../src/store/authStore';
 import { testScannerAvailability } from '../src/utils/scannerAudit';
+import { getBackendUrl, getWebappUrl } from '../src/config';
 
 const COLORS = {
   primary: '#FF6B35',
@@ -25,12 +26,6 @@ const COLORS = {
   error: '#F44336',
 };
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
-
-if (!BACKEND_URL) {
-  throw new Error('Missing required environment variable: EXPO_PUBLIC_BACKEND_URL');
-}
-
 export default function LoginScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -39,7 +34,7 @@ export default function LoginScreen() {
 
   const loginWithToken = async (token: string) => {
     try {
-      const response = await fetch(`${BACKEND_URL}/api/auth/me`, {
+      const response = await fetch(`${getBackendUrl()}/api/auth/me`, {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -77,7 +72,7 @@ export default function LoginScreen() {
       const redirectUrl = Linking.createURL('callback');
       
       // Construct webapp Google initiation URL
-      const webappUrl = process.env.EXPO_PUBLIC_WEBAPP_URL || 'http://localhost:5173';
+      const webappUrl = getWebappUrl();
       const authUrl = `${webappUrl.replace(/\/$/, '')}/login?mobile=true`;
       
       console.log('Opening webapp login for mobile:', authUrl);

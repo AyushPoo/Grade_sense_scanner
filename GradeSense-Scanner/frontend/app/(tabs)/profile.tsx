@@ -14,7 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import { COLORS } from '../../src/config';
+import { COLORS, getBackendUrl, getWebappUrl } from '../../src/config';
 import { useAuthStore } from '../../src/store/authStore';
 import { useScanStore } from '../../src/store/scanStore';
 
@@ -75,11 +75,34 @@ const rowStyles = StyleSheet.create({
 
 export default function ProfileScreen() {
   const router = useRouter();
-  const { user, logout, updateUserOrgName } = useAuthStore();
-  const { savedSessions } = useScanStore();
+  const { 
+    user, 
+    logout, 
+    updateUserOrgName,
+    customBackendUrl,
+    customWebappUrl,
+    defaultGradingMode,
+    cameraResolution,
+    setCustomBackendUrl,
+    setCustomWebappUrl,
+    setDefaultGradingMode,
+    setCameraResolution
+  } = useAuthStore();
+  const { savedSessions, deleteSession } = useScanStore();
 
+  // Org modal
   const [showOrgModal, setShowOrgModal] = useState(false);
   const [orgInput, setOrgInput] = useState(user?.org_name || '');
+
+  // Endpoint settings modal
+  const [showEndpointModal, setShowEndpointModal] = useState(false);
+  const [backendInput, setBackendInput] = useState(customBackendUrl || getBackendUrl());
+  const [webappInput, setWebappInput] = useState(customWebappUrl || getWebappUrl());
+
+  // Scanner settings modal
+  const [showScannerModal, setShowScannerModal] = useState(false);
+  const [selectedGradingMode, setSelectedGradingMode] = useState(defaultGradingMode);
+  const [selectedResolution, setSelectedResolution] = useState(cameraResolution);
 
   const sessions = Array.isArray(savedSessions) ? savedSessions : [];
   const totalPages = sessions.reduce((sum, s) => sum + (s.stats?.total_pages || 0), 0);
@@ -90,6 +113,57 @@ export default function ProfileScreen() {
     if (!orgInput.trim()) { Alert.alert('Error', 'Institute name cannot be empty'); return; }
     updateUserOrgName(orgInput.trim());
     setShowOrgModal(false);
+  };
+
+  const handleSaveEndpoints = () => {
+    if (!backendInput.trim() || !webappInput.trim()) {
+      Alert.alert('Error', 'API endpoints cannot be blank.');
+      return;
+    }
+    setCustomBackendUrl(backendInput.trim());
+    setCustomWebappUrl(webappInput.trim());
+    setShowEndpointModal(false);
+    Alert.alert('Success', 'Server connection endpoints updated.');
+  };
+
+  const handleResetEndpoints = () => {
+    setCustomBackendUrl(null);
+    setCustomWebappUrl(null);
+    setBackendInput('https://gradesense-scanner-backend.onrender.com');
+    setWebappInput('http://8.231.83.249:8000');
+    setShowEndpointModal(false);
+    Alert.alert('Endpoints Reset', 'Using default Render production hosts.');
+  };
+
+  const handleSaveScannerSettings = () => {
+    setDefaultGradingMode(selectedGradingMode);
+    setCameraResolution(selectedResolution as any);
+    setShowScannerModal(false);
+    Alert.alert('Success', 'Scanner and grading options saved.');
+  };
+
+  const handleClearCache = () => {
+    Alert.alert(
+      'Clear Local Cache?',
+      'This will permanently delete all scanned pages and offline drafts stored locally. Graded cloud exams will not be affected.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear All',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              for (const s of sessions) {
+                await deleteSession(s.session_id);
+              }
+              Alert.alert('Success', 'Local drafts cache wiped successfully.');
+            } catch (err: any) {
+              Alert.alert('Error', err.message);
+            }
+          }
+        }
+      ]
+    );
   };
 
   const handleLogout = () => {
@@ -171,7 +245,7 @@ export default function ProfileScreen() {
             />
             <SettingRow
               icon="mail-outline"
-              label="Email"
+              label="Email Address"
               sublabel={user?.email || ''}
               iconBg={COLORS.infoLight}
               iconColor={COLORS.info}
@@ -179,30 +253,55 @@ export default function ProfileScreen() {
           </View>
         </View>
 
-        {/* App section */}
+        {/* App configuration */}
         <View style={styles.section}>
-          <Text style={styles.sectionLabel}>APP</Text>
+          <Text style={styles.sectionLabel}>APP CONFIGURATION</Text>
           <View style={styles.card}>
             <SettingRow
-              icon="notifications-outline"
-              label="Notifications"
-              iconBg={COLORS.warningLight}
-              iconColor={COLORS.warning}
-              onPress={() => Alert.alert('Coming soon', 'Notification settings coming in a future update.')}
+              icon="link-outline"
+              label="Server Connection URLs"
+              sublabel={customBackendUrl ? 'Custom enrouted' : 'Production hosts'}
+              iconBg={COLORS.infoLight}
+              iconColor={COLORS.info}
+              onPress={() => {
+                setBackendInput(customBackendUrl || getBackendUrl());
+                setWebappInput(customWebappUrl || getWebappUrl());
+                setShowEndpointModal(true);
+              }}
             />
             <SettingRow
               icon="camera-outline"
-              label="Scanner Settings"
-              iconBg={COLORS.surfaceElevated}
-              iconColor={COLORS.textLight}
-              onPress={() => Alert.alert('Coming soon', 'Scanner configuration coming in a future update.')}
+              label="Scanner Preferences"
+              sublabel={`Mode: ${defaultGradingMode.toUpperCase()} • Res: ${cameraResolution.toUpperCase()}`}
+              iconBg={COLORS.primaryXLight}
+              iconColor={COLORS.primary}
+              onPress={() => {
+                setSelectedGradingMode(defaultGradingMode);
+                setSelectedResolution(cameraResolution);
+                setShowScannerModal(true);
+              }}
             />
+            <SettingRow
+              icon="trash-outline"
+              label="Clear Local Cache"
+              sublabel="Free up local space"
+              iconBg={COLORS.errorLight}
+              iconColor={COLORS.error}
+              onPress={handleClearCache}
+            />
+          </View>
+        </View>
+
+        {/* Info Support */}
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>SUPPORT</Text>
+          <View style={styles.card}>
             <SettingRow
               icon="help-circle-outline"
               label="Help & Support"
-              iconBg={COLORS.surfaceElevated}
-              iconColor={COLORS.textLight}
-              onPress={() => Alert.alert('Help', 'Contact support@gradesense.io')}
+              iconBg={COLORS.successLight}
+              iconColor={COLORS.success}
+              onPress={() => Alert.alert('Help', 'Contact our support team at support@gradesense.io')}
             />
             <SettingRow
               icon="information-circle-outline"
@@ -254,6 +353,98 @@ export default function ProfileScreen() {
               </TouchableOpacity>
               <TouchableOpacity style={[modalStyles.btn, modalStyles.saveBtn]} onPress={handleSaveOrg}>
                 <Text style={modalStyles.saveText}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Endpoint URL Config Modal */}
+      <Modal visible={showEndpointModal} transparent animationType="slide" onRequestClose={() => setShowEndpointModal(false)}>
+        <View style={modalStyles.backdrop}>
+          <View style={modalStyles.sheet}>
+            <View style={modalStyles.handle} />
+            <Text style={modalStyles.sheetTitle}>Server Connection URLs</Text>
+            <Text style={modalStyles.sheetSub}>Configure target API endpoints for local testing or custom deployments.</Text>
+            
+            <Text style={styles.fieldLabel}>BACKEND API URL</Text>
+            <TextInput
+              style={modalStyles.input}
+              value={backendInput}
+              onChangeText={setBackendInput}
+              placeholder="https://your-backend.com"
+              placeholderTextColor={COLORS.textMuted}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            
+            <Text style={styles.fieldLabel}>WEBAPP URL</Text>
+            <TextInput
+              style={modalStyles.input}
+              value={webappInput}
+              onChangeText={setWebappInput}
+              placeholder="http://your-webapp-ip:8000"
+              placeholderTextColor={COLORS.textMuted}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+
+            <View style={modalStyles.buttons}>
+              <TouchableOpacity style={[modalStyles.btn, modalStyles.cancelBtn, { flex: 0.8 }]} onPress={handleResetEndpoints}>
+                <Text style={[modalStyles.cancelText, { color: COLORS.error }]}>Reset Defaults</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[modalStyles.btn, modalStyles.saveBtn]} onPress={handleSaveEndpoints}>
+                <Text style={modalStyles.saveText}>Save Connections</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Scanner Preferences Modal */}
+      <Modal visible={showScannerModal} transparent animationType="slide" onRequestClose={() => setShowScannerModal(false)}>
+        <View style={modalStyles.backdrop}>
+          <View style={modalStyles.sheet}>
+            <View style={modalStyles.handle} />
+            <Text style={modalStyles.sheetTitle}>Scanner Preferences</Text>
+            <Text style={modalStyles.sheetSub}>Configure grading correction defaults and camera resolution values.</Text>
+            
+            <Text style={styles.fieldLabel}>DEFAULT AI GRADING MODE</Text>
+            <View style={styles.selectOptions}>
+              {['strict', 'balanced', 'conceptual', 'lenient'].map(mode => (
+                <TouchableOpacity
+                  key={mode}
+                  style={[styles.selectOption, selectedGradingMode === mode && styles.selectOptionActive]}
+                  onPress={() => setSelectedGradingMode(mode)}
+                >
+                  <Text style={[styles.selectOptionText, selectedGradingMode === mode && styles.selectOptionTextActive]}>
+                    {mode.toUpperCase()}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            
+            <Text style={[styles.fieldLabel, { marginTop: 16 }]}>CAMERA CAPTURE RESOLUTION</Text>
+            <View style={styles.selectOptions}>
+              {['low', 'medium', 'high'].map(res => (
+                <TouchableOpacity
+                  key={res}
+                  style={[styles.selectOption, selectedResolution === res && styles.selectOptionActive]}
+                  onPress={() => setSelectedResolution(res as any)}
+                >
+                  <Text style={[styles.selectOptionText, selectedResolution === res && styles.selectOptionTextActive]}>
+                    {res.toUpperCase()}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <View style={modalStyles.buttons}>
+              <TouchableOpacity style={[modalStyles.btn, modalStyles.cancelBtn]} onPress={() => setShowScannerModal(false)}>
+                <Text style={modalStyles.cancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[modalStyles.btn, modalStyles.saveBtn]} onPress={handleSaveScannerSettings}>
+                <Text style={modalStyles.saveText}>Save Options</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -346,6 +537,44 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 24,
   },
+
+  // Input labels
+  fieldLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: COLORS.textLight,
+    letterSpacing: 0.5,
+    marginBottom: 6,
+    marginLeft: 2,
+  },
+
+  // Options selectors
+  selectOptions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 12,
+  },
+  selectOption: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: COLORS.backgroundDark,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  selectOptionActive: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  selectOptionText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.textLight,
+  },
+  selectOptionTextActive: {
+    color: '#fff',
+  },
 });
 
 const modalStyles = StyleSheet.create({
@@ -381,7 +610,7 @@ const modalStyles = StyleSheet.create({
     borderColor: COLORS.border,
     marginBottom: 20,
   },
-  buttons: { flexDirection: 'row', gap: 12 },
+  buttons: { flexDirection: 'row', gap: 12, marginTop: 16 },
   btn: { flex: 1, paddingVertical: 14, borderRadius: 12, alignItems: 'center' },
   cancelBtn: { backgroundColor: COLORS.surfaceElevated, borderWidth: 1, borderColor: COLORS.border },
   saveBtn: { backgroundColor: COLORS.primary, shadowColor: COLORS.primary, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.25, shadowRadius: 8, elevation: 4 },
