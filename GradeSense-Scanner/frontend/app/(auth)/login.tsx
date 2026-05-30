@@ -16,18 +16,13 @@ import { Ionicons } from '@expo/vector-icons';
 import * as WebBrowser from 'expo-web-browser';
 import * as Google from 'expo-auth-session/providers/google';
 import { useRouter } from 'expo-router';
-import { COLORS } from '../../src/config';
+import { COLORS, getBackendUrl } from '../../src/config';
 import { useAuthStore } from '../../src/store/authStore';
 
 // Required for OAuth flows in Expo
 WebBrowser.maybeCompleteAuthSession();
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 const GOOGLE_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID;
-
-if (!BACKEND_URL) {
-  throw new Error('Missing required environment variable: EXPO_PUBLIC_BACKEND_URL');
-}
 
 export default function LoginScreen() {
   const [email, setEmail] = useState('');
@@ -75,7 +70,7 @@ export default function LoginScreen() {
       if (!tokenInfoRes.ok) throw new Error('Failed to verify Google access token');
       const tokenInfo = await tokenInfoRes.json();
 
-      const backendRes = await fetch(`${BACKEND_URL}/api/auth/google-idtoken`, {
+      const backendRes = await fetch(`${getBackendUrl()}/api/auth/google-idtoken`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Bypass-Tunnel-Reminder': 'true' },
         body: JSON.stringify({ access_token: accessToken, token_info: tokenInfo }),
@@ -94,7 +89,7 @@ export default function LoginScreen() {
 
   const handleGoogleIdToken = async (idToken: string) => {
     try {
-      const res = await fetch(`${BACKEND_URL}/api/auth/google-idtoken`, {
+      const res = await fetch(`${getBackendUrl()}/api/auth/google-idtoken`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Bypass-Tunnel-Reminder': 'true' },
         body: JSON.stringify({ id_token: idToken }),
@@ -115,7 +110,7 @@ export default function LoginScreen() {
     if (!email.trim() || !password.trim()) { setError('Please enter both email and password'); return; }
     try {
       setIsLoading(true); setError(null);
-      const res = await fetch(`${BACKEND_URL}/api/auth/login`, {
+      const res = await fetch(`${getBackendUrl()}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Bypass-Tunnel-Reminder': 'true' },
         body: JSON.stringify({ email: email.trim(), password }),

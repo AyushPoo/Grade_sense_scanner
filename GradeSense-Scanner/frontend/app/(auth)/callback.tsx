@@ -1,14 +1,8 @@
 import React, { useEffect, useRef } from 'react';
 import { View, Text, ActivityIndicator, StyleSheet } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { COLORS } from '../../src/config';
+import { COLORS, getBackendUrl } from '../../src/config';
 import { useAuthStore } from '../../src/store/authStore';
-
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
-
-if (!BACKEND_URL) {
-  throw new Error('Missing required environment variable: EXPO_PUBLIC_BACKEND_URL');
-}
 
 export default function CallbackScreen() {
   const router = useRouter();
@@ -34,7 +28,7 @@ export default function CallbackScreen() {
           if (sessionId) {
             console.log('Processing session from callback...');
             
-            const response = await fetch(`${BACKEND_URL}/api/auth/session`, {
+            const response = await fetch(`${getBackendUrl()}/api/auth/session`, {
               method: 'GET',
               headers: {
                 'X-Session-ID': sessionId,

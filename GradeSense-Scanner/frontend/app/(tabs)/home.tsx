@@ -78,8 +78,10 @@ const statStyles = StyleSheet.create({
 // ─── Grading Progress Card ─────────────────────────────────────────────
 function GradingProgressCard({ session, job, onPress }: any) {
   const pulseAnim = useRef(new Animated.Value(1)).current;
-  const percent = Math.round((job.processed / (job.total || 1)) * 100);
-  const isComplete = job.status === 'completed';
+  const processed = job?.processed ?? 0;
+  const total = job?.total ?? 1;
+  const percent = Math.round((processed / total) * 100);
+  const isComplete = job?.status === 'completed';
 
   useEffect(() => {
     if (!isComplete) {
@@ -133,7 +135,7 @@ function GradingProgressCard({ session, job, onPress }: any) {
         <Animated.View style={[gradingStyles.barFill, { width: `${Math.max(4, percent)}%` as any }]} />
       </View>
       <Text style={gradingStyles.countText}>
-        {job ? `${job.processed} of ${job.total} papers checked` : 'Queued / starting grading on server...'}
+        {job ? `${processed} of ${total} papers checked` : 'Queued / starting grading on server...'}
       </Text>
     </View>
   );
