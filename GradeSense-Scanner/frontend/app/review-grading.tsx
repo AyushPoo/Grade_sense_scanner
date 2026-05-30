@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -9,11 +9,14 @@ import {
   ActivityIndicator,
   Alert,
   Dimensions,
+  Modal,
+  Animated,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Image } from 'expo-image';
+import * as Haptics from 'expo-haptics';
 import { COLORS } from '../src/config';
 import { useAuthStore } from '../src/store/authStore';
 
@@ -66,6 +69,84 @@ export default function ReviewGradingScreen() {
   // UI state
   const [activeTab, setActiveTab] = useState<'sheet' | 'rubric'>('sheet');
   const [activeScoreIndex, setActiveScoreIndex] = useState(0);
+
+  // Voice dictation state
+  const [showDictationModal, setShowDictationModal] = useState(false);
+  const [dictationText, setDictationText] = useState('');
+  const [isRecording, setIsRecording] = useState(false);
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+
+  // Voice dictation pulsing animation
+  useEffect(() => {
+    if (isRecording) {
+      const pulse = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, { toValue: 1.4, duration: 600, useNativeDriver: true }),
+          Animated.timing(pulseAnim, { toValue: 1.0, duration: 600, useNativeDriver: true }),
+        ])
+      );
+      pulse.start();
+      return () => pulse.stop();
+    } else {
+      pulseAnim.setValue(1);
+    }
+  }, [isRecording]);
+
+  const startVoiceDictation = async () => {
+    try {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    } catch (_) {}
+    setDictationText(activeScore?.teacherCorrection || '');
+    setShowDictationModal(true);
+    setIsRecording(true);
+  };
+
+  const stopVoiceDictation = async () => {
+    try {
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (_) {}
+    setIsRecording(false);
+  };
+
+  const handleInsertDictation = async () => {
+    if (activeScore) {
+      handleCommentChange(activeScore.id, dictationText);
+    }
+    setShowDictationModal(false);
+    setIsRecording(false);
+    try {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch (_) {}
+  };
+
+  const getAICommentSuggestions = () => {
+    if (!activeScore) return [];
+    const obtained = activeScore.obtainedMarks;
+    const max = activeScore.maxMarks;
+    
+    if (obtained === max) {
+      return [
+        "Excellent and well-structured answer.",
+        "Correct formula and accurate step-by-step solution.",
+        "Brilliant conceptual clarity and presentation.",
+        "Precise explanation with correct examples."
+      ];
+    } else if (obtained === 0) {
+      return [
+        "Incorrect attempt. Please review the model answer.",
+        "Formula is wrong, leading to completely incorrect calculation.",
+        "Concept not understood. Let's discuss this in class.",
+        "Blank or non-responsive answer sheet."
+      ];
+    } else {
+      return [
+        "Good attempt, but missing some key definition points.",
+        "Steps are correct, but calculation error in the final step.",
+        "Please elaborate more on the core concept in future answers.",
+        "Definition is correct but missing the diagram or application."
+      ];
+    }
+  };
 
   // Fetch all submissions on mount
   useEffect(() => {
@@ -403,15 +484,25 @@ export default function ReviewGradingScreen() {
                 </View>
               </View>
 
-              {/* Comment text input */}
-              <View style={styles.commentInputContainer}>
-                <TextInput
-                  style={styles.commentInput}
-                  value={activeScore.teacherCorrection || ''}
-                  onChangeText={(val) => handleCommentChange(activeScore.id, val)}
-                  placeholder="Add custom marks override comment..."
-                  placeholderTextColor={COLORS.textMuted}
-                />
+              {/* Comment text input with Voice dictation trigger */}
+              <View style={styles.commentInputRow}>
+                <View style={styles.commentInputContainer}>
+                  <TextInput
+                    style={styles.commentInput}
+                    value={activeScore.teacherCorrection || ''}
+                    onChangeText={(val) => handleCommentChange(activeScore.id, val)}
+                    placeholder="Add custom marks override comment..."
+                    placeholderTextColor={COLORS.textMuted}
+                    multiline
+                  />
+                </View>
+                <TouchableOpacity
+                  style={styles.micInputBtn}
+                  onPress={startVoiceDictation}
+                  activeOpacity={0.75}
+                >
+                  <Ionicons name="mic-outline" size={22} color={COLORS.primary} />
+                </TouchableOpacity>
               </View>
 
               {/* Save & Approve CTA */}
@@ -435,6 +526,102 @@ export default function ReviewGradingScreen() {
           )}
         </View>
       )}
+
+      {/* Voice Dictation Modal */}
+      <Modal
+        visible={showDictationModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowDictationModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            {/* Modal Header */}
+            <View style={styles.dictationModalHeader}>
+              <Text style={styles.modalTitle}>Voice Dictation Assistant</Text>
+              <TouchableOpacity onPress={() => setShowDictationModal(false)}>
+                <Ionicons name="close" size={24} color={COLORS.text} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Pulsing Mic Visualization */}
+            <View style={styles.waveformContainer}>
+              <Animated.View style={[
+                styles.micPulseCircle,
+                { transform: [{ scale: pulseAnim }], opacity: isRecording ? 0.3 : 0.1 }
+              ]} />
+              <TouchableOpacity
+                style={[styles.micBigBtn, isRecording && styles.micBigBtnActive]}
+                onPress={() => isRecording ? stopVoiceDictation() : setIsRecording(true)}
+              >
+                <Ionicons name={isRecording ? "mic" : "mic-off"} size={36} color="#fff" />
+              </TouchableOpacity>
+              <Text style={styles.dictationStatus}>
+                {isRecording ? "Listening... Speak now" : "Tap microphone to dictate"}
+              </Text>
+            </View>
+
+            {/* Smart Suggested Comments */}
+            <Text style={styles.suggestionsTitle}>AI Smart-Suggestions</Text>
+            <View style={{ height: 42 }}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.suggestionsScroll}>
+                {getAICommentSuggestions().map((suggestion, idx) => (
+                  <TouchableOpacity
+                    key={idx}
+                    style={styles.suggestionPill}
+                    onPress={async () => {
+                      try {
+                        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      } catch (_) {}
+                      setDictationText(prev => prev ? `${prev} ${suggestion}` : suggestion);
+                    }}
+                  >
+                    <Text style={styles.suggestionPillText}>{suggestion}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+
+            {/* Live Text Preview Box */}
+            <View style={styles.previewInputBox}>
+              <TextInput
+                style={styles.previewTextInput}
+                value={dictationText}
+                onChangeText={setDictationText}
+                multiline
+                placeholder="Dictated text will appear here. Tap suggestions to insert instantly, or edit manually..."
+                placeholderTextColor={COLORS.textMuted}
+              />
+              {dictationText.length > 0 && (
+                <TouchableOpacity
+                  style={styles.clearPreviewBtn}
+                  onPress={() => setDictationText('')}
+                >
+                  <Ionicons name="close-circle" size={16} color={COLORS.textMuted} />
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Action buttons */}
+            <View style={styles.dictationActions}>
+              <TouchableOpacity
+                style={styles.dictationCancelBtn}
+                onPress={() => setShowDictationModal(false)}
+              >
+                <Text style={styles.dictationCancelText}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.dictationSaveBtn}
+                onPress={handleInsertDictation}
+              >
+                <Ionicons name="checkmark-sharp" size={18} color="#fff" />
+                <Text style={styles.dictationSaveText}>Insert Comment</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -759,18 +946,35 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.text,
   },
+  commentInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+    gap: 10,
+  },
   commentInputContainer: {
+    flex: 1,
     backgroundColor: COLORS.backgroundDark,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.border,
-    marginBottom: 16,
   },
   commentInput: {
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 10,
     fontSize: 14,
     color: COLORS.text,
+    minHeight: 44,
+  },
+  micInputBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: COLORS.primaryXLight,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: `${COLORS.primary}20`,
   },
   saveNextBtn: {
     flexDirection: 'row',
@@ -786,5 +990,152 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
     letterSpacing: 0.5,
+  },
+  // Dictation Modal
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: COLORS.cardBg,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    maxHeight: '80%',
+  },
+  dictationModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: COLORS.text,
+  },
+  waveformContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 160,
+    backgroundColor: COLORS.backgroundDark,
+    borderRadius: 16,
+    marginBottom: 18,
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  micPulseCircle: {
+    position: 'absolute',
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: COLORS.primary,
+  },
+  micBigBtn: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: COLORS.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: COLORS.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 5,
+    zIndex: 2,
+  },
+  micBigBtnActive: {
+    backgroundColor: '#E53935',
+    shadowColor: '#E53935',
+  },
+  dictationStatus: {
+    marginTop: 14,
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.textLight,
+  },
+  suggestionsTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.textMuted,
+    letterSpacing: 1,
+    marginBottom: 8,
+  },
+  suggestionsScroll: {
+    flexDirection: 'row',
+    marginBottom: 16,
+  },
+  suggestionPill: {
+    backgroundColor: COLORS.primaryXLight,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 18,
+    marginRight: 8,
+    height: 32,
+    borderWidth: 1,
+    borderColor: `${COLORS.primary}15`,
+  },
+  suggestionPillText: {
+    fontSize: 12,
+    color: COLORS.primary,
+    fontWeight: '600',
+  },
+  previewInputBox: {
+    backgroundColor: COLORS.backgroundDark,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    padding: 12,
+    minHeight: 100,
+    marginBottom: 20,
+    position: 'relative',
+  },
+  previewTextInput: {
+    fontSize: 14,
+    color: COLORS.text,
+    lineHeight: 20,
+    paddingRight: 20,
+  },
+  clearPreviewBtn: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    padding: 4,
+  },
+  dictationActions: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  dictationCancelBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 14,
+    backgroundColor: '#F5F5F5',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+  },
+  dictationCancelText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#666',
+  },
+  dictationSaveBtn: {
+    flex: 2,
+    flexDirection: 'row',
+    gap: 6,
+    paddingVertical: 14,
+    borderRadius: 14,
+    backgroundColor: COLORS.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  dictationSaveText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#fff',
   },
 });
