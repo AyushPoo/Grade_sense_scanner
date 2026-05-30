@@ -74,12 +74,52 @@ export async function uploadSessionToWebApp(
   onProgress: (item: string, progress: number) => void
 ) {
   const updateStatus = useScanStore.getState().updateSessionStatus;
+  const updateSessionId = useScanStore.getState().updateSessionId;
+  let currentSessionId = session.session_id;
   
   try {
-    updateStatus(session.session_id, 'uploading', 0);
+    updateStatus(currentSessionId, 'uploading', 0);
     const token = useAuthStore.getState().sessionToken;
     const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
     
+    if (!backendUrl) throw new Error("Missing EXPO_PUBLIC_BACKEND_URL");
+    if (!token) throw new Error("No auth token — please log in again");
+
+    const authHeaders = {
+      'Content-Type': 'application/json',
+      'Authorization': token ? `Bearer ${token}` : '',
+    };
+
+    // 0. Register local session if offline
+    if (currentSessionId.startsWith('local_')) {
+      onProgress('Registering session on server...', 0.05);
+      
+      const createResponse = await fetch(`${backendUrl}/api/scan-sessions/create`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({
+          session_name: session.session_name,
+          batch_id: session.batch_id,
+          settings: session.settings,
+          subject_id: session.subject_id || null,
+          total_marks: session.total_marks || null,
+          exam_date: session.exam_date || null
+        })
+      });
+
+      if (!createResponse.ok) {
+        const errorText = await createResponse.text();
+        throw new Error(`Failed to register session on server: Status ${createResponse.status} - ${errorText}`);
+      }
+
+      const createData = await createResponse.json();
+      const backendSessionId = createData.session_id;
+
+      // Rename locally in Zustand store
+      updateSessionId(currentSessionId, backendSessionId);
+      currentSessionId = backendSessionId;
+    }
+
     // Calculate total operations (Pages + Metadata Syncs)
     let totalOps = 0;
     const qpPages = session.question_paper.pages;
@@ -95,16 +135,11 @@ export async function uploadSessionToWebApp(
     
     let completedOps = 0;
 
-    const authHeaders = {
-      'Content-Type': 'application/json',
-      'Authorization': token ? `Bearer ${token}` : '',
-    };
-
     const stepProgress = (label: string) => {
       completedOps++;
       const progress = completedOps / totalOps;
       onProgress(label, progress);
-      updateStatus(session.session_id, 'uploading', Math.round(progress * 100));
+      updateStatus(currentSessionId, 'uploading', Math.round(progress * 100));
     };
 
     // 1. Upload Question Paper Pages
@@ -112,16 +147,20 @@ export async function uploadSessionToWebApp(
       const updatedPages = [];
       for (const page of qpPages) {
         stepProgress(`Uploading QP Page ${page.page_number}`);
-        const fileUrl = await uploadPageFile(session.session_id, page, 'question_paper');
+        const fileUrl = await uploadPageFile(currentSessionId, page, 'question_paper');
         updatedPages.push({ ...page, file_url: fileUrl });
       }
       
       stepProgress('Syncing QP Metadata');
-      await fetch(`${backendUrl}/api/scan-sessions/${session.session_id}/upload-qp`, {
+      const qpRes = await fetch(`${backendUrl}/api/scan-sessions/${currentSessionId}/upload-qp`, {
         method: 'POST',
         headers: authHeaders,
         body: JSON.stringify({ pages: updatedPages })
       });
+      if (!qpRes.ok) {
+        const txt = await qpRes.text();
+        throw new Error(`Failed to sync QP metadata: Status ${qpRes.status} - ${txt}`);
+      }
     }
 
     // 2. Upload Model Answer Pages
@@ -129,16 +168,20 @@ export async function uploadSessionToWebApp(
       const updatedPages = [];
       for (const page of maPages) {
         stepProgress(`Uploading Model Page ${page.page_number}`);
-        const fileUrl = await uploadPageFile(session.session_id, page, 'model_answer');
+        const fileUrl = await uploadPageFile(currentSessionId, page, 'model_answer');
         updatedPages.push({ ...page, file_url: fileUrl });
       }
       
       stepProgress('Syncing Model Metadata');
-      await fetch(`${backendUrl}/api/scan-sessions/${session.session_id}/upload-model`, {
+      const maRes = await fetch(`${backendUrl}/api/scan-sessions/${currentSessionId}/upload-model`, {
         method: 'POST',
         headers: authHeaders,
         body: JSON.stringify({ pages: updatedPages })
       });
+      if (!maRes.ok) {
+        const txt = await maRes.text();
+        throw new Error(`Failed to sync Model Answer metadata: Status ${maRes.status} - ${txt}`);
+      }
     }
 
     // 3. Upload Student Pages
@@ -148,33 +191,40 @@ export async function uploadSessionToWebApp(
         const updatedPages = [];
         for (const page of student.pages) {
           stepProgress(`Student ${i + 1}: Page ${page.page_number}`);
-          const fileUrl = await uploadPageFile(session.session_id, page, 'students', i);
+          const fileUrl = await uploadPageFile(currentSessionId, page, 'students', i);
           updatedPages.push({ ...page, file_url: fileUrl });
         }
         
         stepProgress(`Syncing Student ${i + 1} Metadata`);
-        await fetch(`${backendUrl}/api/scan-sessions/${session.session_id}/upload-student`, {
+        const stRes = await fetch(`${backendUrl}/api/scan-sessions/${currentSessionId}/upload-student`, {
           method: 'POST',
           headers: authHeaders,
           body: JSON.stringify({ student: { ...student, pages: updatedPages } })
         });
+        if (!stRes.ok) {
+          const txt = await stRes.text();
+          throw new Error(`Failed to sync Student #${i + 1} metadata: Status ${stRes.status} - ${txt}`);
+        }
       }
     }
 
     // 4. Finalize
     stepProgress('Finalizing session');
-    const compRes = await fetch(`${backendUrl}/api/scan-sessions/${session.session_id}/complete`, {
+    const compRes = await fetch(`${backendUrl}/api/scan-sessions/${currentSessionId}/complete`, {
       method: 'POST',
       headers: authHeaders,
     });
-    if (!compRes.ok) throw new Error('Failed to complete session');
+    if (!compRes.ok) {
+      const txt = await compRes.text();
+      throw new Error(`Failed to finalize/grade session: Status ${compRes.status} - ${txt}`);
+    }
 
-    updateStatus(session.session_id, 'uploaded', 100);
-    console.log(`Session ${session.session_id} successfully synced via multipart upload.`);
+    updateStatus(currentSessionId, 'uploaded', 100);
+    console.log(`Session ${currentSessionId} successfully synced via multipart upload.`);
 
   } catch (error) {
     console.error('Upload failed:', error);
-    updateStatus(session.session_id, 'failed', 0);
+    updateStatus(currentSessionId, 'failed', 0);
     throw error;
   }
 }

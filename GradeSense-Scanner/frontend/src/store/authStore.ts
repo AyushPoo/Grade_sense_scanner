@@ -15,6 +15,7 @@ interface AuthState {
   setIsLoading: (value: boolean) => void;
   setHasHydrated: (state: boolean) => void;
   logout: () => void;
+  updateUserOrgName: (orgName: string) => void;
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -31,6 +32,17 @@ export const useAuthStore = create<AuthState>()(
       setIsLoading: (value) => set({ isLoading: value }),
       setHasHydrated: (state) => set({ hasHydrated: state }),
       logout: () => set({ user: null, sessionToken: null, isAuthenticated: false }),
+      updateUserOrgName: (orgName) => set((state) => {
+        if (state.user) {
+          return {
+            user: {
+              ...state.user,
+              org_name: orgName,
+            }
+          };
+        }
+        return {};
+      }),
     }),
     {
       name: 'auth-storage',

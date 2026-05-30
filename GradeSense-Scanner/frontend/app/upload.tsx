@@ -6,6 +6,8 @@ import {
   TouchableOpacity,
   Alert,
   Linking,
+  Modal,
+  FlatList,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -54,6 +56,8 @@ export default function UploadScreen() {
 
   // ── PHASE 1 FIX: Granular selectors — UploadScreen is now isolated from broad store changes.
   const updateSessionStatus = useScanStore(state => state.updateSessionStatus);
+  const updateSessionDetails = useScanStore(state => state.updateSessionDetails);
+  const { savedSubjects, fetchSubjects } = useScanStore();
   const sessionDataFromStore = useScanStore(useShallow(state => 
     state.savedSessions.find(s => s.session_id === sessionId) || null
   ));
@@ -63,6 +67,11 @@ export default function UploadScreen() {
   const [progress, setProgress] = useState(0);
   const [currentItem, setCurrentItem] = useState('');
   const [uploadComplete, setUploadComplete] = useState(false);
+  const [showSubjectSelector, setShowSubjectSelector] = useState(false);
+
+  useEffect(() => {
+    fetchSubjects().catch(err => console.error('Failed to load subjects:', err));
+  }, []);
 
   useEffect(() => {
     if (sessionId) {
@@ -91,15 +100,45 @@ export default function UploadScreen() {
       // Complete
       setProgress(1);
       setUploadComplete(true);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Upload error:', error);
-      Alert.alert('Upload Failed', 'Failed to upload session. Please try again.');
+      const errMsg = error?.message || 'Unknown network or server error';
+      Alert.alert('Upload Failed', `Failed to upload session: ${errMsg}`);
     } finally {
       setIsUploading(false);
     }
   };
 
+  const handleSelectSubject = (subjectId: string) => {
+    setShowSubjectSelector(false);
+    if (!session) return;
+
+    // Update subject details in store
+    updateSessionDetails(
+      session.session_id,
+      session.session_name,
+      session.batch_id,
+      session.batch_name,
+      subjectId,
+      session.total_marks,
+      session.exam_date,
+      session.settings
+    );
+
+    // Give state a brief moment to update before launching sync
+    setTimeout(() => {
+      simulateUpload();
+    }, 150);
+  };
+
   const handleStartUpload = () => {
+    if (!session) return;
+
+    if (!session.subject_id) {
+      setShowSubjectSelector(true);
+      return;
+    }
+
     Alert.alert(
       'Start Upload',
       'This will upload all scanned pages to GradeSense. Continue?',
@@ -254,6 +293,14 @@ export default function UploadScreen() {
             <View style={styles.sessionSummary}>
               <Text style={styles.sessionName}>{session.session_name}</Text>
               <Text style={styles.sessionBatch}>{session.batch_name}</Text>
+              <TouchableOpacity
+                style={styles.editDetailsButton}
+                onPress={() => router.push({ pathname: '/session-setup', params: { sessionId: session.session_id } })}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="create-outline" size={16} color={COLORS.primary} />
+                <Text style={styles.editDetailsText}>Edit Exam Details</Text>
+              </TouchableOpacity>
             </View>
 
             <View style={styles.uploadPreview}>
@@ -295,6 +342,48 @@ export default function UploadScreen() {
           </View>
         )}
       </View>
+
+      <Modal
+        visible={showSubjectSelector}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowSubjectSelector(false)}
+      >
+        <View style={modalStyles.overlay}>
+          <View style={modalStyles.content}>
+            <View style={modalStyles.header}>
+              <Text style={modalStyles.title}>Select Subject</Text>
+              <TouchableOpacity onPress={() => setShowSubjectSelector(false)} style={modalStyles.closeBtn}>
+                <Ionicons name="close" size={24} color={COLORS.text} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={modalStyles.body}>
+              <Text style={modalStyles.subtitle}>Please select a subject for this session before uploading:</Text>
+              {savedSubjects.length === 0 ? (
+                <Text style={modalStyles.emptyText}>No subjects available. Please create one on the webapp.</Text>
+              ) : (
+                <FlatList
+                  data={savedSubjects}
+                  keyExtractor={(item) => item.id}
+                  renderItem={({ item }) => (
+                    <TouchableOpacity
+                      style={modalStyles.subjectItem}
+                      onPress={() => handleSelectSubject(item.id)}
+                    >
+                      <Ionicons name="book-outline" size={20} color={COLORS.primary} style={{ marginRight: 12 }} />
+                      <Text style={modalStyles.subjectName}>{item.name}</Text>
+                      <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} style={{ marginLeft: 'auto' }} />
+                    </TouchableOpacity>
+                  )}
+                  style={{ maxHeight: 300 }}
+                  contentContainerStyle={{ paddingBottom: 16 }}
+                />
+              )}
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -529,5 +618,77 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: COLORS.primary,
     fontWeight: '600',
+  },
+  editDetailsButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.backgroundDark || 'rgba(0,0,0,0.05)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    marginTop: 10,
+    gap: 4,
+  },
+  editDetailsText: {
+    color: COLORS.primary,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+});
+
+const modalStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  content: {
+    backgroundColor: COLORS.background,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingBottom: 40,
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  title: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  closeBtn: {
+    padding: 4,
+  },
+  body: {
+    padding: 20,
+  },
+  subtitle: {
+    fontSize: 14,
+    color: COLORS.textLight,
+    marginBottom: 16,
+  },
+  emptyText: {
+    color: COLORS.textMuted,
+    fontSize: 14,
+    textAlign: 'center',
+    paddingVertical: 20,
+  },
+  subjectItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.backgroundDark || '#F5F5F5',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 10,
+  },
+  subjectName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.text,
   },
 });

@@ -19,6 +19,7 @@ import { ScannedPage, ScanPhase } from '../src/types';
 import { applyFilter, FilterMode } from '../src/utils/cvProcessor';
 import { File, Paths } from 'expo-file-system';
 import { ZoomModal } from '../src/components/ZoomModal';
+import * as ImageManipulator from 'expo-image-manipulator';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -30,10 +31,11 @@ export default function PagePreviewScreen() {
     studentIndex?: string;
   }>();
 
-  const { currentSession, removePage, startRetake, currentPhase, currentStudentIndex, updatePagePathAndFilter } = useScanStore();
+  const { currentSession, removePage, startRetake, currentPhase, currentStudentIndex, updatePagePathAndFilter, rotatePage } = useScanStore();
   const flatListRef = useRef<FlatList>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isApplyingFilter, setIsApplyingFilter] = useState(false);
+  const [isRotating, setIsRotating] = useState(false);
   const [zoomModalVisible, setZoomModalVisible] = useState(false);
   const [zoomImageUri, setZoomImageUri] = useState('');
 
@@ -174,6 +176,91 @@ export default function PagePreviewScreen() {
     );
   };
 
+  const handleRotate = async () => {
+    const currentPage = getPages()[currentIndex];
+    if (!currentPage || isRotating || isApplyingFilter) return;
+
+    setIsRotating(true);
+    try {
+      // 1. Rotate the active file_path
+      const currentUri = currentPage.file_path;
+      const manipResult = await ImageManipulator.manipulateAsync(
+        currentUri,
+        [{ rotate: 90 }],
+        { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG }
+      );
+      
+      const filename = `scanned_rot_${Date.now()}.jpg`;
+      const dest = new File(Paths.document, filename);
+      new File(manipResult.uri).copy(dest);
+
+      let verified = false;
+      for (let i = 0; i < 10; i++) {
+        if (dest.exists) { verified = true; break; }
+        await new Promise(r => setTimeout(r, 50));
+      }
+
+      if (!verified) {
+        throw new Error('Failed to verify rotated image file');
+      }
+
+      // 2. Rotate the original_file_path if it exists
+      let destOrigUri: string | undefined = undefined;
+      if (currentPage.original_file_path) {
+        const origUri = currentPage.original_file_path;
+        const manipResultOrig = await ImageManipulator.manipulateAsync(
+          origUri,
+          [{ rotate: 90 }],
+          { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG }
+        );
+        const filenameOrig = `orig_rot_${Date.now()}.jpg`;
+        const destOrig = new File(Paths.document, filenameOrig);
+        new File(manipResultOrig.uri).copy(destOrig);
+
+        let verifiedOrig = false;
+        for (let i = 0; i < 10; i++) {
+          if (destOrig.exists) { verifiedOrig = true; break; }
+          await new Promise(r => setTimeout(r, 50));
+        }
+        if (verifiedOrig) {
+          destOrigUri = destOrig.uri;
+        }
+      }
+
+      // 3. Update the state store
+      const phaseToUse = phase || currentPhase;
+      const studentIdx = studentIndex ? parseInt(studentIndex) : undefined;
+      
+      rotatePage(
+        currentPage.id,
+        phaseToUse,
+        studentIdx,
+        dest.uri,
+        destOrigUri
+      );
+
+      // Clean up previous files to avoid bloating device storage
+      try {
+        if (currentPage.file_path) {
+          const oldFile = new File(currentPage.file_path);
+          if (oldFile.exists) oldFile.delete();
+        }
+        if (currentPage.original_file_path) {
+          const oldOrigFile = new File(currentPage.original_file_path);
+          if (oldOrigFile.exists) oldOrigFile.delete();
+        }
+      } catch (_) {
+        // ignore deletion errors
+      }
+
+    } catch (e) {
+      console.warn('[RotatePage]', e);
+      Alert.alert('Error', 'Failed to rotate image.');
+    } finally {
+      setIsRotating(false);
+    }
+  };
+
   const onViewableItemsChanged = useRef(({ viewableItems }: any) => {
     if (viewableItems.length > 0) {
       // TASK 2B: Only update current index, do NOT reset loading globally
@@ -210,7 +297,7 @@ export default function PagePreviewScreen() {
               });
             }}
           />
-          {(loadingPages.has(item.id) || isApplyingFilter) && index === currentIndex && (
+          {(loadingPages.has(item.id) || isApplyingFilter || isRotating) && index === currentIndex && (
             <View style={styles.loadingOverlay}>
               <ActivityIndicator size="large" color={COLORS.primary} />
             </View>
@@ -350,14 +437,28 @@ export default function PagePreviewScreen() {
         </View>
 
         <View style={styles.actions}>
-          <TouchableOpacity style={styles.actionButton} onPress={handleRetake}>
+          <TouchableOpacity 
+            style={styles.actionButton} 
+            onPress={handleRetake}
+            disabled={isApplyingFilter || isRotating}
+          >
             <Ionicons name="refresh" size={20} color={COLORS.text} />
             <Text style={styles.actionText}>Retake</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={styles.actionButton} 
+            onPress={handleRotate}
+            disabled={isApplyingFilter || isRotating}
+          >
+            <Ionicons name="sync-outline" size={20} color={COLORS.text} />
+            <Text style={styles.actionText}>Rotate</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
             style={[styles.actionButton, styles.deleteButton]}
             onPress={handleDelete}
+            disabled={isApplyingFilter || isRotating}
           >
             <Ionicons name="trash" size={20} color={COLORS.error} />
             <Text style={[styles.actionText, { color: COLORS.error }]}>Delete</Text>

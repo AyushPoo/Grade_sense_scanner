@@ -13,14 +13,15 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { COLORS } from '../src/config';
 import { useScanStore } from '../src/store/scanStore';
 import { Batch, ScanSessionSettings, Subject } from '../src/types';
 
 export default function SessionSetupScreen() {
   const router = useRouter();
-  const { createSession, savedBatches, addBatch, deleteBatch, fetchBatches, savedSubjects, fetchSubjects } = useScanStore();
+  const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
+  const { createSession, savedSessions, updateSessionDetails, savedBatches, addBatch, deleteBatch, fetchBatches, savedSubjects, fetchSubjects } = useScanStore();
   
   useEffect(() => {
     fetchBatches().catch(err => console.error('Failed to load batches:', err));
@@ -51,6 +52,33 @@ export default function SessionSetupScreen() {
     flash_mode: 'auto',
     page_mode: 'single', // default to single page
   });
+
+  // Populate existing session details if in edit mode
+  useEffect(() => {
+    if (sessionId) {
+      const existing = savedSessions.find(s => s.session_id === sessionId);
+      if (existing) {
+        setSessionName(existing.session_name);
+        const batch = savedBatches.find(b => b.batch_id === existing.batch_id) || {
+          batch_id: existing.batch_id,
+          name: existing.batch_name,
+          student_count: existing.stats.total_students,
+        };
+        setSelectedBatch(batch);
+        
+        const subject = savedSubjects.find(sub => sub.id === existing.subject_id);
+        if (subject) {
+          setSelectedSubject(subject);
+        } else if (existing.subject_id) {
+          setSelectedSubject({ id: existing.subject_id, name: 'Loaded Subject' });
+        }
+        
+        setTotalMarks(existing.total_marks?.toString() || '100');
+        setExamDate(existing.exam_date || new Date().toISOString().split('T')[0]);
+        setSettings(existing.settings);
+      }
+    }
+  }, [sessionId, savedSessions, savedBatches, savedSubjects]);
 
   const handleCreateBatch = () => {
     if (!newBatchName.trim()) {
@@ -83,16 +111,32 @@ export default function SessionSetupScreen() {
     if (!selectedBatch) return;
     
     try {
-      await createSession(
-        sessionName,
-        selectedBatch.batch_id,
-        selectedBatch.name,
-        settings,
-        selectedSubject?.id,
-        parseFloat(totalMarks) || 100,
-        examDate
-      );
-      router.push('/scanner');
+      if (sessionId) {
+        // Edit Mode: Update details on existing session
+        updateSessionDetails(
+          sessionId,
+          sessionName,
+          selectedBatch.batch_id,
+          selectedBatch.name,
+          selectedSubject?.id,
+          parseFloat(totalMarks) || 100,
+          examDate,
+          settings
+        );
+        router.back();
+      } else {
+        // Create Mode
+        await createSession(
+          sessionName,
+          selectedBatch.batch_id,
+          selectedBatch.name,
+          settings,
+          selectedSubject?.id,
+          parseFloat(totalMarks) || 100,
+          examDate
+        );
+        router.push('/scanner');
+      }
     } catch (err) {
       console.error(err);
       // Handle error, maybe show an alert
@@ -109,7 +153,7 @@ export default function SessionSetupScreen() {
         <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
           <Ionicons name="arrow-back" size={24} color={COLORS.text} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>New Session</Text>
+        <Text style={styles.headerTitle}>{sessionId ? 'Edit Session' : 'New Session'}</Text>
         <View style={{ width: 40 }} />
       </View>
 
@@ -461,8 +505,8 @@ export default function SessionSetupScreen() {
             disabled={!selectedBatch}
             activeOpacity={0.8}
           >
-            <Ionicons name="camera" size={24} color="#fff" />
-            <Text style={styles.startButtonText}>START SCANNING</Text>
+            <Ionicons name={sessionId ? "save" : "camera"} size={24} color="#fff" />
+            <Text style={styles.startButtonText}>{sessionId ? 'SAVE CHANGES' : 'START SCANNING'}</Text>
           </TouchableOpacity>
 
           <View style={{ height: 40 }} />

@@ -217,6 +217,116 @@ const StudentCard = memo(({
   );
 });
 
+// ── QP & MA collapsible card ──────────────────────────────────────────────────
+const QPMASection = memo(({
+  title,
+  icon,
+  color,
+  pages,
+  isExpanded,
+  onToggle,
+  onRetake,
+  onCrop,
+  onDelete,
+  onPreview,
+  onAppend,
+  mockIndex,
+}: {
+  title: string;
+  icon: string;
+  color: string;
+  pages: ScannedPage[];
+  isExpanded: boolean;
+  onToggle: () => void;
+  onRetake: (student: any, page: ScannedPage, pageIndex: number) => void;
+  onCrop: (student: any, page: ScannedPage, pageIndex: number) => void;
+  onDelete: (studentIndex: number, pageIndex: number) => void;
+  onPreview: (student: any, pageIndex: number) => void;
+  onAppend: () => void;
+  mockIndex: number;
+}) => {
+  const worstQuality: QualityLevel = pages.some(
+    (p: ScannedPage) => qualityScore(p.sharpness_score ?? 0, p.is_blurry ?? false) === 'red'
+  ) ? 'red'
+    : pages.some(
+    (p: ScannedPage) => qualityScore(p.sharpness_score ?? 0, p.is_blurry ?? false) === 'yellow'
+  ) ? 'yellow'
+    : 'green';
+
+  const mockStudent = {
+    student_index: mockIndex,
+    label: title,
+    pages,
+  };
+
+  const showDot = pages.length > 0;
+
+  return (
+    <View style={styles.studentCard}>
+      <TouchableOpacity style={styles.studentHeader} onPress={onToggle}>
+        {/* Quality dot */}
+        {showDot && (
+          <View style={[styles.qualityDot, { backgroundColor: QUALITY_COLORS[worstQuality].bg }]} />
+        )}
+
+        <View style={styles.studentInfo}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Ionicons name={icon as any} size={18} color={color} />
+            <Text style={styles.studentName}>{title}</Text>
+          </View>
+          <Text style={styles.studentMeta}>
+            {pages.length > 0 ? `${pages.length} page${pages.length !== 1 ? 's' : ''}` : 'No pages yet'}
+          </Text>
+        </View>
+
+        <TouchableOpacity 
+          style={{ paddingHorizontal: 10, paddingVertical: 6, backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 6, flexDirection: 'row', alignItems: 'center', gap: 4 }}
+          onPress={(e) => {
+            e.stopPropagation();
+            onAppend();
+          }}
+        >
+          <Ionicons name="add" size={14} color={COLORS.primary} />
+          <Text style={{ fontSize: 12, color: COLORS.primary, fontWeight: '600' }}>Add Pages</Text>
+        </TouchableOpacity>
+
+        <Ionicons
+          name={isExpanded ? 'chevron-up' : 'chevron-down'}
+          size={20}
+          color={COLORS.textMuted}
+        />
+      </TouchableOpacity>
+
+      {isExpanded && (
+        <View style={styles.pagesRow}>
+          {pages.length > 0 ? (
+            <FlatList
+              data={pages}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              keyExtractor={(item, index) => item.id || `qpma-${index}`}
+              contentContainerStyle={{ paddingHorizontal: 12, gap: 10 }}
+              renderItem={({ item, index }) => (
+                <PageThumb
+                  page={item}
+                  pageIndex={index}
+                  student={mockStudent as any}
+                  onRetake={onRetake}
+                  onCrop={onCrop}
+                  onDelete={onDelete}
+                  onPreview={onPreview}
+                />
+              )}
+            />
+          ) : (
+            <Text style={styles.emptyLabel}>No pages scanned yet</Text>
+          )}
+        </View>
+      )}
+    </View>
+  );
+});
+
 // ── Main ReviewScreen ─────────────────────────────────────────────────────────
 export default function ReviewScreen() {
   const router = useRouter();
@@ -245,13 +355,19 @@ export default function ReviewScreen() {
   const [isProcessingCrop, setIsProcessingCrop] = useState(false);
 
   const [expandedStudents, setExpandedStudents] = useState<Set<number>>(() => {
-    // Auto-expand students that have quality issues
+    // Auto-expand students/sections that have quality issues
     const initial = new Set<number>();
     session?.students.forEach(s => {
       if (s.pages.some(p => qualityScore(p.sharpness_score ?? 0, p.is_blurry ?? false) !== 'green')) {
         initial.add(s.student_index);
       }
     });
+    if (session?.question_paper?.pages?.some(p => qualityScore(p.sharpness_score ?? 0, p.is_blurry ?? false) !== 'green')) {
+      initial.add(-1);
+    }
+    if (session?.model_answer?.pages?.some(p => qualityScore(p.sharpness_score ?? 0, p.is_blurry ?? false) !== 'green')) {
+      initial.add(-2);
+    }
     return initial;
   });
 
@@ -271,7 +387,7 @@ export default function ReviewScreen() {
     setRetake({
       pageId:              page.id,
       studentIndex:        student.student_index,
-      phase:               'students',
+      phase:               student.student_index === -1 ? 'question_paper' : student.student_index === -2 ? 'model_answer' : 'students',
       replaceIndex:        pageIndex,
       originalPageNumber:  page.page_number,
       originalFilePath:    page.file_path,
@@ -285,20 +401,26 @@ export default function ReviewScreen() {
   }, []);
 
   const handleDelete = useCallback((studentIndex: number, pageIndex: number) => {
-    deletePage(studentIndex, pageIndex, 'students');
+    if (studentIndex === -1) {
+      deletePage(0, pageIndex, 'question_paper');
+    } else if (studentIndex === -2) {
+      deletePage(0, pageIndex, 'model_answer');
+    } else {
+      deletePage(studentIndex, pageIndex, 'students');
+    }
   }, [deletePage]);
 
   const handlePreview = useCallback((student: ScannedStudent, pageIndex: number) => {
-    // Navigate to a full-screen preview — implement as a modal route
+    const phaseToUse = student.student_index === -1 ? 'question_paper' : student.student_index === -2 ? 'model_answer' : 'students';
     router.push({
       pathname: '/page-preview',
       params: {
-        studentIndex: student.student_index,
+        studentIndex: student.student_index.toString(),
         pageNumber: student.pages[pageIndex]?.page_number.toString(),
-        phase: 'students',
+        phase: phaseToUse,
       },
     });
-  }, [router, session]);
+  }, [router]);
 
   const handleRename = useCallback((studentIndex: number, newLabel: string) => {
     renameStudent(studentIndex, newLabel);
@@ -308,6 +430,20 @@ export default function ReviewScreen() {
     useScanStore.setState({
       currentPhase: 'students',
       currentStudentIndex: studentIndex
+    });
+    router.push('/scanner');
+  }, [router]);
+
+  const handleQPAppend = useCallback(() => {
+    useScanStore.setState({
+      currentPhase: 'question_paper',
+    });
+    router.push('/scanner');
+  }, [router]);
+
+  const handleMAAppend = useCallback(() => {
+    useScanStore.setState({
+      currentPhase: 'model_answer',
     });
     router.push('/scanner');
   }, [router]);
@@ -386,7 +522,12 @@ export default function ReviewScreen() {
           <Ionicons name="arrow-back" size={22} color={COLORS.textPrimary} />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
-          <Text style={styles.sessionName}>{session.session_name}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Text style={styles.sessionName} numberOfLines={1}>{session.session_name}</Text>
+            <TouchableOpacity onPress={() => router.push({ pathname: '/session-setup', params: { sessionId: session.session_id } })}>
+              <Ionicons name="create-outline" size={16} color={COLORS.primary} />
+            </TouchableOpacity>
+          </View>
           <Text style={styles.batchName}>{session.batch_name}</Text>
         </View>
         <TouchableOpacity onPress={() => router.push('/scanner')} style={styles.scanMoreBtn}>
@@ -448,6 +589,46 @@ export default function ReviewScreen() {
 
       {/* Student list */}
       <ScrollView style={styles.list} contentContainerStyle={{ paddingBottom: 100 }}>
+        {(session.question_paper?.pages?.length > 0 || session.settings?.scan_question_paper) && (
+          <>
+            <Text style={styles.sectionTitle}>QUESTION PAPER</Text>
+            <QPMASection
+              title="Question Paper"
+              icon="document-text-outline"
+              color="#1976D2"
+              pages={session.question_paper?.pages || []}
+              isExpanded={expandedStudents.has(-1)}
+              onToggle={() => handleToggle(-1)}
+              onRetake={handleRetake}
+              onCrop={handleCrop}
+              onDelete={handleDelete}
+              onPreview={handlePreview}
+              onAppend={handleQPAppend}
+              mockIndex={-1}
+            />
+          </>
+        )}
+
+        {(session.model_answer?.pages?.length > 0 || session.settings?.scan_model_answer) && (
+          <>
+            <Text style={styles.sectionTitle}>MODEL ANSWER</Text>
+            <QPMASection
+              title="Model Answer"
+              icon="clipboard-outline"
+              color="#388E3C"
+              pages={session.model_answer?.pages || []}
+              isExpanded={expandedStudents.has(-2)}
+              onToggle={() => handleToggle(-2)}
+              onRetake={handleRetake}
+              onCrop={handleCrop}
+              onDelete={handleDelete}
+              onPreview={handlePreview}
+              onAppend={handleMAAppend}
+              mockIndex={-2}
+            />
+          </>
+        )}
+
         <Text style={styles.sectionTitle}>STUDENTS ({session.students.length})</Text>
         {session.students.filter(s => s.page_count > 0 || (s.student_index === 0 && session.students.length === 1)).map(student => (
           <StudentCard
@@ -543,12 +724,31 @@ export default function ReviewScreen() {
                         const sessionIndex = newSessions.findIndex(s => s.session_id === session.session_id);
                         if (sessionIndex > -1) {
                             const oldSession = newSessions[sessionIndex];
-                            const newStudents = [...oldSession.students];
-                            const si = cropTarget.student.student_index;
-                            const newPages = [...newStudents[si].pages];
-                            newPages[cropTarget.pageIndex] = updatedPage;
-                            newStudents[si] = { ...newStudents[si], pages: newPages };
-                            newSessions[sessionIndex] = { ...oldSession, students: newStudents };
+                            
+                            if (cropTarget.student.student_index === -1) {
+                                // Question Paper
+                                const newQP = { ...oldSession.question_paper };
+                                const newPages = [...newQP.pages];
+                                newPages[cropTarget.pageIndex] = updatedPage;
+                                newQP.pages = newPages;
+                                newSessions[sessionIndex] = { ...oldSession, question_paper: newQP };
+                            } else if (cropTarget.student.student_index === -2) {
+                                // Model Answer
+                                const newMA = { ...oldSession.model_answer };
+                                const newPages = [...newMA.pages];
+                                newPages[cropTarget.pageIndex] = updatedPage;
+                                newMA.pages = newPages;
+                                newSessions[sessionIndex] = { ...oldSession, model_answer: newMA };
+                            } else {
+                                // Students
+                                const newStudents = [...oldSession.students];
+                                const si = cropTarget.student.student_index;
+                                const newPages = [...newStudents[si].pages];
+                                newPages[cropTarget.pageIndex] = updatedPage;
+                                newStudents[si] = { ...newStudents[si], pages: newPages };
+                                newSessions[sessionIndex] = { ...oldSession, students: newStudents };
+                            }
+                            
                             return {
                                 savedSessions: newSessions,
                                 // Keep currentSession in sync
@@ -558,12 +758,27 @@ export default function ReviewScreen() {
                             };
                         }
                         if (state.currentSession?.session_id === session.session_id) {
-                            const newStudents = [...state.currentSession.students];
-                            const si = cropTarget.student.student_index;
-                            const newPages = [...newStudents[si].pages];
-                            newPages[cropTarget.pageIndex] = updatedPage;
-                            newStudents[si] = { ...newStudents[si], pages: newPages };
-                            return { currentSession: { ...state.currentSession, students: newStudents } };
+                            const oldSession = state.currentSession;
+                            if (cropTarget.student.student_index === -1) {
+                                const newQP = { ...oldSession.question_paper };
+                                const newPages = [...newQP.pages];
+                                newPages[cropTarget.pageIndex] = updatedPage;
+                                newQP.pages = newPages;
+                                return { currentSession: { ...oldSession, question_paper: newQP } };
+                            } else if (cropTarget.student.student_index === -2) {
+                                const newMA = { ...oldSession.model_answer };
+                                const newPages = [...newMA.pages];
+                                newPages[cropTarget.pageIndex] = updatedPage;
+                                newMA.pages = newPages;
+                                return { currentSession: { ...oldSession, model_answer: newMA } };
+                            } else {
+                                const newStudents = [...oldSession.students];
+                                const si = cropTarget.student.student_index;
+                                const newPages = [...newStudents[si].pages];
+                                newPages[cropTarget.pageIndex] = updatedPage;
+                                newStudents[si] = { ...newStudents[si], pages: newPages };
+                                return { currentSession: { ...oldSession, students: newStudents } };
+                            }
                         }
                         return {};
                     });
