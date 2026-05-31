@@ -10,6 +10,7 @@ import {
   View,
 } from 'react-native';
 import { Image } from 'expo-image';
+import { WebView } from 'react-native-webview';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../../config';
 import type { ReviewFileSlide } from '../../types/review';
@@ -90,10 +91,20 @@ export function PaperFileViewer({
         {slides.map(slide => {
           const hasError = failedImageIds[slide.id];
           const imageUrl = slide.annotationSignedUrl || slide.signedUrl;
+          const isPdf = isPdfSlide(slide, imageUrl);
 
           return (
             <View key={slide.id} style={styles.slide}>
-              {imageUrl && !hasError ? (
+              {imageUrl && !hasError && isPdf ? (
+                <WebView
+                  key={`${slide.id}-${imageUrl}`}
+                  source={{ uri: buildPdfViewerUrl(imageUrl) }}
+                  style={styles.webView}
+                  startInLoadingState
+                  onError={() => onImageError(slide.id)}
+                  onHttpError={() => onImageError(slide.id)}
+                />
+              ) : imageUrl && !hasError ? (
                 <Image
                   source={{ uri: imageUrl }}
                   style={styles.sheetImage}
@@ -117,6 +128,18 @@ export function PaperFileViewer({
       </ScrollView>
     </View>
   );
+}
+
+function isPdfSlide(slide: ReviewFileSlide, url: string | null): boolean {
+  const source = `${slide.contentType || ''} ${slide.originalName || ''} ${url || ''}`.toLowerCase();
+  return source.includes('application/pdf') || source.includes('.pdf');
+}
+
+function buildPdfViewerUrl(url: string): string {
+  if (url.startsWith('file://')) {
+    return url;
+  }
+  return `https://docs.google.com/gview?embedded=1&url=${encodeURIComponent(url)}`;
 }
 
 const styles = StyleSheet.create({
@@ -163,6 +186,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   sheetImage: {
+    width: '100%',
+    height: '100%',
+  },
+  webView: {
+    backgroundColor: '#1E1E1E',
     width: '100%',
     height: '100%',
   },

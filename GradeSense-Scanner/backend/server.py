@@ -805,6 +805,44 @@ async def delete_batch(batch_id: str, authorization: Optional[str] = Header(None
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@api_router.post("/batches/{batch_id}/archive")
+async def archive_batch(batch_id: str, authorization: Optional[str] = Header(None)):
+    """Archive a webapp batch while preserving its historical exam/student records."""
+    user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    now = utc_now_text()
+
+    if webapp_db_url:
+        conn = None
+        try:
+            conn = await asyncpg.connect(webapp_db_url)
+            row = await conn.fetchrow(
+                '''
+                UPDATE batches
+                SET status = 'archived', updated_at = $3
+                WHERE id = $1 AND teacher_id = $2
+                RETURNING id
+                ''',
+                batch_id,
+                user.user_id,
+                now
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="Batch not found")
+            return {"success": True, "id": batch_id}
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error archiving batch in Neon: {e}")
+            raise HTTPException(status_code=500, detail="Failed to archive batch")
+        finally:
+            if conn:
+                await conn.close()
+
+    await db.batches.update_one({"batch_id": batch_id}, {"$set": {"status": "archived"}})
+    return {"success": True, "id": batch_id}
+
+
 @api_router.post("/batches/{batch_id}/students")
 async def create_student(batch_id: str, data: dict, authorization: Optional[str] = Header(None)):
     """Invite/Create a student on the webapp"""
@@ -2079,16 +2117,16 @@ async def get_submission_detail_proxy(submission_id: str, authorization: Optiona
     if webapp_db_url and not submission_id.startswith("sub_local_"):
         try:
             conn = await asyncpg.connect(webapp_db_url)
-            # Get submission + scores
             sub_row = await conn.fetchrow(
                 '''
                 SELECT s.id, s.student_name, s.student_roll_number, s.total_score, s.status,
-                       s.teacher_feedback, e.total_marks
+                       s.teacher_feedback, e.id AS exam_id, e.total_marks
                 FROM submissions s
                 JOIN exams e ON e.id = s.exam_id
-                WHERE s.id = $1
+                WHERE s.id = $1 AND e.teacher_id = $2
                 ''',
-                submission_id
+                submission_id,
+                user.user_id
             )
             if sub_row:
                 score_rows = await conn.fetch(
@@ -2115,7 +2153,7 @@ async def get_submission_detail_proxy(submission_id: str, authorization: Optiona
                 if has_annotation_col:
                     file_rows = await conn.fetch(
                         '''
-                        SELECT f.id, f.gcs_key, f.annotation_gcs_key
+                        SELECT f.id, f.kind, f.original_name, f.content_type, f.gcs_key, f.annotation_gcs_key
                         FROM submission_files f
                         WHERE f.submission_id = $1
                         ''',
@@ -2124,12 +2162,23 @@ async def get_submission_detail_proxy(submission_id: str, authorization: Optiona
                 else:
                     file_rows = await conn.fetch(
                         '''
-                        SELECT f.id, f.gcs_key, NULL as annotation_gcs_key
+                        SELECT f.id, f.kind, f.original_name, f.content_type, f.gcs_key, NULL as annotation_gcs_key
                         FROM submission_files f
                         WHERE f.submission_id = $1
                         ''',
                         submission_id
                     )
+                exam_file_rows = await conn.fetch(
+                    '''
+                    SELECT id, kind, original_name, content_type, gcs_key
+                    FROM exam_files
+                    WHERE exam_id = $1
+                      AND kind IN ('question_paper', 'model_answer')
+                    ORDER BY CASE kind WHEN 'question_paper' THEN 1 WHEN 'model_answer' THEN 2 ELSE 3 END,
+                             created_at ASC
+                    ''',
+                    sub_row["exam_id"]
+                )
                 await conn.close()
 
                 files = []
@@ -2148,8 +2197,26 @@ async def get_submission_detail_proxy(submission_id: str, authorization: Optiona
                         
                     files.append({
                         "id": str(f["id"]),
+                        "kind": f["kind"] or "answer_sheet",
+                        "fileType": f["kind"] or "answer_sheet",
+                        "originalName": f["original_name"] or "answer_sheet.pdf",
+                        "contentType": f["content_type"],
                         "signedUrl": signed_url,
                         "annotationSignedUrl": ann_signed_url
+                    })
+                for f in exam_file_rows:
+                    gcs_key = f["gcs_key"]
+                    signed_url = get_gcs_signed_url(gcs_key) if gcs_key else None
+                    if not signed_url and gcs_key:
+                        signed_url = f"/api/files/{gcs_key}"
+                    files.append({
+                        "id": str(f["id"]),
+                        "kind": f["kind"],
+                        "fileType": f["kind"],
+                        "originalName": f["original_name"],
+                        "contentType": f["content_type"],
+                        "signedUrl": signed_url,
+                        "annotationSignedUrl": None
                     })
 
                 return {
@@ -2263,30 +2330,35 @@ async def get_analytics_overview_proxy(authorization: Optional[str] = Header(Non
     webapp_db_url = os.environ.get("WEBAPP_DB_URL")
 
     if webapp_db_url:
+        conn = None
         try:
             conn = await asyncpg.connect(webapp_db_url)
-            # Get exam stats for this teacher
-            rows = await conn.fetch(
+            stats_row = await conn.fetchrow(
                 '''
-                SELECT e.id, e.name, e.exam_date, e.total_marks, e.status,
-                       COUNT(s.id) as submission_count,
-                       COUNT(CASE WHEN s.status = 'reviewed' THEN 1 END) as reviewed_count,
-                       AVG(s.total_score::float / NULLIF(e.total_marks, 0) * 100) as avg_pct
+                SELECT COUNT(DISTINCT e.id) AS exams_count,
+                       COUNT(s.id) AS submission_count,
+                       COUNT(CASE WHEN s.status IN ('graded', 'reviewed', 'published') THEN 1 END) AS reviewed_count,
+                       AVG(s.percentage) AS average_percentage
                 FROM exams e
                 LEFT JOIN submissions s ON s.exam_id = e.id
                 WHERE e.teacher_id = $1
-                GROUP BY e.id, e.name, e.exam_date, e.total_marks, e.status, e.created_at
+                  AND COALESCE(e.status, '') <> 'deleted'
+                ''',
+                user.user_id
+            )
+            rows = await conn.fetch(
+                '''
+                SELECT e.id, e.name, e.exam_date, e.total_marks, e.status
+                FROM exams e
+                WHERE e.teacher_id = $1
+                  AND COALESCE(e.status, '') <> 'deleted'
                 ORDER BY e.created_at DESC
                 LIMIT 10
                 ''',
                 user.user_id
             )
-            await conn.close()
 
             recent_exams = []
-            total_submissions = 0
-            total_reviewed = 0
-            avg_list = []
             for r in rows:
                 recent_exams.append({
                     "id": str(r["id"]),
@@ -2295,23 +2367,21 @@ async def get_analytics_overview_proxy(authorization: Optional[str] = Header(Non
                     "totalMarks": r["total_marks"],
                     "status": r["status"] or "graded"
                 })
-                total_submissions += r["submission_count"] or 0
-                total_reviewed += r["reviewed_count"] or 0
-                if r["avg_pct"] is not None:
-                    avg_list.append(float(r["avg_pct"]))
 
-            avg_pct = round(sum(avg_list) / len(avg_list), 1) if avg_list else 0.0
             return {
                 "data": {
-                    "examsCount": len(recent_exams),
-                    "submissionsCount": total_submissions,
-                    "reviewedCount": total_reviewed,
-                    "averagePercentage": avg_pct,
+                    "examsCount": stats_row["exams_count"] if stats_row else len(recent_exams),
+                    "submissionsCount": stats_row["submission_count"] if stats_row else 0,
+                    "reviewedCount": stats_row["reviewed_count"] if stats_row else 0,
+                    "averagePercentage": round(float(stats_row["average_percentage"] or 0), 1) if stats_row else 0.0,
                     "recentExams": recent_exams
                 }
             }
         except Exception as e:
             logger.error(f"Error querying Neon for analytics: {e}")
+        finally:
+            if conn:
+                await conn.close()
 
     # Fallback: MongoDB scan sessions
     sessions = await db.scan_sessions.find({"status": "completed", "user_id": user.user_id}).to_list(100)

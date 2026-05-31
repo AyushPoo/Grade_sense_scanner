@@ -8,15 +8,17 @@ interface ActiveStudentIdentity {
 
 type LocalDocumentKind = 'question_paper' | 'model_answer' | 'answer_sheet';
 
-export function buildReviewFileSlides(files: ReviewFileItem[], retryToken = 0): ReviewFileSlide[] {
+export function buildReviewFileSlides(files: ReviewFileItem[]): ReviewFileSlide[] {
   return files
     .map((file, index) => {
       const type = getFileType(file);
       return {
         id: file.id,
         title: getFileTitle(type),
-        signedUrl: withRetryToken(file.signedUrl, retryToken),
-        annotationSignedUrl: withRetryToken(file.annotationSignedUrl, retryToken),
+        signedUrl: file.signedUrl,
+        annotationSignedUrl: file.annotationSignedUrl,
+        contentType: file.contentType,
+        originalName: file.originalName,
         type,
         order: getFileOrder(type, index),
       };
@@ -111,15 +113,6 @@ function getFileOrder(type: ReviewFileSlide['type'], index: number): number {
     default:
       return 10 + index;
   }
-}
-
-function withRetryToken(url: string | null, retryToken: number): string | null {
-  if (!url || retryToken <= 0) {
-    return url;
-  }
-
-  const separator = url.includes('?') ? '&' : '?';
-  return `${url}${separator}reviewRetry=${retryToken}`;
 }
 
 function buildFilesFromPages(

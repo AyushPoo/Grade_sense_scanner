@@ -34,8 +34,8 @@ export function GradingControlPanel({
 }: GradingControlPanelProps) {
   return (
     <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'position' : 'padding'}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 20 : 0}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 12 : 0}
     >
       <View style={styles.panel}>
         <View style={styles.stepperRow}>
@@ -108,9 +108,9 @@ const styles = StyleSheet.create({
     borderTopColor: COLORS.border,
     borderTopWidth: 1,
     elevation: 10,
-    paddingBottom: 24,
-    paddingHorizontal: 16,
-    paddingTop: 16,
+    paddingBottom: Platform.OS === 'ios' ? 18 : 10,
+    paddingHorizontal: 14,
+    paddingTop: 12,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: -4 },
     shadowOpacity: 0.05,
@@ -120,14 +120,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 12,
+    marginBottom: 10,
   },
   questionSummary: {
     flex: 1,
   },
   questionTitle: {
     color: COLORS.text,
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '800',
   },
   questionMax: {
@@ -149,17 +149,17 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.cardBg,
     borderRadius: 20,
     elevation: 1,
-    height: 40,
+    height: 36,
     justifyContent: 'center',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.1,
     shadowRadius: 1,
-    width: 40,
+    width: 36,
   },
   stepperValue: {
     color: COLORS.text,
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '700',
     textAlign: 'center',
     width: 50,
@@ -168,7 +168,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexDirection: 'row',
     gap: 10,
-    marginBottom: 16,
+    marginBottom: 10,
   },
   commentInputContainer: {
     backgroundColor: COLORS.backgroundDark,
@@ -180,10 +180,10 @@ const styles = StyleSheet.create({
   commentInput: {
     color: COLORS.text,
     fontSize: 14,
-    maxHeight: 96,
-    minHeight: 44,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    maxHeight: 72,
+    minHeight: 40,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
   },
   micButton: {
     alignItems: 'center',
@@ -191,9 +191,9 @@ const styles = StyleSheet.create({
     borderColor: `${COLORS.primary}20`,
     borderRadius: 8,
     borderWidth: 1,
-    height: 44,
+    height: 42,
     justifyContent: 'center',
-    width: 44,
+    width: 42,
   },
   saveButton: {
     alignItems: 'center',
@@ -202,7 +202,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
     justifyContent: 'center',
-    paddingVertical: 16,
+    paddingVertical: 13,
   },
   saveButtonDisabled: {
     backgroundColor: COLORS.textMuted,

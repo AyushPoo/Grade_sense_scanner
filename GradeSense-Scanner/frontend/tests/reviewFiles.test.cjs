@@ -35,18 +35,20 @@ const {
   REVIEW_DIFFICULTIES,
 } = loadTsModule('src/utils/reviewSettings.ts');
 
-test('buildReviewFileSlides orders document types and adds retry tokens to signed urls', () => {
+test('buildReviewFileSlides orders document types without mutating signed urls', () => {
   const slides = buildReviewFileSlides(
     [
       {
         id: 'student-file',
         kind: 'answer_sheet',
+        contentType: 'application/pdf',
         signedUrl: 'https://cdn.example/student.pdf?X-Amz-Signature=old',
         annotationSignedUrl: null,
       },
       {
         id: 'qp-file',
         fileType: 'question_paper',
+        contentType: 'application/pdf',
         signedUrl: 'https://cdn.example/question.pdf',
         annotationSignedUrl: null,
       },
@@ -68,11 +70,12 @@ test('buildReviewFileSlides orders document types and adds retry tokens to signe
       { id: 'student-file', title: 'Student Sheet' },
     ]
   );
-  assert.equal(slides[0].signedUrl, 'https://cdn.example/question.pdf?reviewRetry=42');
+  assert.equal(slides[0].signedUrl, 'https://cdn.example/question.pdf');
+  assert.equal(slides[0].contentType, 'application/pdf');
   assert.equal(slides[1].signedUrl, null);
   assert.equal(
     slides[2].signedUrl,
-    'https://cdn.example/student.pdf?X-Amz-Signature=old&reviewRetry=42'
+    'https://cdn.example/student.pdf?X-Amz-Signature=old'
   );
 });
 

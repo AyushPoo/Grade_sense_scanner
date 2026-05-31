@@ -25,6 +25,7 @@ export interface ReviewFileItem {
   kind?: string | null;
   fileType?: string | null;
   originalName?: string | null;
+  contentType?: string | null;
 }
 
 export interface ReviewFileSlide {
@@ -33,4 +34,6 @@ export interface ReviewFileSlide {
   signedUrl: string | null;
   annotationSignedUrl: string | null;
   type: 'question' | 'model' | 'student' | 'other';
+  contentType?: string | null;
+  originalName?: string | null;
 }

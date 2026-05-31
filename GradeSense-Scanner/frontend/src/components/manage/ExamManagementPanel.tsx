@@ -121,7 +121,7 @@ function ExamCard({
               disabled={exam.status === 'closed'}
               onPress={() => onClose(exam)}
             />
-            <ActionButton icon="archive-outline" label="Archive" color={COLORS.error} onPress={() => onArchive(exam)} />
+            <ActionButton icon="trash-outline" label="Delete" color={COLORS.error} onPress={() => onArchive(exam)} />
           </>
         )}
       </View>

@@ -12,6 +12,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as Haptics from 'expo-haptics';
+import {
+  ExpoSpeechRecognitionModule,
+  useSpeechRecognitionEvent,
+} from 'expo-speech-recognition';
 import { COLORS, getBackendUrl } from '../src/config';
 import { useAuthStore } from '../src/store/authStore';
 import { useScanStore } from '../src/store/scanStore';
@@ -20,7 +24,8 @@ import { PaperFileViewer } from '../src/components/review/PaperFileViewer';
 import { RubricReviewPanel } from '../src/components/review/RubricReviewPanel';
 import { VoiceDictationModal } from '../src/components/review/VoiceDictationModal';
 import { ReviewSettingsSheet } from '../src/components/review/ReviewSettingsSheet';
-import type { ReviewFileItem, ScoreItem, SubmissionListItem } from '../src/types/review';
+import { StudentAnswerSheetPanel } from '../src/components/review/StudentAnswerSheetPanel';
+import type { ReviewFileItem, ReviewFileSlide, ScoreItem, SubmissionListItem } from '../src/types/review';
 import { buildLocalReviewFiles, buildReviewFileSlides, mergeReviewFiles } from '../src/utils/reviewFiles';
 import { normalizeReviewScores } from '../src/utils/reviewScores';
 import { DEFAULT_REVIEW_SETTINGS, ReviewSettings } from '../src/utils/reviewSettings';
@@ -93,9 +98,9 @@ export default function ReviewGradingScreen() {
 
   // UI state
   const [activeTab, setActiveTab] = useState<'sheet' | 'rubric'>('sheet');
+  const [sheetMode, setSheetMode] = useState<'answer' | 'files'>('answer');
   const [activeScoreIndex, setActiveScoreIndex] = useState(0);
   const [activeFileIndex, setActiveFileIndex] = useState(0);
-  const [imageRetryToken, setImageRetryToken] = useState(0);
   const [failedImageIds, setFailedImageIds] = useState<Record<string, boolean>>({});
 
   // Voice dictation state
@@ -119,8 +124,8 @@ export default function ReviewGradingScreen() {
     [files, localFiles]
   );
   const fileSlides = useMemo(
-    () => buildReviewFileSlides(reviewFiles, imageRetryToken),
-    [reviewFiles, imageRetryToken]
+    () => buildReviewFileSlides(reviewFiles),
+    [reviewFiles]
   );
 
   // Voice dictation pulsing animation
@@ -145,13 +150,14 @@ export default function ReviewGradingScreen() {
     } catch {}
     setDictationText(activeScore?.teacherCorrection || '');
     setShowDictationModal(true);
-    setIsRecording(true);
+    await startSpeechRecognition();
   };
 
   const stopVoiceDictation = async () => {
     try {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch {}
+    ExpoSpeechRecognitionModule.stop();
     setIsRecording(false);
   };
 
@@ -167,6 +173,7 @@ export default function ReviewGradingScreen() {
   };
 
   const handleCloseDictation = () => {
+    ExpoSpeechRecognitionModule.abort();
     setShowDictationModal(false);
     setIsRecording(false);
   };
@@ -175,7 +182,7 @@ export default function ReviewGradingScreen() {
     if (isRecording) {
       stopVoiceDictation();
     } else {
-      setIsRecording(true);
+      startSpeechRecognition();
     }
   };
 
@@ -184,6 +191,44 @@ export default function ReviewGradingScreen() {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch {}
     setDictationText(prev => prev ? `${prev} ${suggestion}` : suggestion);
+  };
+
+  useSpeechRecognitionEvent('start', () => setIsRecording(true));
+  useSpeechRecognitionEvent('end', () => setIsRecording(false));
+  useSpeechRecognitionEvent('result', event => {
+    const transcript = event.results[0]?.transcript;
+    if (transcript) {
+      setDictationText(transcript);
+    }
+  });
+  useSpeechRecognitionEvent('error', event => {
+    setIsRecording(false);
+    Alert.alert('Voice Dictation Failed', event.message || 'Speech recognition is unavailable on this device.');
+  });
+
+  const startSpeechRecognition = async () => {
+    try {
+      const availability = ExpoSpeechRecognitionModule.isRecognitionAvailable();
+      if (!availability) {
+        Alert.alert('Voice Dictation Unavailable', 'Speech recognition is not available on this device.');
+        return;
+      }
+
+      const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('Microphone Permission Needed', 'Allow microphone and speech recognition access to use voice comments.');
+        return;
+      }
+
+      ExpoSpeechRecognitionModule.start({
+        lang: 'en-IN',
+        interimResults: true,
+        continuous: false,
+      });
+    } catch (err: any) {
+      setIsRecording(false);
+      Alert.alert('Voice Dictation Failed', err.message || 'Could not start speech recognition.');
+    }
   };
 
   useEffect(() => {
@@ -338,7 +383,6 @@ export default function ReviewGradingScreen() {
     if (submissions.length === 0) return;
     setActiveFileIndex(0);
     setFailedImageIds({});
-    setImageRetryToken(0);
     fetchActiveSubmissionDetail();
   }, [fetchActiveSubmissionDetail, submissions.length]);
 
@@ -354,9 +398,16 @@ export default function ReviewGradingScreen() {
 
   const handleRetryPaperFiles = useCallback(async () => {
     setFailedImageIds({});
-    setImageRetryToken(Date.now());
     await fetchActiveSubmissionDetail();
   }, [fetchActiveSubmissionDetail]);
+
+  const handleOpenFileType = useCallback((type: ReviewFileSlide['type']) => {
+    const index = fileSlides.findIndex(slide => slide.type === type);
+    if (index >= 0) {
+      setActiveFileIndex(index);
+      setSheetMode('files');
+    }
+  }, [fileSlides]);
 
   const handleScoreChange = (scoreId: string, obtained: number) => {
     setScores(prev =>
@@ -547,20 +598,36 @@ export default function ReviewGradingScreen() {
       ) : (
         <View style={{ flex: 1 }}>
           {activeTab === 'sheet' ? (
-            <PaperFileViewer
-              slides={fileSlides}
-              activeIndex={activeFileIndex}
-              failedImageIds={failedImageIds}
-              onSelectIndex={setActiveFileIndex}
-              onImageError={handleImageError}
-              onRetry={handleRetryPaperFiles}
-            />
+            sheetMode === 'answer' ? (
+              <StudentAnswerSheetPanel
+                activeScore={activeScore}
+                fileSlides={fileSlides}
+                onOpenFileType={handleOpenFileType}
+              />
+            ) : (
+              <View style={styles.paperFilesContainer}>
+                <TouchableOpacity style={styles.answerTextButton} onPress={() => setSheetMode('answer')} activeOpacity={0.82}>
+                  <Ionicons name="reader-outline" size={16} color={COLORS.primary} />
+                  <Text style={styles.answerTextButtonText}>Back to student answer text</Text>
+                </TouchableOpacity>
+                <PaperFileViewer
+                  slides={fileSlides}
+                  activeIndex={activeFileIndex}
+                  failedImageIds={failedImageIds}
+                  onSelectIndex={setActiveFileIndex}
+                  onImageError={handleImageError}
+                  onRetry={handleRetryPaperFiles}
+                />
+              </View>
+            )
           ) : (
             <RubricReviewPanel
               scores={scores}
               activeScoreIndex={activeScoreIndex}
               feedbackEnabled={reviewSettings.feedbackEnabled}
               onSelectScore={setActiveScoreIndex}
+              onImproveAI={handleFlagGrading}
+              isImprovingAI={isFlaggingGrading}
             />
           )}
 
@@ -757,6 +824,25 @@ const styles = StyleSheet.create({
     marginTop: 12,
     fontSize: 14,
     color: COLORS.textLight,
+  },
+  paperFilesContainer: {
+    flex: 1,
+    backgroundColor: '#1E1E1E',
+  },
+  answerTextButton: {
+    alignItems: 'center',
+    backgroundColor: COLORS.cardBg,
+    borderBottomColor: COLORS.border,
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  answerTextButtonText: {
+    color: COLORS.primary,
+    fontSize: 13,
+    fontWeight: '800',
   },
   headerActions: {
     alignItems: 'center',

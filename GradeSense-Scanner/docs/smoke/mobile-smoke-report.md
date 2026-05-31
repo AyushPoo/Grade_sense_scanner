@@ -1,6 +1,6 @@
 # Mobile Smoke Test Report
 
-- Generated: 2026-05-31T07:49:57.022746+00:00
+- Generated: 2026-05-31T09:54:32.372872+00:00
 - Overall: PASS
 
 ### Backend unit tests: PASS
@@ -12,7 +12,7 @@
 ```text
 .............
 ----------------------------------------------------------------------
-Ran 13 tests in 0.002s
+Ran 13 tests in 0.001s
 
 OK
 ```
@@ -34,14 +34,14 @@ OK
 - Exit code: `0`
 
 ```text
-✔ normalizeManagedExams maps API rows into display-ready exam records (2.6484ms)
-✔ normalizeManagePerformance returns stable empty arrays for partial payloads (1.5929ms)
-✔ buildReviewFileSlides orders document types and adds retry tokens to signed urls (4.3146ms)
-✔ buildLocalReviewFiles maps local session question, model, and active student pages (1.7077ms)
-✔ normalizeReviewScores preserves extracted student answer text from existing API fields (0.324ms)
-✔ normalizeReviewSettings returns complete webapp review settings from partial API data (0.3358ms)
-✔ buildReviewSettingsPayload trims instructions for API writes (0.1978ms)
-✔ manage screen does not expose sandbox backdoor controls to teachers (0.912ms)
+✔ normalizeManagedExams maps API rows into display-ready exam records (1.0648ms)
+✔ normalizeManagePerformance returns stable empty arrays for partial payloads (0.9009ms)
+✔ buildReviewFileSlides orders document types without mutating signed urls (1.7949ms)
+✔ buildLocalReviewFiles maps local session question, model, and active student pages (0.4801ms)
+✔ normalizeReviewScores preserves extracted student answer text from existing API fields (0.2147ms)
+✔ normalizeReviewSettings returns complete webapp review settings from partial API data (0.2704ms)
+✔ buildReviewSettingsPayload trims instructions for API writes (0.1907ms)
+✔ manage screen does not expose sandbox backdoor controls to teachers (1.3354ms)
 ℹ tests 8
 ℹ suites 0
 ℹ pass 8
@@ -49,7 +49,7 @@ OK
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 648.0946
+ℹ duration_ms 592.0605
 ```
 
 ### Frontend TypeScript: PASS
@@ -93,7 +93,7 @@ node_modules\expo-router\assets\sitemap.png (465 B)
 node_modules\expo-router\assets\unmatched.png (4.75 kB)
 
 › android bundles (1):
-_expo/static/js/android/entry-39995dbafa947316a79481a285ab2b9f.hbc (5.09 MB)
+_expo/static/js/android/entry-6c1a272cd7e1748f79ec2995408c105d.hbc (5.14 MB)
 
 › Files (1):
 metadata.json (3.03 kB)

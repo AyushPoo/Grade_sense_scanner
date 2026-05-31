@@ -420,12 +420,12 @@ export default function ManageScreen() {
   const handleArchiveExam = (exam: ManagedExam) => {
     if (!token) return;
     Alert.alert(
-      'Archive Exam?',
-      `This removes "${exam.name}" from the active mobile roster without deleting historical submissions.`,
+      'Delete Exam?',
+      `This removes "${exam.name}" from the active roster. Historical database records are preserved by the backend.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Archive',
+          text: 'Delete',
           style: 'destructive',
           onPress: async () => {
             setProcessingExamId(exam.id);
@@ -433,7 +433,7 @@ export default function ManageScreen() {
               await archiveManagedExam({ backendUrl: getBackendUrl(), token, examId: exam.id });
               setManagedExams(prev => prev.filter(item => item.id !== exam.id));
             } catch (err: any) {
-              Alert.alert('Failed', err.message || 'Could not archive exam.');
+              Alert.alert('Failed', err.message || 'Could not delete exam.');
             } finally {
               setProcessingExamId(null);
             }
@@ -519,6 +519,36 @@ export default function ManageScreen() {
               if (res.ok) {
                 Alert.alert('Success', 'Batch deleted successfully.');
                 fetchBatches();
+              }
+            } catch (err: any) {
+              Alert.alert('Error', err.message);
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const handleArchiveBatch = async (batchId: string, name: string) => {
+    Alert.alert(
+      'Archive Batch?',
+      `Archive "${name}"? Historical exams and students will remain available from the webapp archive.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Archive',
+          onPress: async () => {
+            try {
+              const res = await fetch(`${getBackendUrl()}/api/batches/${batchId}/archive`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}` }
+              });
+              if (res.ok) {
+                Alert.alert('Success', 'Batch archived successfully.');
+                fetchBatches();
+              } else {
+                const txt = await res.text();
+                Alert.alert('Failed', `Could not archive batch: ${txt}`);
               }
             } catch (err: any) {
               Alert.alert('Error', err.message);
@@ -868,6 +898,12 @@ export default function ManageScreen() {
                           <Text style={styles.manageSubtitle}>{batch.student_count || 0} students</Text>
                         </View>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                          <TouchableOpacity
+                            onPress={() => handleArchiveBatch(batch.batch_id, batch.name)}
+                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          >
+                            <Ionicons name="archive-outline" size={18} color={COLORS.warning} />
+                          </TouchableOpacity>
                           <TouchableOpacity
                             onPress={() => handleDeleteBatch(batch.batch_id, batch.name)}
                             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}

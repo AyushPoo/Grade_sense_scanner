@@ -70,6 +70,16 @@
           "cameraPermission": "Allow GradeSense to access your camera for scanning documents"
         }
       ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Allow GradeSense to use your microphone for voice comments",
+          "speechRecognitionPermission": "Allow GradeSense to transcribe teacher voice comments",
+          "androidSpeechServicePackages": [
+            "com.google.android.googlequicksearchbox"
+          ]
+        }
+      ],
       "expo-web-browser"
     ],
     "experiments": {
