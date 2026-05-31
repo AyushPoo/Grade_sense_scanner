@@ -1,58 +1,47 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
-  ScrollView,
-  TextInput,
   ActivityIndicator,
   Alert,
-  Dimensions,
-  Modal,
   Animated,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { Image } from 'expo-image';
 import * as Haptics from 'expo-haptics';
 import { COLORS, getBackendUrl } from '../src/config';
 import { useAuthStore } from '../src/store/authStore';
-
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-
-interface SubmissionListItem {
-  id: string;
-  studentName: string;
-  studentRollNumber: string;
-  totalScore: number;
-  totalMarks: number;
-  status: string;
-}
-
-interface ScoreItem {
-  id: string;
-  questionNumber: string;
-  obtainedMarks: number;
-  maxMarks: number;
-  questionText: string;
-  aiFeedback: string | null;
-  teacherCorrection: string | null;
-}
-
-interface FileItem {
-  id: string;
-  signedUrl: string | null;
-  annotationSignedUrl: string | null;
-}
+import { useScanStore } from '../src/store/scanStore';
+import { GradingControlPanel } from '../src/components/review/GradingControlPanel';
+import { PaperFileViewer } from '../src/components/review/PaperFileViewer';
+import { RubricReviewPanel } from '../src/components/review/RubricReviewPanel';
+import { VoiceDictationModal } from '../src/components/review/VoiceDictationModal';
+import { ReviewSettingsSheet } from '../src/components/review/ReviewSettingsSheet';
+import type { ReviewFileItem, ScoreItem, SubmissionListItem } from '../src/types/review';
+import { buildLocalReviewFiles, buildReviewFileSlides, mergeReviewFiles } from '../src/utils/reviewFiles';
+import { normalizeReviewScores } from '../src/utils/reviewScores';
+import { DEFAULT_REVIEW_SETTINGS, ReviewSettings } from '../src/utils/reviewSettings';
+import {
+  fetchExamReviewSettings,
+  flagExamGrading,
+  updateExamReviewSettings,
+} from '../src/api/reviewSettings';
 
 export default function ReviewGradingScreen() {
   const router = useRouter();
   const { examId, sessionName } = useLocalSearchParams<{ examId: string; sessionName?: string }>();
   const token = useAuthStore(state => state.sessionToken);
+  const savedSessions = useScanStore(state => state.savedSessions);
   const webappUrl = getBackendUrl();
   const [isReevaluating, setIsReevaluating] = useState(false);
+  const [showSettingsSheet, setShowSettingsSheet] = useState(false);
+  const [isFlaggingGrading, setIsFlaggingGrading] = useState(false);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [reviewSettings, setReviewSettings] = useState<ReviewSettings>(DEFAULT_REVIEW_SETTINGS);
+  const [settingsSyncStatus, setSettingsSyncStatus] = useState<'idle' | 'loaded' | 'unavailable'>('idle');
 
   const handleReevaluate = () => {
     if (!examId || !token) return;
@@ -96,8 +85,7 @@ export default function ReviewGradingScreen() {
   const [isLoadingList, setIsLoadingList] = useState(true);
 
   // Active submission details
-  const [activeSubmission, setActiveSubmission] = useState<any>(null);
-  const [files, setFiles] = useState<FileItem[]>([]);
+  const [files, setFiles] = useState<ReviewFileItem[]>([]);
   const [scores, setScores] = useState<ScoreItem[]>([]);
   const [teacherFeedback, setTeacherFeedback] = useState('');
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
@@ -106,12 +94,34 @@ export default function ReviewGradingScreen() {
   // UI state
   const [activeTab, setActiveTab] = useState<'sheet' | 'rubric'>('sheet');
   const [activeScoreIndex, setActiveScoreIndex] = useState(0);
+  const [activeFileIndex, setActiveFileIndex] = useState(0);
+  const [imageRetryToken, setImageRetryToken] = useState(0);
+  const [failedImageIds, setFailedImageIds] = useState<Record<string, boolean>>({});
 
   // Voice dictation state
   const [showDictationModal, setShowDictationModal] = useState(false);
   const [dictationText, setDictationText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const pulseAnim = useRef(new Animated.Value(1)).current;
+  const activeSub = submissions[currentSubIndex];
+  const activeSubId = activeSub?.id;
+  const activeScore = scores[activeScoreIndex];
+  const localSession = useMemo(
+    () => savedSessions.find(session => session.exam_id === examId),
+    [examId, savedSessions]
+  );
+  const localFiles = useMemo(
+    () => buildLocalReviewFiles(localSession, activeSub),
+    [activeSub, localSession]
+  );
+  const reviewFiles = useMemo(
+    () => mergeReviewFiles(files, localFiles),
+    [files, localFiles]
+  );
+  const fileSlides = useMemo(
+    () => buildReviewFileSlides(reviewFiles, imageRetryToken),
+    [reviewFiles, imageRetryToken]
+  );
 
   // Voice dictation pulsing animation
   useEffect(() => {
@@ -127,12 +137,12 @@ export default function ReviewGradingScreen() {
     } else {
       pulseAnim.setValue(1);
     }
-  }, [isRecording]);
+  }, [isRecording, pulseAnim]);
 
   const startVoiceDictation = async () => {
     try {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    } catch (_) {}
+    } catch {}
     setDictationText(activeScore?.teacherCorrection || '');
     setShowDictationModal(true);
     setIsRecording(true);
@@ -141,7 +151,7 @@ export default function ReviewGradingScreen() {
   const stopVoiceDictation = async () => {
     try {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch (_) {}
+    } catch {}
     setIsRecording(false);
   };
 
@@ -153,7 +163,82 @@ export default function ReviewGradingScreen() {
     setIsRecording(false);
     try {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    } catch (_) {}
+    } catch {}
+  };
+
+  const handleCloseDictation = () => {
+    setShowDictationModal(false);
+    setIsRecording(false);
+  };
+
+  const handleToggleDictationRecording = () => {
+    if (isRecording) {
+      stopVoiceDictation();
+    } else {
+      setIsRecording(true);
+    }
+  };
+
+  const handleAddDictationSuggestion = async (suggestion: string) => {
+    try {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch {}
+    setDictationText(prev => prev ? `${prev} ${suggestion}` : suggestion);
+  };
+
+  useEffect(() => {
+    if (!examId || !token || !webappUrl) return;
+
+    const loadSettings = async () => {
+      try {
+        const settings = await fetchExamReviewSettings({ backendUrl: webappUrl, token, examId });
+        setReviewSettings(settings);
+        setSettingsSyncStatus('loaded');
+      } catch (err) {
+        console.error('Failed to fetch synced review settings:', err);
+        setSettingsSyncStatus('unavailable');
+      }
+    };
+
+    loadSettings();
+  }, [examId, token, webappUrl]);
+
+  const handleSaveReviewSettings = async (settings: ReviewSettings) => {
+    if (!examId || !token || !webappUrl) return;
+
+    setIsSavingSettings(true);
+    try {
+      const saved = await updateExamReviewSettings({ backendUrl: webappUrl, token, examId }, settings);
+      setReviewSettings(saved);
+      setSettingsSyncStatus('loaded');
+      setShowSettingsSheet(false);
+    } catch (err: any) {
+      if (err.status === 404 || err.status === 405) {
+        Alert.alert('Sync Endpoint Missing', 'The webapp/scanner API needs an exam settings endpoint before mobile can update these synced settings.');
+      } else {
+        Alert.alert('Save Failed', err.message || 'Could not save review settings.');
+      }
+    } finally {
+      setIsSavingSettings(false);
+    }
+  };
+
+  const handleFlagGrading = async () => {
+    if (!examId || !token || !webappUrl) return;
+
+    setIsFlaggingGrading(true);
+    try {
+      await flagExamGrading({ backendUrl: webappUrl, token, examId }, reviewSettings);
+      Alert.alert('Flag Submitted', 'This grading issue was sent for review.');
+    } catch (err: any) {
+      if (err.status === 404 || err.status === 405) {
+        Alert.alert('Not Available Yet', 'AI grading flags need server support before they can be submitted from mobile.');
+      } else {
+        Alert.alert('Flag Failed', err.message || 'Could not flag grading.');
+      }
+    } finally {
+      setIsFlaggingGrading(false);
+    }
   };
 
   const getAICommentSuggestions = () => {
@@ -216,45 +301,62 @@ export default function ReviewGradingScreen() {
     };
 
     fetchSubmissionsList();
-  }, [examId]);
+  }, [examId, token, webappUrl]);
+
+  const fetchActiveSubmissionDetail = useCallback(async () => {
+    if (!activeSubId || !token || !webappUrl) return;
+
+    try {
+      setIsLoadingDetail(true);
+      const res = await fetch(`${webappUrl}/api/v1/submissions/${activeSubId}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Bypass-Tunnel-Reminder': 'true',
+        },
+      });
+      if (!res.ok) {
+        throw new Error(`Status ${res.status}`);
+      }
+      const json = await res.json();
+      const data = json.data || {};
+      setFiles(data.files || []);
+      setScores(normalizeReviewScores(data.scores || []));
+      setTeacherFeedback(data.submission?.teacherFeedback || '');
+      if ((data.scores || []).length > 0) {
+        setActiveScoreIndex(0);
+      }
+    } catch (err: any) {
+      console.error('Failed to fetch submission detail:', err);
+      Alert.alert('Error', `Failed to load details: ${err.message}`);
+    } finally {
+      setIsLoadingDetail(false);
+    }
+  }, [activeSubId, token, webappUrl]);
 
   // Fetch active submission detail when currentSubIndex changes
   useEffect(() => {
-    if (submissions.length === 0 || !token || !webappUrl) return;
-    const activeSub = submissions[currentSubIndex];
-    if (!activeSub) return;
+    if (submissions.length === 0) return;
+    setActiveFileIndex(0);
+    setFailedImageIds({});
+    setImageRetryToken(0);
+    fetchActiveSubmissionDetail();
+  }, [fetchActiveSubmissionDetail, submissions.length]);
 
-    const fetchDetail = async () => {
-      try {
-        setIsLoadingDetail(true);
-        const res = await fetch(`${webappUrl}/api/v1/submissions/${activeSub.id}`, {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Bypass-Tunnel-Reminder': 'true',
-          },
-        });
-        if (!res.ok) {
-          throw new Error(`Status ${res.status}`);
-        }
-        const json = await res.json();
-        const data = json.data || {};
-        setActiveSubmission(data.submission);
-        setFiles(data.files || []);
-        setScores(data.scores || []);
-        setTeacherFeedback(data.submission?.teacherFeedback || '');
-        if ((data.scores || []).length > 0) {
-          setActiveScoreIndex(0);
-        }
-      } catch (err: any) {
-        console.error('Failed to fetch submission detail:', err);
-        Alert.alert('Error', `Failed to load details: ${err.message}`);
-      } finally {
-        setIsLoadingDetail(false);
-      }
-    };
+  useEffect(() => {
+    if (activeFileIndex >= fileSlides.length) {
+      setActiveFileIndex(0);
+    }
+  }, [activeFileIndex, fileSlides.length]);
 
-    fetchDetail();
-  }, [currentSubIndex, submissions]);
+  const handleImageError = useCallback((slideId: string) => {
+    setFailedImageIds(prev => ({ ...prev, [slideId]: true }));
+  }, []);
+
+  const handleRetryPaperFiles = useCallback(async () => {
+    setFailedImageIds({});
+    setImageRetryToken(Date.now());
+    await fetchActiveSubmissionDetail();
+  }, [fetchActiveSubmissionDetail]);
 
   const handleScoreChange = (scoreId: string, obtained: number) => {
     setScores(prev =>
@@ -326,9 +428,6 @@ export default function ReviewGradingScreen() {
     }
   };
 
-  const activeSub = submissions[currentSubIndex];
-  const activeScore = scores[activeScoreIndex];
-
   if (isLoadingList) {
     return (
       <SafeAreaView style={styles.loadingContainer}>
@@ -373,18 +472,27 @@ export default function ReviewGradingScreen() {
             Student {currentSubIndex + 1} of {submissions.length}
           </Text>
         </View>
-        {isReevaluating ? (
-          <ActivityIndicator size="small" color={COLORS.primary} style={{ marginRight: 8 }} />
-        ) : (
+        <View style={styles.headerActions}>
           <TouchableOpacity
-            style={styles.headerRegradeBtn}
-            onPress={handleReevaluate}
+            style={styles.headerIconBtn}
+            onPress={() => setShowSettingsSheet(true)}
             activeOpacity={0.8}
           >
-            <Ionicons name="sparkles" size={13} color="#fff" />
-            <Text style={styles.headerRegradeBtnText}>Regrade</Text>
+            <Ionicons name="settings-outline" size={18} color={COLORS.primary} />
           </TouchableOpacity>
-        )}
+          {isReevaluating ? (
+            <ActivityIndicator size="small" color={COLORS.primary} style={{ marginRight: 8 }} />
+          ) : (
+            <TouchableOpacity
+              style={styles.headerRegradeBtn}
+              onPress={handleReevaluate}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="sparkles" size={13} color="#fff" />
+              <Text style={styles.headerRegradeBtnText}>Regrade</Text>
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
 
       {/* Student Switcher Row */}
@@ -439,237 +547,59 @@ export default function ReviewGradingScreen() {
       ) : (
         <View style={{ flex: 1 }}>
           {activeTab === 'sheet' ? (
-            // Tab 1: Answer Sheet View
-            <View style={styles.imageViewerContainer}>
-              {files.length > 0 && files[0].signedUrl ? (
-                <Image
-                  source={{ uri: files[0].signedUrl }}
-                  style={styles.sheetImage}
-                  contentFit="contain"
-                />
-              ) : (
-                <View style={styles.noImageView}>
-                  <Ionicons name="image-outline" size={60} color={COLORS.textMuted} />
-                  <Text style={styles.noImageText}>Scanned paper image not loaded</Text>
-                </View>
-              )}
-            </View>
+            <PaperFileViewer
+              slides={fileSlides}
+              activeIndex={activeFileIndex}
+              failedImageIds={failedImageIds}
+              onSelectIndex={setActiveFileIndex}
+              onImageError={handleImageError}
+              onRetry={handleRetryPaperFiles}
+            />
           ) : (
-            // Tab 2: Question & Rubric list View
-            <View style={styles.questionsViewContainer}>
-              <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16 }}>
-                <Text style={styles.scrollSectionTitle}>QUESTIONS LIST</Text>
-                {scores.map((score, index) => (
-                  <TouchableOpacity
-                    key={score.id}
-                    style={[
-                      styles.questionRowItem,
-                      activeScoreIndex === index && styles.activeQuestionRowItem,
-                    ]}
-                    onPress={() => setActiveScoreIndex(index)}
-                  >
-                    <View style={styles.questionRowLeft}>
-                      <Text style={[styles.qNumText, activeScoreIndex === index && { color: COLORS.primary }]}>
-                        Q{score.questionNumber}
-                      </Text>
-                      <Text style={styles.qScoreText}>
-                        Marks: {score.obtainedMarks} / {score.maxMarks}
-                      </Text>
-                    </View>
-                    <Ionicons
-                      name={activeScoreIndex === index ? 'chevron-down' : 'chevron-forward'}
-                      size={18}
-                      color={COLORS.textMuted}
-                    />
-                  </TouchableOpacity>
-                ))}
-
-                {activeScore && (
-                  <View style={styles.questionDetailsCard}>
-                    <Text style={styles.detailsCardQNum}>Question {activeScore.questionNumber}</Text>
-                    <Text style={styles.detailsCardText}>
-                      {activeScore.questionText || 'No question text extracted.'}
-                    </Text>
-
-                    {activeScore.aiFeedback && (
-                      <View style={styles.aiFeedbackBox}>
-                        <View style={styles.aiFeedbackHeader}>
-                          <Ionicons name="sparkles" size={16} color={COLORS.primary} />
-                          <Text style={styles.aiFeedbackTitle}>AI Evaluation Feedback</Text>
-                        </View>
-                        <Text style={styles.aiFeedbackText}>{activeScore.aiFeedback}</Text>
-                      </View>
-                    )}
-                  </View>
-                )}
-              </ScrollView>
-            </View>
+            <RubricReviewPanel
+              scores={scores}
+              activeScoreIndex={activeScoreIndex}
+              feedbackEnabled={reviewSettings.feedbackEnabled}
+              onSelectScore={setActiveScoreIndex}
+            />
           )}
 
-          {/* Stepper & Bottom Control panel */}
           {activeScore && (
-            <View style={styles.bottomControlPanel}>
-              <View style={styles.stepperRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.bottomQTitle}>Question {activeScore.questionNumber}</Text>
-                  <Text style={styles.bottomQMax}>Max Marks: {activeScore.maxMarks}</Text>
-                </View>
-
-                <View style={styles.stepperContainer}>
-                  <TouchableOpacity
-                    style={styles.stepperBtn}
-                    onPress={() => handleScoreChange(activeScore.id, activeScore.obtainedMarks - 0.5)}
-                  >
-                    <Ionicons name="remove" size={20} color={COLORS.primary} />
-                  </TouchableOpacity>
-                  <Text style={styles.stepperValue}>{activeScore.obtainedMarks.toFixed(1)}</Text>
-                  <TouchableOpacity
-                    style={styles.stepperBtn}
-                    onPress={() => handleScoreChange(activeScore.id, activeScore.obtainedMarks + 0.5)}
-                  >
-                    <Ionicons name="add" size={20} color={COLORS.primary} />
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              {/* Comment text input with Voice dictation trigger */}
-              <View style={styles.commentInputRow}>
-                <View style={styles.commentInputContainer}>
-                  <TextInput
-                    style={styles.commentInput}
-                    value={activeScore.teacherCorrection || ''}
-                    onChangeText={(val) => handleCommentChange(activeScore.id, val)}
-                    placeholder="Add custom marks override comment..."
-                    placeholderTextColor={COLORS.textMuted}
-                    multiline
-                  />
-                </View>
-                <TouchableOpacity
-                  style={styles.micInputBtn}
-                  onPress={startVoiceDictation}
-                  activeOpacity={0.75}
-                >
-                  <Ionicons name="mic-outline" size={22} color={COLORS.primary} />
-                </TouchableOpacity>
-              </View>
-
-              {/* Save & Approve CTA */}
-              <TouchableOpacity
-                style={[styles.saveNextBtn, isSaving && { backgroundColor: COLORS.textMuted }]}
-                onPress={handleSaveAndNext}
-                disabled={isSaving}
-              >
-                {isSaving ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <>
-                    <Ionicons name="checkmark-done" size={22} color="#fff" />
-                    <Text style={styles.saveNextBtnText}>
-                      {currentSubIndex === submissions.length - 1 ? 'APPROVE & FINISH' : 'APPROVE & NEXT STUDENT'}
-                    </Text>
-                  </>
-                )}
-              </TouchableOpacity>
-            </View>
+            <GradingControlPanel
+              activeScore={activeScore}
+              isSaving={isSaving}
+              isLastSubmission={currentSubIndex === submissions.length - 1}
+              onScoreChange={handleScoreChange}
+              onCommentChange={handleCommentChange}
+              onOpenDictation={startVoiceDictation}
+              onSaveAndNext={handleSaveAndNext}
+            />
           )}
         </View>
       )}
 
-      {/* Voice Dictation Modal */}
-      <Modal
+      <VoiceDictationModal
         visible={showDictationModal}
-        transparent={true}
-        animationType="slide"
-        onRequestClose={() => setShowDictationModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            {/* Modal Header */}
-            <View style={styles.dictationModalHeader}>
-              <Text style={styles.modalTitle}>Voice Dictation Assistant</Text>
-              <TouchableOpacity onPress={() => setShowDictationModal(false)}>
-                <Ionicons name="close" size={24} color={COLORS.text} />
-              </TouchableOpacity>
-            </View>
-
-            {/* Pulsing Mic Visualization */}
-            <View style={styles.waveformContainer}>
-              <Animated.View style={[
-                styles.micPulseCircle,
-                { transform: [{ scale: pulseAnim }], opacity: isRecording ? 0.3 : 0.1 }
-              ]} />
-              <TouchableOpacity
-                style={[styles.micBigBtn, isRecording && styles.micBigBtnActive]}
-                onPress={() => isRecording ? stopVoiceDictation() : setIsRecording(true)}
-              >
-                <Ionicons name={isRecording ? "mic" : "mic-off"} size={36} color="#fff" />
-              </TouchableOpacity>
-              <Text style={styles.dictationStatus}>
-                {isRecording ? "Listening... Speak now" : "Tap microphone to dictate"}
-              </Text>
-            </View>
-
-            {/* Smart Suggested Comments */}
-            <Text style={styles.suggestionsTitle}>AI Smart-Suggestions</Text>
-            <View style={{ height: 42 }}>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.suggestionsScroll}>
-                {getAICommentSuggestions().map((suggestion, idx) => (
-                  <TouchableOpacity
-                    key={idx}
-                    style={styles.suggestionPill}
-                    onPress={async () => {
-                      try {
-                        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      } catch (_) {}
-                      setDictationText(prev => prev ? `${prev} ${suggestion}` : suggestion);
-                    }}
-                  >
-                    <Text style={styles.suggestionPillText}>{suggestion}</Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-            </View>
-
-            {/* Live Text Preview Box */}
-            <View style={styles.previewInputBox}>
-              <TextInput
-                style={styles.previewTextInput}
-                value={dictationText}
-                onChangeText={setDictationText}
-                multiline
-                placeholder="Dictated text will appear here. Tap suggestions to insert instantly, or edit manually..."
-                placeholderTextColor={COLORS.textMuted}
-              />
-              {dictationText.length > 0 && (
-                <TouchableOpacity
-                  style={styles.clearPreviewBtn}
-                  onPress={() => setDictationText('')}
-                >
-                  <Ionicons name="close-circle" size={16} color={COLORS.textMuted} />
-                </TouchableOpacity>
-              )}
-            </View>
-
-            {/* Action buttons */}
-            <View style={styles.dictationActions}>
-              <TouchableOpacity
-                style={styles.dictationCancelBtn}
-                onPress={() => setShowDictationModal(false)}
-              >
-                <Text style={styles.dictationCancelText}>Cancel</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.dictationSaveBtn}
-                onPress={handleInsertDictation}
-              >
-                <Ionicons name="checkmark-sharp" size={18} color="#fff" />
-                <Text style={styles.dictationSaveText}>Insert Comment</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
+        text={dictationText}
+        isRecording={isRecording}
+        pulseAnim={pulseAnim}
+        suggestions={getAICommentSuggestions()}
+        onTextChange={setDictationText}
+        onToggleRecording={handleToggleDictationRecording}
+        onAddSuggestion={handleAddDictationSuggestion}
+        onClose={handleCloseDictation}
+        onInsert={handleInsertDictation}
+      />
+      <ReviewSettingsSheet
+        visible={showSettingsSheet}
+        settings={reviewSettings}
+        isFlagging={isFlaggingGrading}
+        isSaving={isSavingSettings}
+        syncStatusText={settingsSyncStatus === 'loaded' ? 'Synced from webapp' : 'Waiting for webapp settings sync'}
+        onClose={() => setShowSettingsSheet(false)}
+        onSave={handleSaveReviewSettings}
+        onFlagGrading={handleFlagGrading}
+      />
     </SafeAreaView>
   );
 }
@@ -738,6 +668,7 @@ const styles = StyleSheet.create({
   },
   headerCenter: {
     alignItems: 'center',
+    flex: 1,
   },
   headerTitle: {
     fontSize: 18,
@@ -827,364 +758,18 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: COLORS.textLight,
   },
-  // Tab 1: Image View
-  imageViewerContainer: {
-    flex: 1,
-    backgroundColor: '#1E1E1E',
-    justifyContent: 'center',
+  headerActions: {
     alignItems: 'center',
-  },
-  sheetImage: {
-    width: '100%',
-    height: '100%',
-  },
-  noImageView: {
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  noImageText: {
-    color: '#999',
-    fontSize: 14,
-    marginTop: 10,
-  },
-  // Tab 2: Questions list
-  questionsViewContainer: {
-    flex: 1,
-    backgroundColor: COLORS.backgroundDark,
-  },
-  scrollSectionTitle: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: COLORS.textMuted,
-    letterSpacing: 1,
-    marginBottom: 10,
-  },
-  questionRowItem: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: COLORS.cardBg,
-    padding: 14,
-    borderRadius: 12,
-    marginBottom: 8,
-    borderWidth: 1,
-    borderColor: 'transparent',
-  },
-  activeQuestionRowItem: {
-    borderColor: COLORS.primary,
-    backgroundColor: `${COLORS.primary}0D`,
-  },
-  questionRowLeft: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
-  },
-  qNumText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: COLORS.text,
-  },
-  qScoreText: {
-    fontSize: 13,
-    color: COLORS.textLight,
-  },
-  questionDetailsCard: {
-    backgroundColor: COLORS.cardBg,
-    borderRadius: 16,
-    padding: 16,
-    marginTop: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  detailsCardQNum: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: COLORS.text,
-    marginBottom: 8,
-  },
-  detailsCardText: {
-    fontSize: 14,
-    color: COLORS.textLight,
-    lineHeight: 20,
-    marginBottom: 16,
-  },
-  aiFeedbackBox: {
-    backgroundColor: `${COLORS.primary}0D`,
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: `${COLORS.primary}1A`,
-  },
-  aiFeedbackHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: 6,
-  },
-  aiFeedbackTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: COLORS.primary,
-  },
-  aiFeedbackText: {
-    fontSize: 13,
-    color: COLORS.textLight,
-    lineHeight: 18,
-  },
-  // Bottom control panel
-  bottomControlPanel: {
-    backgroundColor: COLORS.cardBg,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.border,
-    paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 24,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 10,
-  },
-  stepperRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  bottomQTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: COLORS.text,
-  },
-  bottomQMax: {
-    fontSize: 12,
-    color: COLORS.textLight,
-    marginTop: 2,
-  },
-  stepperContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 24,
-    paddingHorizontal: 4,
-    backgroundColor: COLORS.backgroundDark,
-  },
-  stepperBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: COLORS.cardBg,
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 1,
-    elevation: 1,
-  },
-  stepperValue: {
-    width: 50,
-    textAlign: 'center',
-    fontSize: 16,
-    fontWeight: '700',
-    color: COLORS.text,
-  },
-  commentInputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 16,
-    gap: 10,
-  },
-  commentInputContainer: {
-    flex: 1,
-    backgroundColor: COLORS.backgroundDark,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  commentInput: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    fontSize: 14,
-    color: COLORS.text,
-    minHeight: 44,
-  },
-  micInputBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    backgroundColor: COLORS.primaryXLight,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: `${COLORS.primary}20`,
-  },
-  saveNextBtn: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
     gap: 8,
-    backgroundColor: COLORS.primary,
-    paddingVertical: 16,
-    borderRadius: 16,
   },
-  saveNextBtnText: {
-    color: '#fff',
-    fontSize: 15,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
-  // Dictation Modal
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'flex-end',
-  },
-  modalContent: {
-    backgroundColor: COLORS.cardBg,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 20,
-    maxHeight: '80%',
-  },
-  dictationModalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+  headerIconBtn: {
     alignItems: 'center',
-    marginBottom: 20,
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: COLORS.text,
-  },
-  waveformContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    height: 160,
-    backgroundColor: COLORS.backgroundDark,
-    borderRadius: 16,
-    marginBottom: 18,
-    position: 'relative',
-    overflow: 'hidden',
-  },
-  micPulseCircle: {
-    position: 'absolute',
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    backgroundColor: COLORS.primary,
-  },
-  micBigBtn: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: COLORS.primary,
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: COLORS.primary,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 5,
-    zIndex: 2,
-  },
-  micBigBtnActive: {
-    backgroundColor: '#E53935',
-    shadowColor: '#E53935',
-  },
-  dictationStatus: {
-    marginTop: 14,
-    fontSize: 13,
-    fontWeight: '600',
-    color: COLORS.textLight,
-  },
-  suggestionsTitle: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: COLORS.textMuted,
-    letterSpacing: 1,
-    marginBottom: 8,
-  },
-  suggestionsScroll: {
-    flexDirection: 'row',
-    marginBottom: 16,
-  },
-  suggestionPill: {
     backgroundColor: COLORS.primaryXLight,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 18,
-    marginRight: 8,
-    height: 32,
-    borderWidth: 1,
-    borderColor: `${COLORS.primary}15`,
-  },
-  suggestionPillText: {
-    fontSize: 12,
-    color: COLORS.primary,
-    fontWeight: '600',
-  },
-  previewInputBox: {
-    backgroundColor: COLORS.backgroundDark,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    padding: 12,
-    minHeight: 100,
-    marginBottom: 20,
-    position: 'relative',
-  },
-  previewTextInput: {
-    fontSize: 14,
-    color: COLORS.text,
-    lineHeight: 20,
-    paddingRight: 20,
-  },
-  clearPreviewBtn: {
-    position: 'absolute',
-    top: 10,
-    right: 10,
-    padding: 4,
-  },
-  dictationActions: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  dictationCancelBtn: {
-    flex: 1,
-    paddingVertical: 14,
-    borderRadius: 14,
-    backgroundColor: '#F5F5F5',
+    borderRadius: 8,
+    height: 34,
     justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E0E0E0',
-  },
-  dictationCancelText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#666',
-  },
-  dictationSaveBtn: {
-    flex: 2,
-    flexDirection: 'row',
-    gap: 6,
-    paddingVertical: 14,
-    borderRadius: 14,
-    backgroundColor: COLORS.primary,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  dictationSaveText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#fff',
+    width: 34,
   },
   headerRegradeBtn: {
     flexDirection: 'row',

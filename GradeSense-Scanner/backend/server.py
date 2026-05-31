@@ -19,6 +19,22 @@ from fastapi import File, UploadFile, Form
 from fastapi.responses import FileResponse
 import shutil
 from storage_service import StorageService, get_storage_service
+from review_settings_service import (
+    build_grading_flag_payload,
+    difficulty_from_state_json,
+    merge_difficulty_into_state_json,
+    normalize_review_settings,
+    utc_now_text,
+)
+from manage_analytics_service import (
+    build_managed_exams,
+    build_question_stats,
+    build_student_ranking,
+    build_subject_performance,
+    build_weak_student_ranking,
+    normalize_exam_update_payload,
+)
+from runtime_readiness_service import build_readiness_report
 import jwt as pyjwt
 import asyncpg
 
@@ -2002,6 +2018,7 @@ async def get_exam_submissions_proxy(exam_id: str, authorization: Optional[str] 
     webapp_db_url = os.environ.get("WEBAPP_DB_URL")
 
     if webapp_db_url:
+        conn = None
         try:
             conn = await asyncpg.connect(webapp_db_url)
             rows = await conn.fetch(
@@ -2318,6 +2335,122 @@ async def get_analytics_overview_proxy(authorization: Optional[str] = Header(Non
     }
 
 
+@api_router.get("/v1/analytics/performance")
+async def get_analytics_performance(authorization: Optional[str] = Header(None)):
+    """Get synced subject, student, and question-level analytics from Neon."""
+    user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if not webapp_db_url:
+        return {"data": {"subjectPerformance": [], "studentRankings": [], "weakStudents": [], "weakQuestions": []}}
+
+    conn = None
+    try:
+        conn = await asyncpg.connect(webapp_db_url)
+        subject_rows = await conn.fetch(
+            '''
+            SELECT COALESCE(subj.name, 'Unassigned') AS subject_name,
+                   COUNT(DISTINCT e.id) AS exams_count,
+                   AVG(s.percentage) AS average_percentage
+            FROM exams e
+            LEFT JOIN subjects subj ON subj.id = e.subject_id
+            LEFT JOIN submissions s ON s.exam_id = e.id
+            WHERE e.teacher_id = $1
+              AND COALESCE(e.status, '') <> 'deleted'
+            GROUP BY COALESCE(subj.name, 'Unassigned')
+            ORDER BY subject_name ASC
+            ''',
+            user.user_id
+        )
+        top_student_rows = await conn.fetch(
+            '''
+            SELECT s.student_name, s.student_roll_number, e.name AS exam_name,
+                   s.total_score, s.total_marks
+            FROM submissions s
+            JOIN exams e ON e.id = s.exam_id
+            WHERE e.teacher_id = $1
+              AND COALESCE(e.status, '') <> 'deleted'
+            ORDER BY s.percentage DESC NULLS LAST
+            LIMIT 10
+            ''',
+            user.user_id
+        )
+        weak_student_rows = await conn.fetch(
+            '''
+            SELECT s.student_name, s.student_roll_number, e.name AS exam_name,
+                   s.total_score, s.total_marks
+            FROM submissions s
+            JOIN exams e ON e.id = s.exam_id
+            WHERE e.teacher_id = $1
+              AND COALESCE(e.status, '') <> 'deleted'
+            ORDER BY s.percentage ASC NULLS LAST
+            LIMIT 10
+            ''',
+            user.user_id
+        )
+        question_rows = await conn.fetch(
+            '''
+            SELECT qs.question_number,
+                   COALESCE(qi.question_text, '') AS question_text,
+                   AVG(qs.obtained_marks) AS average_score,
+                   MAX(qs.max_marks) AS max_marks,
+                   COUNT(qs.id) AS attempts
+            FROM question_scores qs
+            JOIN submissions s ON s.id = qs.submission_id
+            JOIN exams e ON e.id = s.exam_id
+            LEFT JOIN question_items qi ON qi.id = qs.question_id
+            WHERE e.teacher_id = $1
+              AND COALESCE(e.status, '') <> 'deleted'
+            GROUP BY qs.question_number, COALESCE(qi.question_text, '')
+            HAVING COUNT(qs.id) > 0
+            ''',
+            user.user_id
+        )
+        return {
+            "data": {
+                "subjectPerformance": build_subject_performance([dict(row) for row in subject_rows]),
+                "studentRankings": build_student_ranking([dict(row) for row in top_student_rows]),
+                "weakStudents": build_weak_student_ranking([dict(row) for row in weak_student_rows]),
+                "weakQuestions": build_question_stats([dict(row) for row in question_rows]),
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error querying Neon performance analytics: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load performance analytics")
+    finally:
+        if conn:
+            await conn.close()
+
+
+async def fetch_managed_exam(conn, exam_id: str, teacher_id: str):
+    row = await conn.fetchrow(
+        '''
+        SELECT e.id, e.name, e.batch_id, e.subject_id, e.total_marks, e.exam_date, e.status,
+               b.name AS batch_name, subj.name AS subject_name,
+               e.grading_mode, e.grading_instructions, e.feedback_enabled,
+               e.results_published, e.published_at,
+               COUNT(s.id) AS submission_count,
+               AVG(s.percentage) AS average_percentage
+        FROM exams e
+        LEFT JOIN batches b ON b.id = e.batch_id
+        LEFT JOIN subjects subj ON subj.id = e.subject_id
+        LEFT JOIN submissions s ON s.exam_id = e.id
+        WHERE e.id = $1
+          AND e.teacher_id = $2
+          AND COALESCE(e.status, '') <> 'deleted'
+        GROUP BY e.id, e.name, e.batch_id, e.subject_id, e.total_marks, e.exam_date, e.status,
+                 b.name, subj.name,
+                 e.grading_mode, e.grading_instructions, e.feedback_enabled,
+                 e.results_published, e.published_at, e.created_at
+        ''',
+        exam_id,
+        teacher_id
+    )
+    if not row:
+        return None
+    exams = build_managed_exams([dict(row)])
+    return exams[0] if exams else None
+
+
 @api_router.get("/v1/exams")
 async def list_exams_v1(authorization: Optional[str] = Header(None)):
     """List exams - reads directly from Neon PostgreSQL (always reachable from Render)"""
@@ -2329,31 +2462,33 @@ async def list_exams_v1(authorization: Optional[str] = Header(None)):
             conn = await asyncpg.connect(webapp_db_url)
             rows = await conn.fetch(
                 '''
-                SELECT id, name, batch_id, subject_id, total_marks, exam_date, status, grading_mode
-                FROM exams
-                WHERE teacher_id = $1
-                ORDER BY created_at DESC
+                SELECT e.id, e.name, e.batch_id, e.subject_id, e.total_marks, e.exam_date, e.status,
+                       b.name AS batch_name, subj.name AS subject_name,
+                       e.grading_mode, e.grading_instructions, e.feedback_enabled,
+                       e.results_published, e.published_at,
+                       COUNT(s.id) AS submission_count,
+                       AVG(s.percentage) AS average_percentage
+                FROM exams e
+                LEFT JOIN batches b ON b.id = e.batch_id
+                LEFT JOIN subjects subj ON subj.id = e.subject_id
+                LEFT JOIN submissions s ON s.exam_id = e.id
+                WHERE e.teacher_id = $1
+                  AND COALESCE(e.status, '') <> 'deleted'
+                GROUP BY e.id, e.name, e.batch_id, e.subject_id, e.total_marks, e.exam_date, e.status,
+                         b.name, subj.name,
+                         e.grading_mode, e.grading_instructions, e.feedback_enabled,
+                         e.results_published, e.published_at, e.created_at
+                ORDER BY e.created_at DESC
                 LIMIT 50
                 ''',
                 user.user_id
             )
-            await conn.close()
-            exams = [
-                {
-                    "id": str(r["id"]),
-                    "name": r["name"],
-                    "batchId": str(r["batch_id"]) if r["batch_id"] else None,
-                    "subjectId": str(r["subject_id"]) if r["subject_id"] else None,
-                    "totalMarks": r["total_marks"],
-                    "examDate": r["exam_date"].isoformat() if r["exam_date"] else None,
-                    "status": r["status"] or "graded",
-                    "gradingMode": r["grading_mode"]
-                }
-                for r in rows
-            ]
-            return {"data": exams}
+            return {"data": build_managed_exams([dict(row) for row in rows])}
         except Exception as e:
             logger.error(f"Error querying Neon for exams list: {e}")
+        finally:
+            if conn:
+                await conn.close()
 
     # MongoDB fallback
     sessions = await db.scan_sessions.find({"status": "completed", "user_id": user.user_id}).to_list(100)
@@ -2370,6 +2505,366 @@ async def list_exams_v1(authorization: Optional[str] = Header(None)):
         for s in sessions
     ]
     return {"data": exams}
+
+
+@api_router.patch("/v1/exams/{exam_id}")
+async def update_exam_v1(exam_id: str, data: dict, authorization: Optional[str] = Header(None)):
+    """Update synced exam metadata owned by the authenticated teacher."""
+    user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if not webapp_db_url:
+        raise HTTPException(status_code=503, detail="WEBAPP_DB_URL is not configured")
+
+    payload = normalize_exam_update_payload(data)
+    if not payload:
+        raise HTTPException(status_code=400, detail="No supported exam fields were provided")
+
+    now = utc_now_text()
+    values = [exam_id, user.user_id]
+    assignments = []
+    for column, value in payload.items():
+        values.append(value)
+        assignments.append(f"{column} = ${len(values)}")
+    values.append(now)
+    assignments.append(f"updated_at = ${len(values)}")
+
+    conn = None
+    try:
+        conn = await asyncpg.connect(webapp_db_url)
+        row = await conn.fetchrow(
+            f'''
+            UPDATE exams
+            SET {", ".join(assignments)}
+            WHERE id = $1
+              AND teacher_id = $2
+              AND COALESCE(status, '') <> 'deleted'
+            RETURNING id
+            ''',
+            *values
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Exam not found")
+
+        exam = await fetch_managed_exam(conn, exam_id, user.user_id)
+        return {"data": exam}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating exam in Neon: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update exam")
+    finally:
+        if conn:
+            await conn.close()
+
+
+@api_router.post("/v1/exams/{exam_id}/close")
+async def close_exam_v1(exam_id: str, authorization: Optional[str] = Header(None)):
+    """Close an exam without deleting its submissions or files."""
+    user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if not webapp_db_url:
+        raise HTTPException(status_code=503, detail="WEBAPP_DB_URL is not configured")
+
+    conn = None
+    try:
+        conn = await asyncpg.connect(webapp_db_url)
+        row = await conn.fetchrow(
+            '''
+            UPDATE exams
+            SET status = 'closed', updated_at = $3
+            WHERE id = $1
+              AND teacher_id = $2
+              AND COALESCE(status, '') <> 'deleted'
+            RETURNING id
+            ''',
+            exam_id,
+            user.user_id,
+            utc_now_text()
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Exam not found")
+        exam = await fetch_managed_exam(conn, exam_id, user.user_id)
+        return {"data": exam}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error closing exam in Neon: {e}")
+        raise HTTPException(status_code=500, detail="Failed to close exam")
+    finally:
+        if conn:
+            await conn.close()
+
+
+@api_router.post("/v1/exams/{exam_id}/publish")
+async def publish_exam_results_v1(exam_id: str, authorization: Optional[str] = Header(None)):
+    """Publish exam results in the synced webapp database."""
+    user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if not webapp_db_url:
+        raise HTTPException(status_code=503, detail="WEBAPP_DB_URL is not configured")
+
+    now = utc_now_text()
+    conn = None
+    try:
+        conn = await asyncpg.connect(webapp_db_url)
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                '''
+                UPDATE exams
+                SET results_published = TRUE,
+                    published_at = COALESCE(published_at, $3),
+                    status = CASE WHEN status = 'closed' THEN status ELSE 'published' END,
+                    updated_at = $3
+                WHERE id = $1
+                  AND teacher_id = $2
+                  AND COALESCE(status, '') <> 'deleted'
+                RETURNING id
+                ''',
+                exam_id,
+                user.user_id,
+                now
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="Exam not found")
+            await conn.execute(
+                '''
+                UPDATE submissions
+                SET published_at = COALESCE(published_at, $2),
+                    updated_at = $2
+                WHERE exam_id = $1
+                ''',
+                exam_id,
+                now
+            )
+        exam = await fetch_managed_exam(conn, exam_id, user.user_id)
+        return {"data": exam}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error publishing exam results in Neon: {e}")
+        raise HTTPException(status_code=500, detail="Failed to publish exam results")
+    finally:
+        if conn:
+            await conn.close()
+
+
+@api_router.delete("/v1/exams/{exam_id}")
+async def archive_exam_v1(exam_id: str, authorization: Optional[str] = Header(None)):
+    """Soft-delete an exam from mobile while preserving historical records."""
+    user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if not webapp_db_url:
+        raise HTTPException(status_code=503, detail="WEBAPP_DB_URL is not configured")
+
+    conn = None
+    try:
+        conn = await asyncpg.connect(webapp_db_url)
+        row = await conn.fetchrow(
+            '''
+            UPDATE exams
+            SET status = 'deleted', updated_at = $3
+            WHERE id = $1
+              AND teacher_id = $2
+              AND COALESCE(status, '') <> 'deleted'
+            RETURNING id
+            ''',
+            exam_id,
+            user.user_id,
+            utc_now_text()
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Exam not found")
+        return {"success": True, "id": exam_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error archiving exam in Neon: {e}")
+        raise HTTPException(status_code=500, detail="Failed to archive exam")
+    finally:
+        if conn:
+            await conn.close()
+
+
+@api_router.get("/v1/exams/{exam_id}/settings")
+async def get_exam_review_settings(exam_id: str, authorization: Optional[str] = Header(None)):
+    """Read review settings from the webapp database so mobile stays in sync."""
+    user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if not webapp_db_url:
+        raise HTTPException(status_code=503, detail="WEBAPP_DB_URL is not configured")
+
+    try:
+        conn = await asyncpg.connect(webapp_db_url)
+        row = await conn.fetchrow(
+            '''
+            SELECT e.grading_mode, e.feedback_enabled, e.grading_instructions,
+                   u.state_json
+            FROM exams e
+            LEFT JOIN LATERAL (
+                SELECT state_json
+                FROM upload_flow_sessions
+                WHERE exam_id = e.id
+                ORDER BY created_at DESC
+                LIMIT 1
+            ) u ON TRUE
+            WHERE e.id = $1 AND e.teacher_id = $2
+            ''',
+            exam_id,
+            user.user_id
+        )
+        await conn.close()
+    except Exception as e:
+        logger.error(f"Error reading exam settings from Neon: {e}")
+        raise HTTPException(status_code=500, detail="Failed to read exam settings")
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Exam not found")
+
+    settings = normalize_review_settings({
+        "grading_mode": row["grading_mode"],
+        "feedback_enabled": row["feedback_enabled"],
+        "grading_instructions": row["grading_instructions"],
+        "difficulty": difficulty_from_state_json(row["state_json"]),
+    })
+    return {"data": settings}
+
+
+@api_router.patch("/v1/exams/{exam_id}/settings")
+async def update_exam_review_settings(exam_id: str, data: dict, authorization: Optional[str] = Header(None)):
+    """Update synced review settings on the webapp database."""
+    user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if not webapp_db_url:
+        raise HTTPException(status_code=503, detail="WEBAPP_DB_URL is not configured")
+
+    settings = normalize_review_settings(data)
+    now = utc_now_text()
+
+    try:
+        conn = await asyncpg.connect(webapp_db_url)
+        row = await conn.fetchrow(
+            '''
+            UPDATE exams
+            SET grading_mode = $3,
+                feedback_enabled = $4,
+                grading_instructions = $5,
+                updated_at = $6
+            WHERE id = $1 AND teacher_id = $2
+            RETURNING grading_mode, feedback_enabled, grading_instructions
+            ''',
+            exam_id,
+            user.user_id,
+            settings["gradingMode"],
+            settings["feedbackEnabled"],
+            settings["customInstructions"] or None,
+            now
+        )
+
+        if not row:
+            await conn.close()
+            raise HTTPException(status_code=404, detail="Exam not found")
+
+        flow_row = await conn.fetchrow(
+            '''
+            SELECT id, state_json
+            FROM upload_flow_sessions
+            WHERE exam_id = $1 AND teacher_id = $2
+            ORDER BY created_at DESC
+            LIMIT 1
+            ''',
+            exam_id,
+            user.user_id
+        )
+        if flow_row:
+            await conn.execute(
+                '''
+                UPDATE upload_flow_sessions
+                SET state_json = $2, updated_at = $3
+                WHERE id = $1
+                ''',
+                flow_row["id"],
+                merge_difficulty_into_state_json(flow_row["state_json"], settings["difficulty"]),
+                now
+            )
+
+        await conn.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating exam settings in Neon: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update exam settings")
+
+    return {"data": settings}
+
+
+@api_router.post("/v1/exams/{exam_id}/flag-grading")
+async def flag_exam_grading(exam_id: str, data: dict, authorization: Optional[str] = Header(None)):
+    """Create a synced Improve AI / grading-quality flag for the webapp."""
+    user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if not webapp_db_url:
+        raise HTTPException(status_code=503, detail="WEBAPP_DB_URL is not configured")
+
+    settings = normalize_review_settings(data)
+    reason = data.get("reason")
+    now = utc_now_text()
+    feedback_id = generate_drizzle_id("pfb_")
+
+    try:
+        conn = await asyncpg.connect(webapp_db_url)
+        exam_exists = await conn.fetchval(
+            '''
+            SELECT EXISTS (
+                SELECT 1 FROM exams WHERE id = $1 AND teacher_id = $2
+            )
+            ''',
+            exam_id,
+            user.user_id
+        )
+        if not exam_exists:
+            await conn.close()
+            raise HTTPException(status_code=404, detail="Exam not found")
+
+        payload_json = build_grading_flag_payload(exam_id, settings, reason)
+        metadata_json = '{"source":"mobile_scanner"}'
+        await conn.execute(
+            '''
+            INSERT INTO product_feedback (
+                id, user_id, type, status, data_json, metadata_json,
+                resolved_by_user_id, resolved_at, admin_notes, created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, NULL, $7, $8)
+            ''',
+            feedback_id,
+            user.user_id,
+            "ai_grading_flag",
+            "open",
+            payload_json,
+            metadata_json,
+            now,
+            now
+        )
+        await conn.execute(
+            '''
+            INSERT INTO audit_logs (
+                id, actor_user_id, action, entity_type, entity_id, metadata_json, created_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ''',
+            generate_drizzle_id("aud_"),
+            user.user_id,
+            "mobile_ai_grading_flag_created",
+            "exam",
+            exam_id,
+            payload_json,
+            now
+        )
+        await conn.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating grading flag in Neon: {e}")
+        raise HTTPException(status_code=500, detail="Failed to flag grading")
+
+    return {"success": True, "id": feedback_id}
 
 
 @api_router.get("/v1/re-evaluations")
@@ -2673,6 +3168,12 @@ async def health_check():
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "webapp_url": os.environ.get("WEBAPP_URL")
     }
+
+
+@api_router.get("/v1/system/readiness")
+async def system_readiness():
+    """Return safe deployment readiness metadata without exposing secret values."""
+    return {"data": build_readiness_report(os.environ)}
 
 
 # Include the router

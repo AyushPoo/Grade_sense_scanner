@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -19,19 +19,29 @@ import { useRouter } from 'expo-router';
 import { COLORS, getBackendUrl } from '../../src/config';
 import { useAuthStore } from '../../src/store/authStore';
 import { useScanStore } from '../../src/store/scanStore';
+import {
+  archiveManagedExam,
+  closeManagedExam,
+  fetchManagedExams,
+  fetchManagePerformance,
+  publishManagedExam,
+} from '../../src/api/manage';
+import { AnalyticsPerformancePanel } from '../../src/components/manage/AnalyticsPerformancePanel';
+import { ExamManagementPanel } from '../../src/components/manage/ExamManagementPanel';
+import { ManagedExam, ManagePerformance } from '../../src/utils/manageData';
 
 interface TeacherOverview {
   examsCount: number;
   submissionsCount: number;
   reviewedCount: number;
   averagePercentage: number;
-  recentExams: Array<{
+  recentExams: {
     id: string;
     name: string;
     examDate: string | null;
     totalMarks: number;
     status: string;
-  }>;
+  }[];
 }
 
 interface Batch {
@@ -155,11 +165,16 @@ export default function ManageScreen() {
   const token = useAuthStore(s => s.sessionToken);
   const { savedSessions } = useScanStore();
 
-  const [activeTab, setActiveTab] = useState<'analytics' | 'classroom' | 'reevaluation'>('analytics');
+  const [activeTab, setActiveTab] = useState<'analytics' | 'exams' | 'classroom' | 'reevaluation'>('analytics');
   const [overview, setOverview] = useState<TeacherOverview | null>(null);
+  const [performance, setPerformance] = useState<ManagePerformance | null>(null);
+  const [managedExams, setManagedExams] = useState<ManagedExam[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadingPerformance, setLoadingPerformance] = useState(false);
+  const [loadingExams, setLoadingExams] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [isOffline, setIsOffline] = useState(false);
+  const [processingExamId, setProcessingExamId] = useState<string | null>(null);
 
   // Classroom Management States
   const [batches, setBatches] = useState<Batch[]>([]);
@@ -197,7 +212,7 @@ export default function ManageScreen() {
     };
   }, [savedSessions]);
 
-  const fetchOverview = async (silent = false) => {
+  const fetchOverview = useCallback(async (silent = false) => {
     if (!token) {
       setIsLoading(false);
       setIsOffline(true);
@@ -217,18 +232,46 @@ export default function ManageScreen() {
         setOverview(json.data);
         setIsOffline(false);
       } else {
-        // Only mark offline if we have no cached data to show
-        if (!overview) setIsOffline(true);
+        setIsOffline(true);
       }
     } catch {
-      if (!overview) setIsOffline(true);
+      setIsOffline(true);
     } finally {
       setIsLoading(false);
       setRefreshing(false);
     }
-  };
+  }, [token]);
 
-  const fetchBatches = async () => {
+  const fetchPerformanceInsights = useCallback(async () => {
+    if (!token) return;
+    setLoadingPerformance(true);
+    try {
+      const data = await fetchManagePerformance({ backendUrl: getBackendUrl(), token });
+      setPerformance(data);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingPerformance(false);
+    }
+  }, [token]);
+
+  const fetchExamManagement = useCallback(async () => {
+    if (!token) return;
+    setLoadingExams(true);
+    try {
+      const data = await fetchManagedExams({ backendUrl: getBackendUrl(), token });
+      setManagedExams(data);
+      setIsOffline(false);
+    } catch (err) {
+      console.error(err);
+      setIsOffline(true);
+    } finally {
+      setLoadingExams(false);
+      setRefreshing(false);
+    }
+  }, [token]);
+
+  const fetchBatches = useCallback(async () => {
     if (!token) return;
     setLoadingBatches(true);
     try {
@@ -245,9 +288,9 @@ export default function ManageScreen() {
       setLoadingBatches(false);
       setRefreshing(false);
     }
-  };
+  }, [token]);
 
-  const fetchStudents = async (batchId: string) => {
+  const fetchStudents = useCallback(async (batchId: string) => {
     if (!token) return;
     setLoadingStudents(batchId);
     try {
@@ -263,9 +306,9 @@ export default function ManageScreen() {
     } finally {
       setLoadingStudents(null);
     }
-  };
+  }, [token]);
 
-  const fetchReevaluations = async () => {
+  const fetchReevaluations = useCallback(async () => {
     if (!token) return;
     setLoadingReevaluations(true);
     try {
@@ -282,7 +325,7 @@ export default function ManageScreen() {
       setLoadingReevaluations(false);
       setRefreshing(false);
     }
-  };
+  }, [token]);
 
   const handleResolveReeval = async () => {
     if (!activeReeval || !token) return;
@@ -320,20 +363,106 @@ export default function ManageScreen() {
     }
   };
 
+  const replaceManagedExam = (exam: ManagedExam) => {
+    setManagedExams(prev => prev.map(item => item.id === exam.id ? exam : item));
+  };
+
+  const handlePublishExam = (exam: ManagedExam) => {
+    if (!token) return;
+    Alert.alert(
+      'Publish Results?',
+      `Students will be able to see results for "${exam.name}".`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Publish',
+          onPress: async () => {
+            setProcessingExamId(exam.id);
+            try {
+              const updated = await publishManagedExam({ backendUrl: getBackendUrl(), token, examId: exam.id });
+              replaceManagedExam(updated);
+            } catch (err: any) {
+              Alert.alert('Failed', err.message || 'Could not publish results.');
+            } finally {
+              setProcessingExamId(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleCloseExam = (exam: ManagedExam) => {
+    if (!token) return;
+    Alert.alert(
+      'Close Exam?',
+      `This will close "${exam.name}" while keeping submissions and files intact.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Close',
+          onPress: async () => {
+            setProcessingExamId(exam.id);
+            try {
+              const updated = await closeManagedExam({ backendUrl: getBackendUrl(), token, examId: exam.id });
+              replaceManagedExam(updated);
+            } catch (err: any) {
+              Alert.alert('Failed', err.message || 'Could not close exam.');
+            } finally {
+              setProcessingExamId(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleArchiveExam = (exam: ManagedExam) => {
+    if (!token) return;
+    Alert.alert(
+      'Archive Exam?',
+      `This removes "${exam.name}" from the active mobile roster without deleting historical submissions.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Archive',
+          style: 'destructive',
+          onPress: async () => {
+            setProcessingExamId(exam.id);
+            try {
+              await archiveManagedExam({ backendUrl: getBackendUrl(), token, examId: exam.id });
+              setManagedExams(prev => prev.filter(item => item.id !== exam.id));
+            } catch (err: any) {
+              Alert.alert('Failed', err.message || 'Could not archive exam.');
+            } finally {
+              setProcessingExamId(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   useEffect(() => {
     if (activeTab === 'analytics') {
       fetchOverview();
+      fetchPerformanceInsights();
+    } else if (activeTab === 'exams') {
+      fetchExamManagement();
     } else if (activeTab === 'classroom') {
       fetchBatches();
     } else if (activeTab === 'reevaluation') {
       fetchReevaluations();
     }
-  }, [activeTab]);
+  }, [activeTab, fetchBatches, fetchExamManagement, fetchOverview, fetchPerformanceInsights, fetchReevaluations]);
 
   const onRefresh = () => {
     setRefreshing(true);
     if (activeTab === 'analytics') {
       fetchOverview();
+      fetchPerformanceInsights();
+    } else if (activeTab === 'exams') {
+      fetchExamManagement();
     } else if (activeTab === 'classroom') {
       fetchBatches();
       if (expandedBatchId) {
@@ -476,70 +605,6 @@ export default function ManageScreen() {
     }
   };
 
-  // Sandbox operations
-  const triggerSandboxSeed = async () => {
-    Alert.alert(
-      'Seed Sandbox Data?',
-      'This will populate subjects, class batches, student lists, and a completed scan session for offline/sandbox testing. Continue?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Seed Data',
-          onPress: async () => {
-            setIsLoading(true);
-            try {
-              const res = await fetch(`${getBackendUrl()}/api/backdoor/seed`, {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}` }
-              });
-              if (res.ok) {
-                Alert.alert('Success', 'Sandbox mock data enqueued and seeded successfully! Refreshing...');
-                onRefresh();
-              }
-            } catch (err: any) {
-              Alert.alert('Error', err.message);
-            } finally {
-              setIsLoading(false);
-            }
-          }
-        }
-      ]
-    );
-  };
-
-  const triggerSandboxReset = async () => {
-    Alert.alert(
-      'Wipe Local Collections?',
-      'This will permanently clear all scan sessions, enqueued exams, students, and batches from your sandbox MongoDB instance. Are you sure?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Clear All',
-          style: 'destructive',
-          onPress: async () => {
-            setIsLoading(true);
-            try {
-              const res = await fetch(`${getBackendUrl()}/api/backdoor/reset`, {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}` }
-              });
-              if (res.ok) {
-                Alert.alert('Success', 'Database reset completed. Local sandbox collection is fresh.');
-                setOverview(null);
-                setBatches([]);
-                onRefresh();
-              }
-            } catch (err: any) {
-              Alert.alert('Error', err.message);
-            } finally {
-              setIsLoading(false);
-            }
-          }
-        }
-      ]
-    );
-  };
-
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
       {/* Header */}
@@ -547,7 +612,13 @@ export default function ManageScreen() {
         <View>
           <Text style={styles.headerTitle}>Manage</Text>
           <Text style={styles.headerSub}>
-            {activeTab === 'analytics' ? 'Grading insights & exam roster' : activeTab === 'classroom' ? 'Manage batches, students & sandbox' : 'Student grade re-evaluation requests'}
+            {activeTab === 'analytics'
+              ? 'Synced grading insights'
+              : activeTab === 'exams'
+                ? 'Publish, close, and review exams'
+                : activeTab === 'classroom'
+                  ? 'Manage batches and students'
+                  : 'Student grade re-evaluation requests'}
           </Text>
         </View>
         <TouchableOpacity style={styles.refreshBtn} onPress={onRefresh}>
@@ -570,6 +641,22 @@ export default function ManageScreen() {
           />
           <Text style={[styles.segmentText, activeTab === 'analytics' && styles.segmentTextActive]}>
             Insights
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.segmentBtn, activeTab === 'exams' && styles.segmentBtnActive]}
+          onPress={() => setActiveTab('exams')}
+          activeOpacity={0.8}
+        >
+          <Ionicons
+            name={activeTab === 'exams' ? 'documents' : 'documents-outline'}
+            size={16}
+            color={activeTab === 'exams' ? '#fff' : COLORS.textLight}
+            style={{ marginRight: 6 }}
+          />
+          <Text style={[styles.segmentText, activeTab === 'exams' && styles.segmentTextActive]}>
+            Exams
           </Text>
         </TouchableOpacity>
         
@@ -676,6 +763,9 @@ export default function ManageScreen() {
                 />
               </View>
 
+              <Text style={styles.sectionLabel}>SYNCED PERFORMANCE</Text>
+              <AnalyticsPerformancePanel performance={performance} isLoading={loadingPerformance} />
+
               <Text style={styles.sectionLabel}>LOCAL SESSIONS</Text>
               <View style={styles.localCard}>
                 {[
@@ -727,6 +817,18 @@ export default function ManageScreen() {
                 </>
               )}
             </View>
+          ) : activeTab === 'exams' ? (
+            // ==================== EXAM MANAGEMENT VIEW ====================
+            <ExamManagementPanel
+              exams={managedExams}
+              isLoading={loadingExams}
+              processingExamId={processingExamId}
+              onReview={(exam) => router.push({ pathname: '/review-grading' as any, params: { examId: exam.id, sessionName: exam.name } })}
+              onPublish={handlePublishExam}
+              onClose={handleCloseExam}
+              onArchive={handleArchiveExam}
+              onCreateExam={() => router.push('/session-setup')}
+            />
           ) : activeTab === 'classroom' ? (
             // ==================== CLASSROOM MANAGEMENT VIEW ====================
             <View>
@@ -823,35 +925,6 @@ export default function ManageScreen() {
                   );
                 })
               )}
-
-              {/* Backdoor Settings console */}
-              <Text style={[styles.sectionLabel, { marginTop: 32 }]}>BACKDOOR CONSOLE</Text>
-              <View style={styles.sandboxCard}>
-                <Text style={styles.sandboxTitle}>Sandbox Data Seed Controls</Text>
-                <Text style={styles.sandboxSubtitle}>
-                  For offline developer testing, seed completed exams, subjects, and rosters directly into local MongoDB.
-                </Text>
-                
-                <View style={styles.sandboxButtons}>
-                  <TouchableOpacity
-                    style={[styles.sandboxBtn, { backgroundColor: COLORS.primary }]}
-                    onPress={triggerSandboxSeed}
-                    activeOpacity={0.85}
-                  >
-                    <Ionicons name="cloud-download-outline" size={18} color="#fff" />
-                    <Text style={styles.sandboxBtnText}>Seed Sandbox Data</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[styles.sandboxBtn, { backgroundColor: COLORS.surfaceElevated, borderWidth: 1, borderColor: COLORS.border }]}
-                    onPress={triggerSandboxReset}
-                    activeOpacity={0.85}
-                  >
-                    <Ionicons name="trash-outline" size={18} color={COLORS.error} />
-                    <Text style={[styles.sandboxBtnText, { color: COLORS.textLight }]}>Wipe Local Collections</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
             </View>
           ) : (
             // ==================== RE-EVALUATION VIEW ====================
@@ -875,7 +948,7 @@ export default function ManageScreen() {
                     qNumbers = typeof item.questionNumbersJson === 'string' 
                       ? JSON.parse(item.questionNumbersJson) 
                       : (Array.isArray(item.questionNumbersJson) ? item.questionNumbersJson : []);
-                  } catch (_) {}
+                  } catch {}
 
                   return (
                     <View key={item.id} style={styles.reevalCard}>
@@ -910,7 +983,7 @@ export default function ManageScreen() {
 
                       {/* Reason */}
                       <View style={styles.reevalReasonBox}>
-                        <Text style={styles.reevalReasonText}>"{item.reason}"</Text>
+                        <Text style={styles.reevalReasonText}>{item.reason}</Text>
                       </View>
 
                       {/* Footer actions / responses */}
@@ -1553,47 +1626,6 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 
-  // Sandbox Backdoor
-  sandboxCard: {
-    backgroundColor: COLORS.surface,
-    borderRadius: 16,
-    padding: 20,
-    borderWidth: 1.5,
-    borderColor: COLORS.warning,
-    shadowColor: COLORS.warning,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  sandboxTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: COLORS.text,
-  },
-  sandboxSubtitle: {
-    fontSize: 13,
-    color: COLORS.textLight,
-    lineHeight: 18,
-    marginTop: 6,
-    marginBottom: 16,
-  },
-  sandboxButtons: {
-    gap: 10,
-  },
-  sandboxBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 13,
-    borderRadius: 12,
-  },
-  sandboxBtnText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '700',
-  },
 });
 
 const modalStyles = StyleSheet.create({
