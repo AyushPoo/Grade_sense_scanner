@@ -25,10 +25,12 @@ import { RubricReviewPanel } from '../src/components/review/RubricReviewPanel';
 import { VoiceDictationModal } from '../src/components/review/VoiceDictationModal';
 import { ReviewSettingsSheet } from '../src/components/review/ReviewSettingsSheet';
 import { StudentAnswerSheetPanel } from '../src/components/review/StudentAnswerSheetPanel';
+import { ImproveAIModal } from '../src/components/review/ImproveAIModal';
 import type { ReviewFileItem, ReviewFileSlide, ScoreItem, SubmissionListItem } from '../src/types/review';
 import { buildLocalReviewFiles, buildReviewFileSlides, mergeReviewFiles } from '../src/utils/reviewFiles';
 import { normalizeReviewScores } from '../src/utils/reviewScores';
 import { DEFAULT_REVIEW_SETTINGS, ReviewSettings } from '../src/utils/reviewSettings';
+import { submitQuestionImprovement } from '../src/api/improveAI';
 import {
   fetchExamReviewSettings,
   flagExamGrading,
@@ -43,7 +45,9 @@ export default function ReviewGradingScreen() {
   const webappUrl = getBackendUrl();
   const [isReevaluating, setIsReevaluating] = useState(false);
   const [showSettingsSheet, setShowSettingsSheet] = useState(false);
+  const [showImproveAIModal, setShowImproveAIModal] = useState(false);
   const [isFlaggingGrading, setIsFlaggingGrading] = useState(false);
+  const [isSubmittingImprovement, setIsSubmittingImprovement] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [reviewSettings, setReviewSettings] = useState<ReviewSettings>(DEFAULT_REVIEW_SETTINGS);
   const [settingsSyncStatus, setSettingsSyncStatus] = useState<'idle' | 'loaded' | 'unavailable'>('idle');
@@ -283,6 +287,33 @@ export default function ReviewGradingScreen() {
       }
     } finally {
       setIsFlaggingGrading(false);
+    }
+  };
+
+  const handleSubmitQuestionImprovement = async (expectedGrade: number, teacherCorrection: string) => {
+    if (!activeSubId || !activeScore || !token || !webappUrl) return;
+
+    setIsSubmittingImprovement(true);
+    try {
+      const result = await submitQuestionImprovement({
+        backendUrl: webappUrl,
+        token,
+        submissionId: activeSubId,
+        score: activeScore,
+        expectedGrade,
+        teacherCorrection,
+      });
+      setScores(prev => prev.map(score => (score.id === result.score.id ? result.score : score)));
+      setShowImproveAIModal(false);
+      Alert.alert('Improve AI Saved', 'This correction was saved for this question and future grading.');
+    } catch (err: any) {
+      if (err.status === 404 || err.status === 405) {
+        Alert.alert('Not Available Yet', 'Question-level Improve AI needs the latest scanner backend deployment.');
+      } else {
+        Alert.alert('Improve AI Failed', err.message || 'Could not save this AI correction.');
+      }
+    } finally {
+      setIsSubmittingImprovement(false);
     }
   };
 
@@ -626,8 +657,8 @@ export default function ReviewGradingScreen() {
               activeScoreIndex={activeScoreIndex}
               feedbackEnabled={reviewSettings.feedbackEnabled}
               onSelectScore={setActiveScoreIndex}
-              onImproveAI={handleFlagGrading}
-              isImprovingAI={isFlaggingGrading}
+              onImproveAI={() => setShowImproveAIModal(true)}
+              isImprovingAI={isSubmittingImprovement}
             />
           )}
 
@@ -666,6 +697,13 @@ export default function ReviewGradingScreen() {
         onClose={() => setShowSettingsSheet(false)}
         onSave={handleSaveReviewSettings}
         onFlagGrading={handleFlagGrading}
+      />
+      <ImproveAIModal
+        visible={showImproveAIModal}
+        score={activeScore || null}
+        isSubmitting={isSubmittingImprovement}
+        onClose={() => setShowImproveAIModal(false)}
+        onSubmit={handleSubmitQuestionImprovement}
       />
     </SafeAreaView>
   );

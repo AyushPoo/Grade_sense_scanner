@@ -77,6 +77,7 @@ export interface ScanSessionSettings {
   scan_model_answer: boolean;
   page_mode: 'single' | 'double'; // single = 1 page per capture, double = 2 pages (split left/right)
   grading_mode?: 'strict' | 'balanced' | 'conceptual' | 'lenient';
+  pilot_review_first?: boolean;
 }
 
 export interface ScanSession {

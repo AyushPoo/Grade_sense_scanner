@@ -26,7 +26,7 @@ export default function SessionSetupScreen() {
   useEffect(() => {
     fetchBatches().catch(err => console.error('Failed to load batches:', err));
     fetchSubjects().catch(err => console.error('Failed to load subjects:', err));
-  }, []);
+  }, [fetchBatches, fetchSubjects]);
   
   const [sessionName, setSessionName] = useState(
     `Scan — ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
@@ -52,6 +52,7 @@ export default function SessionSetupScreen() {
     flash_mode: 'auto',
     page_mode: 'single', // default to single page
     grading_mode: 'balanced', // default to balanced
+    pilot_review_first: false,
   });
 
   // Populate existing session details if in edit mode
@@ -79,6 +80,7 @@ export default function SessionSetupScreen() {
         setSettings({
           ...existing.settings,
           grading_mode: existing.settings.grading_mode || 'balanced',
+          pilot_review_first: Boolean(existing.settings.pilot_review_first || (existing.settings as any).pilotReviewFirst),
         });
       }
     }
@@ -346,6 +348,29 @@ export default function SessionSetupScreen() {
             </View>
           </View>
 
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>AI REVIEW LOOP</Text>
+            <View style={styles.optionCard}>
+              <View style={[styles.optionRow, { borderBottomWidth: 0 }]}>
+                <View style={styles.optionLeft}>
+                  <View style={[styles.optionIcon, { backgroundColor: '#FFF3E0' }]}>
+                    <Ionicons name="school-outline" size={20} color={COLORS.primary} />
+                  </View>
+                  <View style={styles.optionTextContainer}>
+                    <Text style={styles.optionLabel}>Review First Paper First</Text>
+                    <Text style={styles.optionHint}>Grade one paper, review corrections, then apply them to the rest</Text>
+                  </View>
+                </View>
+                <Switch
+                  value={Boolean(settings.pilot_review_first)}
+                  onValueChange={(value) => updateSetting('pilot_review_first', value)}
+                  trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
+                  thumbColor={settings.pilot_review_first ? COLORS.primary : '#f4f3f4'}
+                />
+              </View>
+            </View>
+          </View>
+
           {/* Scan Options */}
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>PAGE MODE</Text>
@@ -526,9 +551,11 @@ export default function SessionSetupScreen() {
           <View style={styles.infoBox}>
             <Ionicons name="information-circle" size={20} color={COLORS.primary} />
             <Text style={styles.infoText}>
-              {settings.scan_question_paper || settings.scan_model_answer 
-                ? `Flow: ${settings.scan_question_paper ? 'Question Paper → ' : ''}${settings.scan_model_answer ? 'Model Answer → ' : ''}Student Papers`
-                : 'You will directly start scanning student answer papers'
+              {settings.scan_question_paper || settings.scan_model_answer
+                ? `Flow: ${settings.scan_question_paper ? 'Question Paper -> ' : ''}${settings.scan_model_answer ? 'Model Answer -> ' : ''}Student Papers${settings.pilot_review_first ? ' with first-paper review' : ''}`
+                : settings.pilot_review_first
+                  ? 'Student papers will start with a first-paper review before bulk grading continues'
+                  : 'You will directly start scanning student answer papers'
               }
             </Text>
           </View>

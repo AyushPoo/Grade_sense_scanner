@@ -14,6 +14,7 @@ from pymongo.errors import PyMongoError
 import cv2
 import numpy as np
 import base64
+import json
 from io import BytesIO
 from fastapi import File, UploadFile, Form
 from fastapi.responses import FileResponse
@@ -26,6 +27,7 @@ from review_settings_service import (
     normalize_review_settings,
     utc_now_text,
 )
+from improve_ai_service import ImproveAIServiceError, save_question_improvement
 from manage_analytics_service import (
     build_managed_exams,
     build_question_stats,
@@ -91,6 +93,26 @@ def generate_drizzle_id(prefix: str) -> str:
     import random
     chars = string.ascii_letters + string.digits
     return prefix + ''.join(random.choices(chars, k=14))
+
+
+def build_upload_flow_state(session: dict, source_paper_mode: str) -> dict:
+    settings = session.get("settings") if isinstance(session.get("settings"), dict) else {}
+    return {
+        "form": {
+            "name": session["session_name"],
+            "batchId": session["batch_id"],
+            "subjectId": session.get("subject_id") or "",
+            "totalMarks": str(session.get("total_marks") or 100),
+            "examDate": session.get("exam_date") or "",
+            "gradingMode": settings.get("grading_mode") or settings.get("gradingMode") or "balanced",
+            "gradingInstructions": settings.get("grading_instructions") or settings.get("gradingInstructions") or "",
+            "feedbackEnabled": settings.get("feedback_enabled", settings.get("feedbackEnabled", True)),
+        },
+        "sourcePaperMode": source_paper_mode,
+        "pilotReviewFirst": bool(settings.get("pilot_review_first", settings.get("pilotReviewFirst", False))),
+        "activeJobId": None,
+        "sessionSubmissionIds": [],
+    }
 
 # Create the main app
 app = FastAPI(title="GradeSense Scanner API")
@@ -1747,24 +1769,7 @@ async def complete_scan_session(
                     try:
                         logger.info("Creating initial upload flow session synchronously in Neon DB...")
                         flow_session_id = generate_drizzle_id("ufs_")
-                        import json
-                        
-                        state_dict = {
-                            "form": {
-                                "name": session["session_name"],
-                                "batchId": session["batch_id"],
-                                "subjectId": session.get("subject_id") or "",
-                                "totalMarks": str(session.get("total_marks") or 100),
-                                "examDate": session.get("exam_date") or "",
-                                "gradingMode": "balanced",
-                                "gradingInstructions": "",
-                                "feedbackEnabled": True
-                            },
-                            "sourcePaperMode": source_paper_mode,
-                            "pilotReviewFirst": False,
-                            "activeJobId": None,
-                            "sessionSubmissionIds": []
-                        }
+                        state_dict = build_upload_flow_state(session, source_paper_mode)
                         
                         conn = await asyncpg.connect(webapp_db_url)
                         await conn.execute(
@@ -1801,22 +1806,7 @@ async def complete_scan_session(
                                 "status": "draft",
                                 "currentStep": 4,  # Step 4: Extracting blueprint
                                 "maxCompletedStep": 3,
-                                "state": {
-                                    "form": {
-                                        "name": session["session_name"],
-                                        "batchId": session["batch_id"],
-                                        "subjectId": session.get("subject_id") or "",
-                                        "totalMarks": str(session.get("total_marks") or 100),
-                                        "examDate": session.get("exam_date") or "",
-                                        "gradingMode": "balanced",
-                                        "gradingInstructions": "",
-                                        "feedbackEnabled": True
-                                    },
-                                    "sourcePaperMode": source_paper_mode,
-                                    "pilotReviewFirst": False,
-                                    "activeJobId": None,
-                                    "sessionSubmissionIds": []
-                                }
+                                "state": build_upload_flow_state(session, source_paper_mode)
                             }
                             async with httpx.AsyncClient() as client_http:
                                 flow_res = await client_http.post(
@@ -2296,6 +2286,42 @@ async def get_submission_detail_proxy(submission_id: str, authorization: Optiona
     }
 
 
+
+
+@api_router.post("/v1/submissions/{submission_id}/scores/{score_id}/improve-ai")
+async def improve_question_grading(
+    submission_id: str,
+    score_id: str,
+    data: dict,
+    authorization: Optional[str] = Header(None),
+):
+    """Save a question-level AI grading correction that the grader can reuse."""
+    user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if not webapp_db_url:
+        raise HTTPException(status_code=503, detail="WEBAPP_DB_URL is not configured")
+
+    conn = None
+    try:
+        conn = await asyncpg.connect(webapp_db_url)
+        result = await save_question_improvement(
+            conn,
+            teacher_id=user.user_id,
+            submission_id=submission_id,
+            score_id=score_id,
+            data=data,
+            generate_id=generate_drizzle_id,
+            now_text=utc_now_text,
+        )
+        return {"data": result}
+    except ImproveAIServiceError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    except Exception as e:
+        logger.error(f"Error saving question-level Improve AI correction: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save Improve AI correction")
+    finally:
+        if conn:
+            await conn.close()
 
 
 @api_router.post("/v1/submissions/{submission_id}/review")

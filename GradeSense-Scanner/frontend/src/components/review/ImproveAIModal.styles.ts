@@ -1,0 +1,145 @@
+import { StyleSheet } from 'react-native';
+import { COLORS } from '../../config';
+
+export const styles = StyleSheet.create({
+  overlay: {
+    backgroundColor: 'rgba(15, 23, 42, 0.48)',
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  sheet: {
+    backgroundColor: COLORS.cardBg,
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    maxHeight: '92%',
+    overflow: 'hidden',
+  },
+  header: {
+    alignItems: 'center',
+    borderBottomColor: COLORS.border,
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+  },
+  titleRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  title: {
+    color: COLORS.text,
+    fontSize: 17,
+    fontWeight: '800',
+  },
+  iconButton: {
+    padding: 6,
+  },
+  content: {
+    gap: 14,
+    padding: 18,
+    paddingBottom: 22,
+  },
+  questionBox: {
+    backgroundColor: COLORS.backgroundDark,
+    borderRadius: 10,
+    padding: 14,
+  },
+  questionTitle: {
+    color: COLORS.text,
+    fontSize: 14,
+    fontWeight: '800',
+    marginBottom: 6,
+  },
+  questionText: {
+    color: COLORS.textLight,
+    fontSize: 14,
+    lineHeight: 21,
+  },
+  gradeRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  gradeCard: {
+    borderColor: COLORS.border,
+    borderRadius: 10,
+    borderWidth: 1,
+    flex: 1,
+    padding: 12,
+  },
+  fieldLabel: {
+    color: COLORS.text,
+    fontSize: 13,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  gradeValue: {
+    color: COLORS.text,
+    fontSize: 20,
+    fontWeight: '800',
+    paddingVertical: 7,
+  },
+  gradeInput: {
+    color: COLORS.text,
+    fontSize: 20,
+    fontWeight: '800',
+    paddingVertical: 4,
+  },
+  fieldGroup: {
+    gap: 2,
+  },
+  textArea: {
+    borderColor: COLORS.border,
+    borderRadius: 10,
+    borderWidth: 1,
+    color: COLORS.text,
+    fontSize: 14,
+    lineHeight: 21,
+    minHeight: 112,
+    padding: 12,
+  },
+  readOnlyArea: {
+    backgroundColor: COLORS.backgroundDark,
+    color: COLORS.textLight,
+  },
+  footer: {
+    alignItems: 'center',
+    borderTopColor: COLORS.border,
+    borderTopWidth: 1,
+    flexDirection: 'row',
+    gap: 10,
+    padding: 14,
+  },
+  cancelButton: {
+    alignItems: 'center',
+    borderColor: COLORS.border,
+    borderRadius: 10,
+    borderWidth: 1,
+    flex: 1,
+    paddingVertical: 13,
+  },
+  cancelText: {
+    color: COLORS.text,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  submitButton: {
+    alignItems: 'center',
+    backgroundColor: COLORS.primary,
+    borderRadius: 10,
+    flex: 1.4,
+    flexDirection: 'row',
+    gap: 8,
+    justifyContent: 'center',
+    paddingVertical: 13,
+  },
+  submitButtonDisabled: {
+    opacity: 0.5,
+  },
+  submitText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+});

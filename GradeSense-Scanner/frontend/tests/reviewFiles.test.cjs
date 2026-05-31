@@ -34,6 +34,10 @@ const {
   REVIEW_GRADING_MODES,
   REVIEW_DIFFICULTIES,
 } = loadTsModule('src/utils/reviewSettings.ts');
+const {
+  buildImproveAIRequest,
+  normalizeImproveAIResponseScore,
+} = loadTsModule('src/utils/improveAI.ts');
 
 test('buildReviewFileSlides orders document types without mutating signed urls', () => {
   const slides = buildReviewFileSlides(
@@ -174,6 +178,59 @@ test('buildReviewSettingsPayload trims instructions for API writes', () => {
 
   assert.equal(payload.gradingMode, 'lenient');
   assert.equal(payload.customInstructions, 'Award process marks.');
+});
+
+test('buildImproveAIRequest sends question-level reusable correction context', () => {
+  const payload = buildImproveAIRequest(
+    {
+      id: 'score_1',
+      questionNumber: '3',
+      obtainedMarks: 4,
+      maxMarks: 5,
+      questionText: 'Define working capital.',
+      aiFeedback: 'Mostly correct.',
+      teacherCorrection: null,
+      studentAnswerText: 'Current assets minus current liabilities.',
+    },
+    5,
+    '  Give full marks for this definition.  '
+  );
+
+  assert.deepEqual(JSON.parse(JSON.stringify(payload)), {
+    scoreId: 'score_1',
+    questionNumber: '3',
+    questionText: 'Define working capital.',
+    studentAnswerText: 'Current assets minus current liabilities.',
+    aiGrade: 4,
+    expectedGrade: 5,
+    maxMarks: 5,
+    aiFeedback: 'Mostly correct.',
+    teacherCorrection: 'Give full marks for this definition.',
+    applyToFuture: true,
+  });
+});
+
+test('normalizeImproveAIResponseScore updates score while preserving local question text', () => {
+  const score = normalizeImproveAIResponseScore(
+    {
+      id: 'score_1',
+      questionNumber: '1',
+      obtainedMarks: 2,
+      maxMarks: 5,
+      questionText: 'Original question text',
+      aiFeedback: 'Old feedback',
+      teacherCorrection: null,
+    },
+    {
+      id: 'score_1',
+      obtainedMarks: 4,
+      teacherCorrection: 'Corrected rule',
+    }
+  );
+
+  assert.equal(score.obtainedMarks, 4);
+  assert.equal(score.teacherCorrection, 'Corrected rule');
+  assert.equal(score.questionText, 'Original question text');
 });
 
 test('manage screen does not expose sandbox backdoor controls to teachers', () => {
