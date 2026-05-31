@@ -45,20 +45,20 @@ export function StudentAnswerSheetPanel({ activeScore, fileSlides, onOpenFileTyp
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <View style={styles.card}>
+      <View style={styles.heroPanel}>
         <View style={styles.headerRow}>
           <View style={styles.iconBox}>
             <Ionicons name="reader-outline" size={20} color={COLORS.primary} />
           </View>
           <View style={styles.headerText}>
             <Text style={styles.title}>Student Answer Text</Text>
-            <Text style={styles.subtitle}>Question {activeScore?.questionNumber || '-'}</Text>
+            <Text style={styles.subtitle}>Question {activeScore?.questionNumber || '-'} extracted from the answer sheet</Text>
           </View>
         </View>
 
         {activeScore?.questionText ? (
-          <View style={styles.questionBox}>
-            <Text style={styles.sectionLabel}>Question</Text>
+          <View style={styles.promptBlock}>
+            <Text style={styles.sectionLabel}>Question prompt</Text>
             <Text style={styles.questionText}>{activeScore.questionText}</Text>
           </View>
         ) : null}
@@ -76,7 +76,10 @@ export function StudentAnswerSheetPanel({ activeScore, fileSlides, onOpenFileTyp
       </View>
 
       <View style={styles.filesCard}>
-        <Text style={styles.filesTitle}>Original Paper Files</Text>
+        <View style={styles.filesHeader}>
+          <Text style={styles.filesTitle}>Original Paper Files</Text>
+          <Text style={styles.filesSubtitle}>Open the source when text needs verification</Text>
+        </View>
         <View style={styles.fileGrid}>
           <FileButton
             icon="document-text-outline"
@@ -108,57 +111,62 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.backgroundDark,
   },
   content: {
-    gap: 14,
-    padding: 16,
-    paddingBottom: 28,
+    gap: 16,
+    padding: 18,
+    paddingBottom: 32,
   },
-  card: {
+  heroPanel: {
     backgroundColor: COLORS.surface,
-    borderColor: COLORS.borderLight,
-    borderRadius: 14,
+    borderColor: COLORS.border,
+    borderRadius: 18,
     borderWidth: 1,
-    padding: 16,
+    padding: 18,
+    shadowColor: '#111827',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.04,
+    shadowRadius: 18,
+    elevation: 1,
   },
   headerRow: {
     alignItems: 'center',
     flexDirection: 'row',
     gap: 12,
-    marginBottom: 14,
+    marginBottom: 16,
   },
   iconBox: {
     alignItems: 'center',
     backgroundColor: COLORS.primaryXLight,
-    borderRadius: 12,
-    height: 42,
+    borderRadius: 14,
+    height: 46,
     justifyContent: 'center',
-    width: 42,
+    width: 46,
   },
   headerText: {
     flex: 1,
   },
   title: {
     color: COLORS.text,
-    fontSize: 18,
+    fontSize: 19,
     fontWeight: '800',
   },
   subtitle: {
-    color: COLORS.textMuted,
-    fontSize: 12,
-    fontWeight: '700',
-    marginTop: 2,
+    color: COLORS.textLight,
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 3,
   },
-  questionBox: {
-    backgroundColor: COLORS.backgroundDark,
-    borderRadius: 12,
-    marginBottom: 12,
-    padding: 12,
+  promptBlock: {
+    borderBottomColor: COLORS.borderLight,
+    borderBottomWidth: 1,
+    marginBottom: 16,
+    paddingBottom: 16,
   },
   answerBox: {
-    backgroundColor: COLORS.primaryXLight,
-    borderColor: `${COLORS.primary}22`,
-    borderRadius: 12,
+    backgroundColor: '#FFF8F5',
+    borderColor: `${COLORS.primary}24`,
+    borderRadius: 16,
     borderWidth: 1,
-    padding: 12,
+    padding: 15,
   },
   sectionLabel: {
     color: COLORS.textMuted,
@@ -169,14 +177,14 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   questionText: {
-    color: COLORS.textLight,
-    fontSize: 14,
-    lineHeight: 21,
-  },
-  answerText: {
     color: COLORS.text,
     fontSize: 15,
     lineHeight: 23,
+  },
+  answerText: {
+    color: COLORS.text,
+    fontSize: 16,
+    lineHeight: 25,
   },
   emptyText: {
     color: COLORS.textLight,
@@ -185,29 +193,37 @@ const styles = StyleSheet.create({
   },
   filesCard: {
     backgroundColor: COLORS.surface,
-    borderColor: COLORS.borderLight,
-    borderRadius: 14,
+    borderColor: COLORS.border,
+    borderRadius: 18,
     borderWidth: 1,
-    padding: 14,
+    padding: 16,
+  },
+  filesHeader: {
+    marginBottom: 12,
   },
   filesTitle: {
     color: COLORS.text,
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '800',
-    marginBottom: 12,
+  },
+  filesSubtitle: {
+    color: COLORS.textLight,
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 2,
   },
   fileGrid: {
     gap: 10,
   },
   fileButton: {
     alignItems: 'center',
-    backgroundColor: COLORS.backgroundDark,
+    backgroundColor: COLORS.surface,
     borderColor: COLORS.border,
-    borderRadius: 12,
+    borderRadius: 14,
     borderWidth: 1,
     flexDirection: 'row',
     gap: 8,
-    minHeight: 48,
+    minHeight: 50,
     paddingHorizontal: 14,
   },
   fileButtonDisabled: {

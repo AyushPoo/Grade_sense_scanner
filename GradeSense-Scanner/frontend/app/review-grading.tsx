@@ -588,6 +588,7 @@ export default function ReviewGradingScreen() {
         </TouchableOpacity>
 
         <View style={styles.studentDetails}>
+          <Text style={styles.studentLabel}>Active paper</Text>
           <Text style={styles.studentName}>{activeSub?.studentName || 'Unknown Student'}</Text>
           <Text style={styles.studentRoll}>Roll: {activeSub?.studentRollNumber || 'N/A'}</Text>
         </View>
@@ -712,7 +713,7 @@ export default function ReviewGradingScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.background,
+    backgroundColor: COLORS.backgroundDark,
   },
   loadingContainer: {
     flex: 1,
@@ -727,7 +728,7 @@ const styles = StyleSheet.create({
   },
   centerContainer: {
     flex: 1,
-    backgroundColor: COLORS.background,
+    backgroundColor: COLORS.backgroundDark,
   },
   emptyContainer: {
     flex: 1,
@@ -763,10 +764,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    backgroundColor: COLORS.surface,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
     borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    borderBottomColor: COLORS.borderLight,
   },
   backButton: {
     padding: 8,
@@ -776,9 +778,10 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   headerTitle: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '800',
     color: COLORS.text,
+    textAlign: 'center',
   },
   headerSubtitle: {
     fontSize: 12,
@@ -790,15 +793,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: COLORS.backgroundDark,
+    backgroundColor: COLORS.surface,
+    borderBottomColor: COLORS.borderLight,
+    borderBottomWidth: 1,
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 13,
   },
   switchArrow: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: COLORS.cardBg,
+    backgroundColor: COLORS.backgroundDark,
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: '#000',
@@ -815,8 +820,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flex: 1,
   },
+  studentLabel: {
+    color: COLORS.textMuted,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    marginBottom: 2,
+    textTransform: 'uppercase',
+  },
   studentName: {
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '800',
     color: COLORS.text,
   },
@@ -828,8 +841,12 @@ const styles = StyleSheet.create({
   // Tabs
   tabContainer: {
     flexDirection: 'row',
+    backgroundColor: COLORS.surface,
+    borderBottomColor: COLORS.borderLight,
     borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
   },
   tab: {
     flex: 1,
@@ -837,11 +854,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     gap: 6,
-    paddingVertical: 14,
+    borderRadius: 14,
+    paddingVertical: 11,
   },
   activeTab: {
-    borderBottomWidth: 3,
-    borderBottomColor: COLORS.primary,
+    backgroundColor: COLORS.primaryXLight,
   },
   tabText: {
     fontSize: 14,
@@ -865,12 +882,12 @@ const styles = StyleSheet.create({
   },
   paperFilesContainer: {
     flex: 1,
-    backgroundColor: '#1E1E1E',
+    backgroundColor: '#141414',
   },
   answerTextButton: {
     alignItems: 'center',
-    backgroundColor: COLORS.cardBg,
-    borderBottomColor: COLORS.border,
+    backgroundColor: COLORS.surface,
+    borderBottomColor: COLORS.borderLight,
     borderBottomWidth: 1,
     flexDirection: 'row',
     gap: 8,
@@ -890,7 +907,7 @@ const styles = StyleSheet.create({
   headerIconBtn: {
     alignItems: 'center',
     backgroundColor: COLORS.primaryXLight,
-    borderRadius: 8,
+    borderRadius: 12,
     height: 34,
     justifyContent: 'center',
     width: 34,
@@ -900,9 +917,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 4,
     backgroundColor: COLORS.primary,
-    paddingHorizontal: 12,
+    paddingHorizontal: 13,
     paddingVertical: 7,
-    borderRadius: 14,
+    borderRadius: 999,
     shadowColor: COLORS.primary,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.18,

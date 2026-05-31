@@ -145,23 +145,23 @@ function buildPdfViewerUrl(url: string): string {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#1E1E1E',
+    backgroundColor: '#141414',
   },
   pagerHeader: {
-    backgroundColor: '#141414',
+    backgroundColor: '#101010',
     borderBottomWidth: 1,
-    borderBottomColor: '#2A2A2A',
-    paddingVertical: 10,
+    borderBottomColor: '#272727',
+    paddingVertical: 9,
   },
   fileTabs: {
     gap: 8,
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
   },
   fileTab: {
-    borderRadius: 8,
+    borderRadius: 999,
     borderWidth: 1,
     borderColor: '#333',
-    paddingHorizontal: 12,
+    paddingHorizontal: 13,
     paddingVertical: 8,
   },
   activeFileTab: {
@@ -169,9 +169,9 @@ const styles = StyleSheet.create({
     borderColor: COLORS.primary,
   },
   fileTabText: {
-    color: '#D8D8D8',
+    color: '#E7E7E7',
     fontSize: 12,
-    fontWeight: '700',
+    fontWeight: '800',
   },
   activeFileTabText: {
     color: '#fff',
@@ -202,25 +202,26 @@ const styles = StyleSheet.create({
   },
   emptyTitle: {
     color: '#E6E6E6',
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: '800',
     marginTop: 12,
   },
   emptyText: {
-    color: '#AAA',
-    fontSize: 14,
+    color: '#B8B8B8',
+    fontSize: 15,
+    lineHeight: 22,
     marginTop: 8,
     textAlign: 'center',
   },
   retryButton: {
     alignItems: 'center',
     backgroundColor: COLORS.primary,
-    borderRadius: 8,
+    borderRadius: 12,
     flexDirection: 'row',
     gap: 6,
     marginTop: 18,
     paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingVertical: 11,
   },
   retryText: {
     color: '#fff',

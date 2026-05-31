@@ -49,12 +49,25 @@ export function RubricReviewPanel({
       <View style={styles.detailPanel}>
         {activeScore ? (
           <ScrollView contentContainerStyle={styles.detailContent}>
-            <Text style={styles.detailTitle}>Question {activeScore.questionNumber}</Text>
-            <Text style={styles.questionText}>{activeScore.questionText || 'No question text extracted.'}</Text>
+            <View style={styles.detailHeader}>
+              <View style={styles.detailTitleGroup}>
+                <Text style={styles.sectionTitle}>REVIEWING</Text>
+                <Text style={styles.detailTitle}>Question {activeScore.questionNumber}</Text>
+              </View>
+              <View style={styles.scoreChip}>
+                <Text style={styles.scoreChipValue}>{activeScore.obtainedMarks}</Text>
+                <Text style={styles.scoreChipMax}>/ {activeScore.maxMarks}</Text>
+              </View>
+            </View>
+
+            <View style={styles.readingBlock}>
+              <Text style={styles.blockLabel}>Question prompt</Text>
+              <Text style={styles.questionText}>{activeScore.questionText || 'No question text extracted.'}</Text>
+            </View>
 
             {activeScore.studentAnswerText ? (
-              <View style={styles.studentAnswerBox}>
-                <Text style={styles.studentAnswerTitle}>Student Answer</Text>
+              <View style={styles.readingBlock}>
+                <Text style={styles.blockLabel}>Student answer</Text>
                 <Text style={styles.studentAnswerText}>{activeScore.studentAnswerText}</Text>
               </View>
             ) : null}
@@ -104,12 +117,13 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.backgroundDark,
   },
   questionListPanel: {
-    borderBottomColor: COLORS.border,
+    backgroundColor: COLORS.surface,
+    borderBottomColor: COLORS.borderLight,
     borderBottomWidth: 1,
     flexGrow: 0,
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 12,
+    paddingHorizontal: 18,
+    paddingTop: 14,
+    paddingBottom: 14,
   },
   sectionTitle: {
     color: COLORS.textMuted,
@@ -125,18 +139,18 @@ const styles = StyleSheet.create({
   questionRow: {
     alignItems: 'center',
     backgroundColor: COLORS.cardBg,
-    borderColor: 'transparent',
-    borderRadius: 8,
+    borderColor: COLORS.borderLight,
+    borderRadius: 14,
     borderWidth: 1,
-    gap: 18,
-    minWidth: 96,
+    gap: 14,
     flexDirection: 'row',
     justifyContent: 'space-between',
+    minWidth: 104,
     paddingHorizontal: 14,
     paddingVertical: 12,
   },
   activeQuestionRow: {
-    backgroundColor: `${COLORS.primary}0D`,
+    backgroundColor: '#FFF7F3',
     borderColor: COLORS.primary,
   },
   questionNumber: {
@@ -153,52 +167,79 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   detailPanel: {
-    backgroundColor: COLORS.cardBg,
+    backgroundColor: COLORS.backgroundDark,
     flex: 1,
   },
   detailContent: {
+    gap: 14,
     padding: 18,
-    paddingBottom: 120,
+    paddingBottom: 150,
+  },
+  detailHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  detailTitleGroup: {
+    flex: 1,
+    paddingRight: 14,
   },
   detailTitle: {
     color: COLORS.text,
-    fontSize: 16,
+    fontSize: 22,
     fontWeight: '800',
-    marginBottom: 10,
   },
-  questionText: {
-    color: COLORS.textLight,
-    fontSize: 15,
-    lineHeight: 23,
-    marginBottom: 18,
-  },
-  studentAnswerBox: {
-    backgroundColor: COLORS.backgroundDark,
+  scoreChip: {
+    alignItems: 'baseline',
+    backgroundColor: COLORS.surface,
     borderColor: COLORS.border,
-    borderRadius: 12,
+    borderRadius: 16,
     borderWidth: 1,
-    marginBottom: 18,
-    padding: 14,
+    flexDirection: 'row',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
   },
-  studentAnswerTitle: {
+  scoreChipValue: {
     color: COLORS.text,
-    fontSize: 12,
+    fontSize: 20,
+    fontWeight: '900',
+  },
+  scoreChipMax: {
+    color: COLORS.textLight,
+    fontSize: 13,
     fontWeight: '800',
-    marginBottom: 8,
+  },
+  readingBlock: {
+    backgroundColor: COLORS.surface,
+    borderColor: COLORS.border,
+    borderRadius: 18,
+    borderWidth: 1,
+    padding: 16,
+  },
+  blockLabel: {
+    color: COLORS.textMuted,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.7,
+    marginBottom: 10,
     textTransform: 'uppercase',
   },
+  questionText: {
+    color: COLORS.text,
+    fontSize: 16,
+    lineHeight: 25,
+  },
   studentAnswerText: {
-    color: COLORS.textLight,
-    fontFamily: 'monospace',
-    fontSize: 14,
-    lineHeight: 22,
+    color: COLORS.text,
+    fontSize: 15,
+    lineHeight: 24,
   },
   feedbackBox: {
-    backgroundColor: `${COLORS.primary}0D`,
-    borderColor: `${COLORS.primary}1A`,
-    borderRadius: 12,
+    backgroundColor: '#FFF8F5',
+    borderColor: `${COLORS.primary}24`,
+    borderRadius: 18,
     borderWidth: 1,
-    padding: 14,
+    padding: 16,
   },
   feedbackHeader: {
     alignItems: 'center',
@@ -208,26 +249,25 @@ const styles = StyleSheet.create({
   },
   feedbackTitle: {
     color: COLORS.primary,
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: 14,
+    fontWeight: '800',
   },
   feedbackText: {
-    color: COLORS.textLight,
-    fontSize: 14,
-    lineHeight: 22,
+    color: COLORS.text,
+    fontSize: 15,
+    lineHeight: 24,
   },
   improveButton: {
     alignItems: 'center',
     alignSelf: 'flex-start',
-    backgroundColor: COLORS.primaryXLight,
-    borderColor: `${COLORS.primary}30`,
-    borderRadius: 10,
+    backgroundColor: COLORS.surface,
+    borderColor: COLORS.primary,
+    borderRadius: 14,
     borderWidth: 1,
     flexDirection: 'row',
     gap: 8,
-    marginTop: 14,
     paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingVertical: 11,
   },
   improveButtonDisabled: {
     opacity: 0.6,

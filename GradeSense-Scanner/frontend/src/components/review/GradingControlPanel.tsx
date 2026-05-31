@@ -40,8 +40,8 @@ export function GradingControlPanel({
       <View style={styles.panel}>
         <View style={styles.stepperRow}>
           <View style={styles.questionSummary}>
+            <Text style={styles.panelEyebrow}>Current question</Text>
             <Text style={styles.questionTitle}>Question {activeScore.questionNumber}</Text>
-            <Text style={styles.questionMax}>Max Marks: {activeScore.maxMarks}</Text>
           </View>
 
           <View style={styles.stepperContainer}>
@@ -63,13 +63,14 @@ export function GradingControlPanel({
           </View>
         </View>
 
+        <Text style={styles.commentLabel}>Teacher note</Text>
         <View style={styles.commentRow}>
           <View style={styles.commentInputContainer}>
             <TextInput
               style={styles.commentInput}
               value={activeScore.teacherCorrection || ''}
               onChangeText={value => onCommentChange(activeScore.id, value)}
-              placeholder="Add custom marks override comment..."
+              placeholder="Add a short correction or override note..."
               placeholderTextColor={COLORS.textMuted}
               multiline
               textAlignVertical="top"
@@ -105,16 +106,16 @@ export function GradingControlPanel({
 const styles = StyleSheet.create({
   panel: {
     backgroundColor: COLORS.cardBg,
-    borderTopColor: COLORS.border,
+    borderTopColor: COLORS.borderLight,
     borderTopWidth: 1,
     elevation: 10,
-    paddingBottom: Platform.OS === 'ios' ? 18 : 10,
-    paddingHorizontal: 14,
-    paddingTop: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
+    paddingBottom: Platform.OS === 'ios' ? 18 : 12,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    shadowColor: '#111827',
+    shadowOffset: { width: 0, height: -6 },
+    shadowOpacity: 0.08,
+    shadowRadius: 14,
   },
   stepperRow: {
     alignItems: 'center',
@@ -124,45 +125,55 @@ const styles = StyleSheet.create({
   },
   questionSummary: {
     flex: 1,
+    paddingRight: 12,
+  },
+  panelEyebrow: {
+    color: COLORS.textMuted,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.7,
+    marginBottom: 2,
+    textTransform: 'uppercase',
   },
   questionTitle: {
     color: COLORS.text,
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '800',
-  },
-  questionMax: {
-    color: COLORS.textLight,
-    fontSize: 12,
-    marginTop: 2,
   },
   stepperContainer: {
     alignItems: 'center',
-    backgroundColor: COLORS.backgroundDark,
-    borderColor: COLORS.border,
-    borderRadius: 24,
+    backgroundColor: COLORS.surfaceElevated,
+    borderColor: COLORS.borderLight,
+    borderRadius: 999,
     borderWidth: 1,
     flexDirection: 'row',
-    paddingHorizontal: 4,
+    padding: 4,
   },
   stepperButton: {
     alignItems: 'center',
     backgroundColor: COLORS.cardBg,
-    borderRadius: 20,
+    borderRadius: 999,
     elevation: 1,
-    height: 36,
+    height: 38,
     justifyContent: 'center',
-    shadowColor: '#000',
+    shadowColor: '#111827',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 1,
-    width: 36,
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    width: 38,
   },
   stepperValue: {
     color: COLORS.text,
-    fontSize: 15,
-    fontWeight: '700',
+    fontSize: 16,
+    fontWeight: '800',
     textAlign: 'center',
-    width: 50,
+    width: 58,
+  },
+  commentLabel: {
+    color: COLORS.textLight,
+    fontSize: 12,
+    fontWeight: '800',
+    marginBottom: 7,
   },
   commentRow: {
     alignItems: 'center',
@@ -171,46 +182,52 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   commentInputContainer: {
-    backgroundColor: COLORS.backgroundDark,
+    backgroundColor: COLORS.surface,
     borderColor: COLORS.border,
-    borderRadius: 8,
+    borderRadius: 12,
     borderWidth: 1,
     flex: 1,
   },
   commentInput: {
     color: COLORS.text,
     fontSize: 14,
-    maxHeight: 72,
-    minHeight: 40,
+    lineHeight: 20,
+    maxHeight: 76,
+    minHeight: 44,
     paddingHorizontal: 14,
-    paddingVertical: 8,
+    paddingVertical: 10,
   },
   micButton: {
     alignItems: 'center',
     backgroundColor: COLORS.primaryXLight,
     borderColor: `${COLORS.primary}20`,
-    borderRadius: 8,
+    borderRadius: 12,
     borderWidth: 1,
-    height: 42,
+    height: 46,
     justifyContent: 'center',
-    width: 42,
+    width: 46,
   },
   saveButton: {
     alignItems: 'center',
     backgroundColor: COLORS.primary,
-    borderRadius: 8,
+    borderRadius: 12,
     flexDirection: 'row',
     gap: 8,
     justifyContent: 'center',
-    paddingVertical: 13,
+    paddingVertical: 14,
+    shadowColor: COLORS.primary,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    elevation: 3,
   },
   saveButtonDisabled: {
     backgroundColor: COLORS.textMuted,
   },
   saveButtonText: {
     color: '#fff',
-    fontSize: 15,
-    fontWeight: '700',
-    letterSpacing: 0.5,
+    fontSize: 14,
+    fontWeight: '800',
+    letterSpacing: 0,
   },
 });
