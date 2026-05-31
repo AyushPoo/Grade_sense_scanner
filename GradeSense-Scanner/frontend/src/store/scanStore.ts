@@ -978,6 +978,10 @@ export const useScanStore = create<ScanState>()(
                   merged[localIdx] = {
                     ...fetched,
                     ...local,
+                    // Always prefer the server exam_id if the local one is missing.
+                    // This ensures that after a cold start (AsyncStorage cleared), the
+                    // exam_id written to MongoDB by the server is surfaced correctly.
+                    exam_id: local.exam_id || fetched.exam_id,
                     stats: recomputeStats(local)
                   };
                 } else {

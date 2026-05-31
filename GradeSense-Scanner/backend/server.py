@@ -1671,6 +1671,15 @@ async def complete_scan_session(
             # Create exam synchronously first (takes ~1s)
             exam_id = await create_exam_on_webapp(session_id, user.user_id, token)
             
+            # CRITICAL: Save exam_id and mark as 'uploaded' IMMEDIATELY after creation.
+            # This must happen before any flow-session or background-task code so that
+            # a later exception cannot leave MongoDB with exam_id=None.
+            await db.scan_sessions.update_one(
+                {"session_id": session_id, "user_id": user.user_id},
+                {"$set": {"exam_id": exam_id, "status": "uploaded"}}
+            )
+            logger.info(f"Saved exam_id={exam_id} and status=uploaded to MongoDB for session {session_id}")
+            
             # Fetch scan session details to build flow session card
             session = await db.scan_sessions.find_one({"session_id": session_id, "user_id": user.user_id})
             flow_session_id = None
@@ -1772,12 +1781,6 @@ async def complete_scan_session(
             
             # Enqueue compilation and sync as background task
             background_tasks.add_task(async_sync_session_data, session_id, user.user_id, token, exam_id, flow_session_id)
-            
-            # Save exam_id on local session
-            await db.scan_sessions.update_one(
-                {"session_id": session_id, "user_id": user.user_id},
-                {"$set": {"exam_id": exam_id}}
-            )
             
             return {"exam_id": exam_id, "status": "completed"}
         except Exception as e:
