@@ -53,6 +53,29 @@ db = client[db_name]
 UPLOADS_DIR = ROOT_DIR / "uploads"
 storage = get_storage_service(UPLOADS_DIR)
 
+def get_gcs_signed_url(gcs_key: str, expiration_minutes: int = 60) -> Optional[str]:
+    if not gcs_key:
+        return None
+    try:
+        from datetime import timedelta
+        # If GCS storage is configured, use its client/bucket to sign URL directly
+        if hasattr(storage, "client") and hasattr(storage, "bucket"):
+            blob = storage.bucket.blob(gcs_key)
+            return blob.generate_signed_url(
+                version="v4",
+                expiration=timedelta(minutes=expiration_minutes),
+                method="GET"
+            )
+    except Exception as e:
+        logger.error(f"Error generating GCS signed URL for {gcs_key}: {e}")
+    return None
+
+def generate_drizzle_id(prefix: str) -> str:
+    import string
+    import random
+    chars = string.ascii_letters + string.digits
+    return prefix + ''.join(random.choices(chars, k=14))
+
 # Create the main app
 app = FastAPI(title="GradeSense Scanner API")
 
@@ -1115,14 +1138,80 @@ async def create_exam_on_webapp(session_id: str, user_id: str, token: str) -> st
     """
     Creates an Exam on the webapp and returns the created webapp exam_id.
     """
-    webapp_url = os.environ.get("WEBAPP_URL")
-    if not webapp_url:
-        return f"exam_mock_{uuid.uuid4().hex[:8]}"
-
     # Fetch the scan session details from MongoDB
     session = await db.scan_sessions.find_one({"session_id": session_id, "user_id": user_id})
     if not session:
         raise ValueError("Scan session not found")
+
+    # Try database insertion directly if WEBAPP_DB_URL is set
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if webapp_db_url:
+        try:
+            logger.info("Creating exam directly in Neon DB...")
+            exam_id = generate_drizzle_id("exm_")
+            conn = await asyncpg.connect(webapp_db_url)
+            
+            exam_name = session["session_name"]
+            batch_id = session["batch_id"]
+            subject_id = session.get("subject_id")
+            exam_date = session.get("exam_date")
+            if not exam_date:
+                exam_date = datetime.now().strftime("%Y-%m-%d")
+                
+            mode = session.get("mode") or "teacher_bulk"
+            settings = session.get("settings", {})
+            grading_mode = settings.get("grading_mode", "balanced")
+            
+            total_marks = 100.0
+            if session.get("total_marks") is not None:
+                try:
+                    total_marks = float(session["total_marks"])
+                except (ValueError, TypeError):
+                    pass
+            
+            grading_instructions = settings.get("grading_instructions")
+            feedback_enabled = settings.get("feedback_enabled", True)
+            
+            await conn.execute(
+                '''
+                INSERT INTO exams (
+                    id, teacher_id, batch_id, subject_id, name,
+                    class_standard, section, exam_date, mode, grading_mode,
+                    total_marks, status, blueprint_locked, results_published,
+                    published_at, created_at, updated_at, grading_instructions,
+                    feedback_enabled, publish_visibility_json
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+                ''',
+                exam_id,
+                user_id,
+                batch_id,
+                subject_id,
+                exam_name,
+                None, # class_standard
+                None, # section
+                exam_date,
+                mode,
+                grading_mode,
+                total_marks,
+                "draft",
+                False, # blueprint_locked
+                False, # results_published
+                None, # published_at
+                datetime.utcnow().isoformat() + 'Z',
+                datetime.utcnow().isoformat() + 'Z',
+                grading_instructions,
+                feedback_enabled,
+                "{}"
+            )
+            await conn.close()
+            logger.info(f"Exam created successfully via Neon: {exam_id}")
+            return exam_id
+        except Exception as db_err:
+            logger.error(f"Failed to create exam via Neon direct sync: {db_err}. Falling back to HTTP proxy.")
+
+    webapp_url = os.environ.get("WEBAPP_URL")
+    if not webapp_url:
+        return f"exam_mock_{uuid.uuid4().hex[:8]}"
 
     # Call the webapp to create the exam
     exam_payload = {
@@ -1178,323 +1267,386 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
     import asyncio
     from PIL import Image
     
-    webapp_url = os.environ.get("WEBAPP_URL")
-    if not webapp_url:
-        logger.warning("WEBAPP_URL not set, skipping background webapp sync")
+    # Try direct Neon DB sync if WEBAPP_DB_URL is set
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    
+    # 1. Fetch the scan session details from MongoDB
+    session = await db.scan_sessions.find_one({"session_id": session_id, "user_id": user_id})
+    if not session:
+        logger.error(f"Scan session {session_id} not found in background sync")
         return
 
-    try:
-        # 1. Fetch the scan session details from MongoDB
-        session = await db.scan_sessions.find_one({"session_id": session_id, "user_id": user_id})
-        if not session:
-            logger.error(f"Scan session {session_id} not found in background sync")
-            return
-
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Bypass-Tunnel-Reminder": "true"
-        }
-
-        # Helper to download a page file from storage (Local or GCS)
-        async def download_file_locally(p_metadata: dict, temp_dir: str) -> Optional[Path]:
-            file_url = p_metadata.get("file_url") or p_metadata.get("file_path")
-            if not file_url:
-                return None
-            
-            filename = file_url.split("/")[-1]
-            local_temp_path = Path(temp_dir) / filename
-            
-            provider = os.environ.get("STORAGE_PROVIDER", "local").lower()
-            if provider == "gcs":
-                try:
-                    blob_path = f"{session_id}/{filename}"
-                    blob = storage.bucket.blob(blob_path)
-                    
-                    loop = asyncio.get_event_loop()
-                    await loop.run_in_executor(None, blob.download_to_filename, str(local_temp_path))
-                    return local_temp_path
-                except Exception as ex:
-                    logger.error(f"Failed to download from GCS: {blob_path} - {ex}")
-                    return None
-            else:
-                local_src_path = storage.get_file_path(session_id, filename)
-                if local_src_path and local_src_path.exists():
-                    loop = asyncio.get_event_loop()
-                    await loop.run_in_executor(None, shutil.copy, local_src_path, local_temp_path)
-                    return local_temp_path
-                return None
-
-        # Helper to compile page metadata into a single PDF
-        async def compile_pages_to_pdf(pages_metadata: list, output_path: Path, compile_temp_dir: str) -> bool:
-            images = []
-            sorted_pages = sorted(pages_metadata, key=lambda x: x.get("page_number", 0))
-            
-            for p_meta in sorted_pages:
-                local_img_path = await download_file_locally(p_meta, compile_temp_dir)
-                if local_img_path and local_img_path.exists():
-                    try:
-                        img = Image.open(local_img_path)
-                        if img.mode != 'RGB':
-                            img = img.convert('RGB')
-                        img.load()
-                        images.append(img)
-                    except Exception as ex:
-                        logger.error(f"Error opening image {local_img_path}: {ex}")
-                        
-            if images:
-                loop = asyncio.get_event_loop()
-                def save_pdf():
-                    images[0].save(
-                        output_path,
-                        save_all=True,
-                        append_images=images[1:]
-                    )
-                await loop.run_in_executor(None, save_pdf)
+    # Helper to download a page file from storage (Local or GCS)
+    async def download_file_locally(p_metadata: dict, temp_dir: str) -> Optional[Path]:
+        file_url = p_metadata.get("file_url") or p_metadata.get("file_path")
+        if not file_url:
+            return None
+        
+        filename = file_url.split("/")[-1]
+        local_temp_path = Path(temp_dir) / filename
+        
+        provider = os.environ.get("STORAGE_PROVIDER", "local").lower()
+        if provider == "gcs":
+            try:
+                blob_path = f"{session_id}/{filename}"
+                blob = storage.bucket.blob(blob_path)
                 
-                for img in images:
-                    try:
-                        img.close()
-                    except Exception:
-                        pass
-                return True
-            return False
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, blob.download_to_filename, str(local_temp_path))
+                return local_temp_path
+            except Exception as ex:
+                logger.error(f"Failed to download from GCS: {blob_path} - {ex}")
+                return None
+        else:
+            local_src_path = storage.get_file_path(session_id, filename)
+            if local_src_path and local_src_path.exists():
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, shutil.copy, local_src_path, local_temp_path)
+                return local_temp_path
+            return None
 
-        async with httpx.AsyncClient() as client_http:
+    # Helper to compile page metadata into a single PDF
+    async def compile_pages_to_pdf(pages_metadata: list, output_path: Path, compile_temp_dir: str) -> bool:
+        images = []
+        sorted_pages = sorted(pages_metadata, key=lambda x: x.get("page_number", 0))
+        
+        for p_meta in sorted_pages:
+            local_img_path = await download_file_locally(p_meta, compile_temp_dir)
+            if local_img_path and local_img_path.exists():
+                try:
+                    img = Image.open(local_img_path)
+                    if img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    img.load()
+                    images.append(img)
+                except Exception as ex:
+                    logger.error(f"Error opening image {local_img_path}: {ex}")
+                    
+        if images:
+            loop = asyncio.get_event_loop()
+            def save_pdf():
+                images[0].save(
+                    output_path,
+                    save_all=True,
+                    append_images=images[1:]
+                )
+            await loop.run_in_executor(None, save_pdf)
+            
+            for img in images:
+                try:
+                    img.close()
+                except Exception:
+                    pass
+            return True
+        return False
+
+    if webapp_db_url:
+        try:
+            logger.info("Starting direct Neon DB and GCS background sync...")
+            import json
+            
             # Create a temp directory for compiling PDFs
             with tempfile.TemporaryDirectory() as compile_temp_dir:
                 temp_dir_path = Path(compile_temp_dir)
-
-                # 2. Upload Question Paper (if present)
+                
+                # 2. Upload Question Paper (if present) to GCS and insert to Neon
                 qp_pages = session.get("question_paper", {}).get("pages", [])
+                qp_gcs_key = None
                 if qp_pages:
                     qp_pdf_path = temp_dir_path / "question_paper.pdf"
                     logger.info(f"Compiling QP PDF with {len(qp_pages)} pages...")
                     if await compile_pages_to_pdf(qp_pages, qp_pdf_path, compile_temp_dir):
-                        logger.info("Uploading QP PDF to webapp...")
-                        with open(qp_pdf_path, "rb") as f:
-                            upload_res = await client_http.post(
-                                f"{webapp_url.rstrip('/')}/api/v1/exams/{exam_id}/files/question_paper",
-                                files={"file": ("question_paper.pdf", f, "application/pdf")},
-                                headers={"Authorization": f"Bearer {token}"},
-                                timeout=120.0
-                            )
-                            if upload_res.status_code != 201:
-                                logger.error(f"Failed to upload QP PDF: {upload_res.status_code} - {upload_res.text}")
+                        qp_size = qp_pdf_path.stat().st_size
+                        qp_rand = generate_drizzle_id("")
+                        qp_gcs_key = f"exams/{exam_id}/question_paper/file_{qp_rand}_question_paper.pdf"
+                        
+                        logger.info(f"Uploading QP PDF to GCS bucket at {qp_gcs_key}...")
+                        blob = storage.bucket.blob(qp_gcs_key)
+                        blob.upload_from_filename(str(qp_pdf_path), content_type="application/pdf")
+                        
+                        conn = await asyncpg.connect(webapp_db_url)
+                        await conn.execute(
+                            '''
+                            INSERT INTO exam_files (
+                                id, exam_id, kind, original_name, content_type,
+                                gcs_key, object_size_bytes, created_at, updated_at
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                            ''',
+                            generate_drizzle_id("efl_"),
+                            exam_id,
+                            "question_paper",
+                            "question_paper.pdf",
+                            "application/pdf",
+                            qp_gcs_key,
+                            qp_size,
+                            datetime.utcnow().isoformat() + 'Z',
+                            datetime.utcnow().isoformat() + 'Z'
+                        )
+                        await conn.close()
+                        logger.info("QP PDF uploaded and inserted to Neon successfully.")
 
-                # 3. Upload Model Answer (if present)
+                # 3. Upload Model Answer (if present) to GCS and insert to Neon
                 ma_pages = session.get("model_answer", {}).get("pages", [])
+                ma_gcs_key = None
                 if ma_pages:
                     ma_pdf_path = temp_dir_path / "model_answer.pdf"
                     logger.info(f"Compiling Model Answer PDF with {len(ma_pages)} pages...")
                     if await compile_pages_to_pdf(ma_pages, ma_pdf_path, compile_temp_dir):
-                        logger.info("Uploading Model Answer PDF to webapp...")
-                        with open(ma_pdf_path, "rb") as f:
-                            upload_res = await client_http.post(
-                                f"{webapp_url.rstrip('/')}/api/v1/exams/{exam_id}/files/model_answer",
-                                files={"file": ("model_answer.pdf", f, "application/pdf")},
-                                headers={"Authorization": f"Bearer {token}"},
-                                timeout=120.0
-                            )
-                            if upload_res.status_code != 201:
-                                logger.error(f"Failed to upload Model Answer PDF: {upload_res.status_code} - {upload_res.text}")
+                        ma_size = ma_pdf_path.stat().st_size
+                        ma_rand = generate_drizzle_id("")
+                        ma_gcs_key = f"exams/{exam_id}/model_answer/file_{ma_rand}_model_answer.pdf"
+                        
+                        logger.info(f"Uploading Model Answer PDF to GCS bucket at {ma_gcs_key}...")
+                        blob = storage.bucket.blob(ma_gcs_key)
+                        blob.upload_from_filename(str(ma_pdf_path), content_type="application/pdf")
+                        
+                        conn = await asyncpg.connect(webapp_db_url)
+                        await conn.execute(
+                            '''
+                            INSERT INTO exam_files (
+                                id, exam_id, kind, original_name, content_type,
+                                gcs_key, object_size_bytes, created_at, updated_at
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                            ''',
+                            generate_drizzle_id("efl_"),
+                            exam_id,
+                            "model_answer",
+                            "model_answer.pdf",
+                            "application/pdf",
+                            ma_gcs_key,
+                            ma_size,
+                            datetime.utcnow().isoformat() + 'Z',
+                            datetime.utcnow().isoformat() + 'Z'
+                        )
+                        await conn.close()
+                        logger.info("Model Answer PDF uploaded and inserted to Neon successfully.")
 
-                # Determine source paper mode dynamically
                 source_paper_mode = "separate"
                 if not qp_pages and ma_pages:
                     source_paper_mode = "combined_model_answer"
 
-                # Create the upload flow state payload template
-                flow_payload = {
-                    "examId": exam_id,
-                    "title": session["session_name"],
-                    "status": "draft",
-                    "currentStep": 3,
-                    "maxCompletedStep": 2,
-                    "state": {
-                        "form": {
-                            "name": session["session_name"],
-                            "batchId": session["batch_id"],
-                            "subjectId": session.get("subject_id") or "",
-                            "totalMarks": str(session.get("total_marks") or 100),
-                            "examDate": session.get("exam_date") or "",
-                            "gradingMode": "balanced",
-                            "gradingInstructions": "",
-                            "feedbackEnabled": True
-                        },
-                        "sourcePaperMode": source_paper_mode,
-                        "pilotReviewFirst": False,
-                        "activeJobId": None,
-                        "sessionSubmissionIds": []
-                    }
-                }
-
-                # 4. Auto-extract and Lock blueprint first so bulk upload grading jobs don't fail with 'blueprint not found'
+                # 4. Enqueue Blueprint Extraction Job and poll for completion
                 blueprint_extracted_and_locked = False
                 if ma_pages:
-                    try:
-                        logger.info(f"Triggering auto-extraction of blueprint on webapp for mode: {source_paper_mode}...")
-                        # Extended timeout of 10 minutes to accommodate double/separate paper processing
-                        extract_res = await client_http.post(
-                            f"{webapp_url.rstrip('/')}/api/v1/exams/{exam_id}/blueprint/extract",
-                            json={"sourceMode": source_paper_mode},
-                            headers={"Authorization": f"Bearer {token}"},
-                            timeout=600.0
-                        )
-                        if extract_res.status_code not in (200, 201):
-                            logger.error(f"Failed to auto-extract blueprint: {extract_res.status_code} - {extract_res.text}")
-                        else:
-                            logger.info("Blueprint auto-extracted successfully! Locking it...")
-                            lock_res = await client_http.post(
-                                f"{webapp_url.rstrip('/')}/api/v1/exams/{exam_id}/blueprint/lock",
-                                json={"locked": True},
-                                headers={"Authorization": f"Bearer {token}"},
-                                timeout=60.0
-                            )
-                            if lock_res.status_code not in (200, 201):
-                                logger.error(f"Failed to lock blueprint: {lock_res.status_code} - {lock_res.text}")
-                            else:
-                                logger.info("Blueprint locked successfully!")
+                    blueprint_job_id = generate_drizzle_id("job_")
+                    logger.info(f"Enqueuing blueprint extraction job {blueprint_job_id} in Neon...")
+                    conn = await asyncpg.connect(webapp_db_url)
+                    await conn.execute(
+                        '''
+                        INSERT INTO grading_jobs (
+                            id, type, status, exam_id, teacher_id,
+                            progress, total_items, processed_items, success_count, failure_count,
+                            attempts, payload_json, result_json, created_at, updated_at
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                        ''',
+                        blueprint_job_id,
+                        "blueprint_extraction",
+                        "queued",
+                        exam_id,
+                        user_id,
+                        0.0,
+                        1,
+                        0,
+                        0,
+                        0,
+                        0,
+                        json.dumps({"teacherId": user_id, "sourceMode": source_paper_mode}),
+                        "{}",
+                        datetime.utcnow().isoformat() + 'Z',
+                        datetime.utcnow().isoformat() + 'Z'
+                    )
+                    await conn.close()
+                    
+                    # Poll for blueprint extraction completion
+                    poll_start = datetime.utcnow()
+                    logger.info("Polling blueprint extraction job status...")
+                    while (datetime.utcnow() - poll_start).total_seconds() < 300:
+                        await asyncio.sleep(3.0)
+                        conn = await asyncpg.connect(webapp_db_url)
+                        j_row = await conn.fetchrow("SELECT status, error FROM grading_jobs WHERE id = $1", blueprint_job_id)
+                        await conn.close()
+                        if j_row:
+                            status = j_row["status"]
+                            if status == "completed":
                                 blueprint_extracted_and_locked = True
-                    except Exception as ex:
-                        logger.error(f"Error during blueprint extraction/locking in background: {ex}")
-
-                # Update progress to Step 5 if blueprint ready (meaning we are starting to upload student submissions)
-                if blueprint_extracted_and_locked and flow_session_id:
-                    try:
-                        logger.info("Updating upload flow session progress to Step 5 mid-way...")
-                        patch_payload = {
-                            "currentStep": 5,
-                            "maxCompletedStep": 4,
-                            "state": {
-                                "form": flow_payload["state"]["form"],
-                                "sourcePaperMode": source_paper_mode,
-                                "pilotReviewFirst": False,
-                                "activeJobId": None,
-                                "sessionSubmissionIds": []
-                            }
-                        }
-                        await client_http.patch(
-                            f"{webapp_url.rstrip('/')}/api/v1/exams/upload-flows/{flow_session_id}",
-                            json=patch_payload,
-                            headers={"Authorization": f"Bearer {token}", "Bypass-Tunnel-Reminder": "true"},
-                            timeout=10.0
-                        )
-                    except Exception as e:
-                        logger.error(f"Failed to PATCH flow session progress mid-way: {e}")
-
-                # 5. Upload Students Submissions (if present)
-                students = session.get("students", [])
-                submission_files = []
-                file_handles = []
-
-                try:
-                    for idx, student in enumerate(students):
-                        st_pages = student.get("pages", [])
-                        if st_pages:
-                            st_label = student.get("label") or f"student_{idx}"
-                            clean_label = "".join(c for c in st_label if c.isalnum() or c in (" ", "_", "-")).strip()
-                            clean_label = clean_label.replace(" ", "_")
-                            
-                            pdf_name = f"{clean_label}.pdf"
-                            st_pdf_path = temp_dir_path / pdf_name
-                            
-                            logger.info(f"Compiling Student {clean_label} PDF with {len(st_pages)} pages...")
-                            if await compile_pages_to_pdf(st_pages, st_pdf_path, compile_temp_dir):
-                                f_handle = open(st_pdf_path, "rb")
-                                file_handles.append(f_handle)
-                                submission_files.append(("files", (pdf_name, f_handle, "application/pdf")))
-
-                    if submission_files:
-                        logger.info(f"Bulk uploading {len(submission_files)} student submissions to webapp...")
-                        upload_res = await client_http.post(
-                            f"{webapp_url.rstrip('/')}/api/v1/exams/{exam_id}/submissions/bulk",
-                            files=submission_files,
-                            data={"autoQueue": "true"},
-                            headers={"Authorization": f"Bearer {token}"},
-                            timeout=300.0
-                        )
-                        if upload_res.status_code not in (200, 201):
-                            logger.error(f"Failed to bulk upload student papers: {upload_res.status_code} - {upload_res.text}")
-                        else:
-                            logger.info("Bulk upload completed successfully!")
-                            try:
-                                bulk_data = upload_res.json().get("data", {})
-                                created_ids = bulk_data.get("createdSubmissionIds", [])
-                                dup_ids = bulk_data.get("duplicateSubmissionIds", [])
-                                submissions_list = bulk_data.get("submissions", [])
-                                
-                                sub_ids = []
-                                for sub_detail in submissions_list:
-                                    sub = sub_detail.get("submission") if isinstance(sub_detail, dict) else None
-                                    if sub and "id" in sub:
-                                        sub_ids.append(sub["id"])
-                                    elif isinstance(sub_detail, dict) and "id" in sub_detail:
-                                        sub_ids.append(sub_detail["id"])
-                                        
-                                all_sub_ids = list(set(created_ids + dup_ids + sub_ids))
-                                
-                                job = bulk_data.get("job")
-                                active_job_id = job.get("id") if (job and isinstance(job, dict)) else None
-                                
-                                if blueprint_extracted_and_locked:
-                                    flow_payload["currentStep"] = 5
-                                    flow_payload["maxCompletedStep"] = 5
-                                    flow_payload["status"] = "draft"
-                                else:
-                                    flow_payload["currentStep"] = 4
-                                    flow_payload["maxCompletedStep"] = 2
-                                    flow_payload["status"] = "draft"
-                                    
-                                flow_payload["state"]["activeJobId"] = active_job_id
-                                flow_payload["state"]["sessionSubmissionIds"] = all_sub_ids
-                            except Exception as ex:
-                                logger.error(f"Error parsing bulk upload response for flow state: {ex}")
-                    else:
-                        if blueprint_extracted_and_locked:
-                            flow_payload["currentStep"] = 5
-                            flow_payload["maxCompletedStep"] = 4
-                            flow_payload["status"] = "draft"
-                        else:
-                            flow_payload["currentStep"] = 4
-                            flow_payload["maxCompletedStep"] = 2
-                            flow_payload["status"] = "draft"
-                finally:
-                    for fh in file_handles:
+                                logger.info("Blueprint extraction completed successfully by worker!")
+                                break
+                            elif status == "failed":
+                                logger.error(f"Blueprint extraction failed: {j_row['error']}")
+                                break
+                    
+                    # Update upload flow session step 5 if blueprint ready
+                    if blueprint_extracted_and_locked and flow_session_id:
                         try:
-                            fh.close()
-                        except Exception:
-                            pass
+                            logger.info("Updating upload flow session progress to Step 5 mid-way in Neon DB...")
+                            conn = await asyncpg.connect(webapp_db_url)
+                            row = await conn.fetchrow("SELECT state_json FROM upload_flow_sessions WHERE id = $1", flow_session_id)
+                            if row:
+                                state_dict = json.loads(row["state_json"])
+                                state_dict["sourcePaperMode"] = source_paper_mode
+                                
+                                await conn.execute(
+                                    '''
+                                    UPDATE upload_flow_sessions
+                                    SET current_step = $1, max_completed_step = $2, state_json = $3, updated_at = $4
+                                    WHERE id = $5
+                                    ''',
+                                    5,
+                                    4,
+                                    json.dumps(state_dict),
+                                    datetime.utcnow().isoformat() + 'Z',
+                                    flow_session_id
+                                )
+                            await conn.close()
+                        except Exception as e:
+                            logger.error(f"Failed to update flow session progress mid-way: {e}")
 
-                 # 6. Create or Update Upload Flow Session card on webapp
-                try:
-                    if flow_session_id:
-                        logger.info(f"Updating existing upload flow session card {flow_session_id} on webapp...")
-                        flow_res = await client_http.patch(
-                            f"{webapp_url.rstrip('/')}/api/v1/exams/upload-flows/{flow_session_id}",
-                            json=flow_payload,
-                            headers={"Authorization": f"Bearer {token}", "Bypass-Tunnel-Reminder": "true"},
-                            timeout=60.0
-                        )
-                        if flow_res.status_code not in (200, 201):
-                            logger.error(f"Failed to update upload flow session: {flow_res.status_code} - {flow_res.text}")
-                        else:
-                            logger.info("Upload flow session card updated successfully!")
-                    else:
-                        logger.info("Creating new upload flow session card on webapp...")
-                        flow_res = await client_http.post(
-                            f"{webapp_url.rstrip('/')}/api/v1/exams/upload-flows",
-                            json=flow_payload,
-                            headers={"Authorization": f"Bearer {token}", "Bypass-Tunnel-Reminder": "true"},
-                            timeout=60.0
-                        )
-                        if flow_res.status_code not in (200, 201):
-                            logger.error(f"Failed to create upload flow session: {flow_res.status_code} - {flow_res.text}")
-                        else:
-                            logger.info("Upload flow session card created successfully!")
-                except Exception as e:
-                    logger.error(f"Error saving/updating upload flow session card: {e}")
-    except Exception as e:
-        logger.error(f"Exception in async_sync_session_data background task: {e}")
+                # 5. Compile and upload student submissions
+                students = session.get("students", [])
+                session_submission_ids = []
+                for idx, student in enumerate(students):
+                    st_pages = student.get("pages", [])
+                    if st_pages:
+                        st_label = student.get("label") or f"student_{idx}"
+                        clean_label = "".join(c for c in st_label if c.isalnum() or c in (" ", "_", "-")).strip()
+                        clean_label = clean_label.replace(" ", "_")
+                        
+                        pdf_name = f"{clean_label}.pdf"
+                        st_pdf_path = temp_dir_path / pdf_name
+                        
+                        logger.info(f"Compiling Student {clean_label} PDF with {len(st_pages)} pages...")
+                        if await compile_pages_to_pdf(st_pages, st_pdf_path, compile_temp_dir):
+                            sub_id = generate_drizzle_id("sbm_")
+                            sub_rand = generate_drizzle_id("")
+                            sub_gcs_key = f"submissions/{sub_id}/answer-sheets/file_{sub_rand}_student_answer_paper.pdf"
+                            sub_size = st_pdf_path.stat().st_size
+                            
+                            logger.info(f"Uploading Student PDF to GCS bucket at {sub_gcs_key}...")
+                            blob = storage.bucket.blob(sub_gcs_key)
+                            blob.upload_from_filename(str(st_pdf_path), content_type="application/pdf")
+                            
+                            conn = await asyncpg.connect(webapp_db_url)
+                            # Create Submission
+                            await conn.execute(
+                                '''
+                                INSERT INTO submissions (
+                                    id, exam_id, student_id, student_name, student_email, source, status,
+                                    total_score, total_marks, percentage, ai_feedback, teacher_feedback,
+                                    reviewed_at, published_at, created_at, updated_at, student_roll_number
+                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+                                ''',
+                                sub_id,
+                                exam_id,
+                                None,
+                                student.get("label") or f"Student #{idx + 1}",
+                                None,
+                                "teacher_bulk",
+                                "pending",
+                                None,
+                                float(session.get("total_marks") or 100.0),
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                                datetime.utcnow().isoformat() + 'Z',
+                                datetime.utcnow().isoformat() + 'Z',
+                                student.get("roll_number")
+                            )
+                            # Create Submission File
+                            await conn.execute(
+                                '''
+                                INSERT INTO submission_files (
+                                    id, submission_id, kind, original_name, content_type, gcs_key,
+                                    object_size_bytes, content_hash, created_at, updated_at
+                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                                ''',
+                                generate_drizzle_id("sfl_"),
+                                sub_id,
+                                "answer_sheet",
+                                pdf_name,
+                                "application/pdf",
+                                sub_gcs_key,
+                                sub_size,
+                                None,
+                                datetime.utcnow().isoformat() + 'Z',
+                                datetime.utcnow().isoformat() + 'Z'
+                            )
+                            await conn.close()
+                            session_submission_ids.append(sub_id)
+
+                # 6. Enqueue Grading Job for Submissions and Update Flow Session Card
+                active_job_id = None
+                if session_submission_ids:
+                    active_job_id = generate_drizzle_id("job_")
+                    logger.info(f"Enqueuing grading job {active_job_id} in Neon...")
+                    conn = await asyncpg.connect(webapp_db_url)
+                    await conn.execute(
+                        '''
+                        INSERT INTO grading_jobs (
+                            id, type, status, exam_id, teacher_id,
+                            progress, total_items, processed_items, success_count, failure_count,
+                            attempts, payload_json, result_json, created_at, updated_at
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                        ''',
+                        active_job_id,
+                        "grade_submissions",
+                        "queued",
+                        exam_id,
+                        user_id,
+                        0.0,
+                        len(session_submission_ids),
+                        0,
+                        0,
+                        0,
+                        0,
+                        json.dumps({
+                            "submissionIds": session_submission_ids,
+                            "teacherId": user_id,
+                            "flow": "batch_grading"
+                        }),
+                        "{}",
+                        datetime.utcnow().isoformat() + 'Z',
+                        datetime.utcnow().isoformat() + 'Z'
+                    )
+                    await conn.close()
+
+                # Update upload flow session step 5 (completed / draft)
+                if flow_session_id:
+                    try:
+                        logger.info("Updating final upload flow session state in Neon DB...")
+                        conn = await asyncpg.connect(webapp_db_url)
+                        row = await conn.fetchrow("SELECT state_json FROM upload_flow_sessions WHERE id = $1", flow_session_id)
+                        if row:
+                            state_dict = json.loads(row["state_json"])
+                            state_dict["sourcePaperMode"] = source_paper_mode
+                            state_dict["activeJobId"] = active_job_id
+                            state_dict["sessionSubmissionIds"] = session_submission_ids
+                            
+                            current_step = 5 if blueprint_extracted_and_locked else 4
+                            max_completed_step = 5 if blueprint_extracted_and_locked else 2
+                            
+                            await conn.execute(
+                                '''
+                                UPDATE upload_flow_sessions
+                                SET current_step = $1, max_completed_step = $2, state_json = $3, updated_at = $4
+                                WHERE id = $5
+                                ''',
+                                current_step,
+                                max_completed_step,
+                                json.dumps(state_dict),
+                                datetime.utcnow().isoformat() + 'Z',
+                                flow_session_id
+                            )
+                        await conn.close()
+                        logger.info("Final upload flow session card updated successfully via Neon DB!")
+                    except Exception as e:
+                        logger.error(f"Failed to update final flow session progress: {e}")
+                        
+            logger.info("Direct Neon DB and GCS background sync completed successfully!")
+            return
+        except Exception as e:
+            logger.error(f"Failed direct Neon background sync: {e}. Falling back to HTTP proxy path.")
 
 
 @api_router.post("/scan-sessions/{session_id}/complete")
@@ -1527,47 +1679,96 @@ async def complete_scan_session(
                 ma_pages = session.get("model_answer", {}).get("pages", [])
                 source_paper_mode = "combined_model_answer" if (not qp_pages and ma_pages) else "separate"
                 
-                webapp_url = os.environ.get("WEBAPP_URL")
-                if webapp_url:
+                webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+                if webapp_db_url:
                     try:
-                        logger.info("Creating initial upload flow session synchronously...")
-                        flow_payload = {
-                            "examId": exam_id,
-                            "title": session["session_name"],
-                            "status": "draft",
-                            "currentStep": 4,  # Step 4: Extracting blueprint
-                            "maxCompletedStep": 3,
-                            "state": {
-                                "form": {
-                                    "name": session["session_name"],
-                                    "batchId": session["batch_id"],
-                                    "subjectId": session.get("subject_id") or "",
-                                    "totalMarks": str(session.get("total_marks") or 100),
-                                    "examDate": session.get("exam_date") or "",
-                                    "gradingMode": "balanced",
-                                    "gradingInstructions": "",
-                                    "feedbackEnabled": True
-                                },
-                                "sourcePaperMode": source_paper_mode,
-                                "pilotReviewFirst": False,
-                                "activeJobId": None,
-                                "sessionSubmissionIds": []
-                            }
+                        logger.info("Creating initial upload flow session synchronously in Neon DB...")
+                        flow_session_id = generate_drizzle_id("ufs_")
+                        import json
+                        
+                        state_dict = {
+                            "form": {
+                                "name": session["session_name"],
+                                "batchId": session["batch_id"],
+                                "subjectId": session.get("subject_id") or "",
+                                "totalMarks": str(session.get("total_marks") or 100),
+                                "examDate": session.get("exam_date") or "",
+                                "gradingMode": "balanced",
+                                "gradingInstructions": "",
+                                "feedbackEnabled": True
+                            },
+                            "sourcePaperMode": source_paper_mode,
+                            "pilotReviewFirst": False,
+                            "activeJobId": None,
+                            "sessionSubmissionIds": []
                         }
-                        async with httpx.AsyncClient() as client_http:
-                            flow_res = await client_http.post(
-                                f"{webapp_url.rstrip('/')}/api/v1/exams/upload-flows",
-                                json=flow_payload,
-                                headers={"Authorization": f"Bearer {token}", "Bypass-Tunnel-Reminder": "true"},
-                                timeout=10.0
-                            )
-                            if flow_res.status_code in (200, 201):
-                                flow_session_id = flow_res.json().get("data", {}).get("id")
-                                logger.info(f"Initial upload flow session created synchronously with ID: {flow_session_id}")
-                            else:
-                                logger.error(f"Failed to create initial upload flow session card synchronously: {flow_res.status_code} - {flow_res.text}")
-                    except Exception as e:
-                        logger.error(f"Error creating initial upload flow session card synchronously: {e}")
+                        
+                        conn = await asyncpg.connect(webapp_db_url)
+                        await conn.execute(
+                            '''
+                            INSERT INTO upload_flow_sessions (
+                                id, teacher_id, exam_id, title, status,
+                                current_step, max_completed_step, state_json,
+                                created_at, updated_at
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                            ''',
+                            flow_session_id,
+                            user.user_id,
+                            exam_id,
+                            session["session_name"],
+                            "draft",
+                            4,
+                            3,
+                            json.dumps(state_dict),
+                            datetime.utcnow().isoformat() + 'Z',
+                            datetime.utcnow().isoformat() + 'Z'
+                        )
+                        await conn.close()
+                        logger.info(f"Initial upload flow session created synchronously via Neon: {flow_session_id}")
+                    except Exception as db_err:
+                        logger.error(f"Failed to create upload flow session synchronously via Neon: {db_err}")
+                else:
+                    webapp_url = os.environ.get("WEBAPP_URL")
+                    if webapp_url:
+                        try:
+                            logger.info("Creating initial upload flow session synchronously...")
+                            flow_payload = {
+                                "examId": exam_id,
+                                "title": session["session_name"],
+                                "status": "draft",
+                                "currentStep": 4,  # Step 4: Extracting blueprint
+                                "maxCompletedStep": 3,
+                                "state": {
+                                    "form": {
+                                        "name": session["session_name"],
+                                        "batchId": session["batch_id"],
+                                        "subjectId": session.get("subject_id") or "",
+                                        "totalMarks": str(session.get("total_marks") or 100),
+                                        "examDate": session.get("exam_date") or "",
+                                        "gradingMode": "balanced",
+                                        "gradingInstructions": "",
+                                        "feedbackEnabled": True
+                                    },
+                                    "sourcePaperMode": source_paper_mode,
+                                    "pilotReviewFirst": False,
+                                    "activeJobId": None,
+                                    "sessionSubmissionIds": []
+                                }
+                            }
+                            async with httpx.AsyncClient() as client_http:
+                                flow_res = await client_http.post(
+                                    f"{webapp_url.rstrip('/')}/api/v1/exams/upload-flows",
+                                    json=flow_payload,
+                                    headers={"Authorization": f"Bearer {token}", "Bypass-Tunnel-Reminder": "true"},
+                                    timeout=10.0
+                                )
+                                if flow_res.status_code in (200, 201):
+                                    flow_session_id = flow_res.json().get("data", {}).get("id")
+                                    logger.info(f"Initial upload flow session created synchronously with ID: {flow_session_id}")
+                                else:
+                                    logger.error(f"Failed to create initial upload flow session card synchronously: {flow_res.status_code} - {flow_res.text}")
+                        except Exception as e:
+                            logger.error(f"Error creating initial upload flow session card synchronously: {e}")
             
             # Enqueue compilation and sync as background task
             background_tasks.add_task(async_sync_session_data, session_id, user.user_id, token, exam_id, flow_session_id)
@@ -1802,11 +2003,11 @@ async def get_exam_submissions_proxy(exam_id: str, authorization: Optional[str] 
             conn = await asyncpg.connect(webapp_db_url)
             rows = await conn.fetch(
                 '''
-                SELECT s.id, s.student_name, s.roll_number, s.total_score, e.total_marks, s.status
+                SELECT s.id, s.student_name, s.student_roll_number, s.total_score, e.total_marks, s.status
                 FROM submissions s
                 JOIN exams e ON e.id = s.exam_id
                 WHERE s.exam_id = $1
-                ORDER BY s.roll_number ASC NULLS LAST
+                ORDER BY s.student_roll_number ASC NULLS LAST
                 ''',
                 exam_id
             )
@@ -1815,7 +2016,7 @@ async def get_exam_submissions_proxy(exam_id: str, authorization: Optional[str] 
                 {
                     "id": str(r["id"]),
                     "studentName": r["student_name"] or "Unknown",
-                    "studentRollNumber": r["roll_number"] or "",
+                    "studentRollNumber": r["student_roll_number"] or "",
                     "totalScore": r["total_score"] or 0,
                     "totalMarks": r["total_marks"] or 100,
                     "status": r["status"] or "graded"
@@ -1861,7 +2062,7 @@ async def get_submission_detail_proxy(submission_id: str, authorization: Optiona
             # Get submission + scores
             sub_row = await conn.fetchrow(
                 '''
-                SELECT s.id, s.student_name, s.roll_number, s.total_score, s.status,
+                SELECT s.id, s.student_name, s.student_roll_number, s.total_score, s.status,
                        s.teacher_feedback, e.total_marks
                 FROM submissions s
                 JOIN exams e ON e.id = s.exam_id
@@ -1873,42 +2074,76 @@ async def get_submission_detail_proxy(submission_id: str, authorization: Optiona
                 score_rows = await conn.fetch(
                     '''
                     SELECT sc.id, sc.question_number, sc.obtained_marks, sc.max_marks,
-                           sc.question_text, sc.ai_feedback, sc.teacher_correction
-                    FROM scores sc
+                           qi.question_text, sc.ai_feedback, sc.teacher_correction
+                    FROM question_scores sc
+                    LEFT JOIN question_items qi ON qi.id = sc.question_id
                     WHERE sc.submission_id = $1
-                    ORDER BY sc.question_number ASC
+                    ORDER BY sc.sort_order ASC, sc.question_number ASC
                     ''',
                     submission_id
                 )
-                file_rows = await conn.fetch(
+                # Check if annotation_gcs_key column exists
+                has_annotation_col = await conn.fetchval(
                     '''
-                    SELECT f.id, f.signed_url, f.annotation_signed_url
-                    FROM submission_files f
-                    WHERE f.submission_id = $1
-                    ORDER BY f.page_number ASC
-                    ''',
-                    submission_id
+                    SELECT EXISTS (
+                        SELECT 1 
+                        FROM information_schema.columns 
+                        WHERE table_name = 'submission_files' AND column_name = 'annotation_gcs_key'
+                    )
+                    '''
                 )
+                if has_annotation_col:
+                    file_rows = await conn.fetch(
+                        '''
+                        SELECT f.id, f.gcs_key, f.annotation_gcs_key
+                        FROM submission_files f
+                        WHERE f.submission_id = $1
+                        ''',
+                        submission_id
+                    )
+                else:
+                    file_rows = await conn.fetch(
+                        '''
+                        SELECT f.id, f.gcs_key, NULL as annotation_gcs_key
+                        FROM submission_files f
+                        WHERE f.submission_id = $1
+                        ''',
+                        submission_id
+                    )
                 await conn.close()
+
+                files = []
+                for f in file_rows:
+                    gcs_key = f["gcs_key"]
+                    ann_key = f["annotation_gcs_key"]
+                    
+                    signed_url = get_gcs_signed_url(gcs_key) if gcs_key else None
+                    ann_signed_url = get_gcs_signed_url(ann_key) if ann_key else None
+                    
+                    # Fallback URL format if GCS signed URL generation fails
+                    if not signed_url and gcs_key:
+                        signed_url = f"/api/files/{gcs_key}"
+                    if not ann_signed_url and ann_key:
+                        ann_signed_url = f"/api/files/{ann_key}"
+                        
+                    files.append({
+                        "id": str(f["id"]),
+                        "signedUrl": signed_url,
+                        "annotationSignedUrl": ann_signed_url
+                    })
+
                 return {
                     "data": {
                         "submission": {
                             "id": str(sub_row["id"]),
                             "studentName": sub_row["student_name"] or "Unknown",
-                            "studentRollNumber": sub_row["roll_number"] or "",
+                            "studentRollNumber": sub_row["student_roll_number"] or "",
                             "totalScore": sub_row["total_score"] or 0,
                             "totalMarks": sub_row["total_marks"] or 100,
                             "status": sub_row["status"] or "graded",
                             "teacherFeedback": sub_row["teacher_feedback"] or ""
                         },
-                        "files": [
-                            {
-                                "id": str(f["id"]),
-                                "signedUrl": f["signed_url"],
-                                "annotationSignedUrl": f["annotation_signed_url"]
-                            }
-                            for f in file_rows
-                        ],
+                        "files": files,
                         "scores": [
                             {
                                 "id": str(sc["id"]),
@@ -2015,12 +2250,12 @@ async def get_analytics_overview_proxy(authorization: Optional[str] = Header(Non
                 '''
                 SELECT e.id, e.name, e.exam_date, e.total_marks, e.status,
                        COUNT(s.id) as submission_count,
-                       COUNT(CASE WHEN s.is_reviewed = true THEN 1 END) as reviewed_count,
+                       COUNT(CASE WHEN s.status = 'reviewed' THEN 1 END) as reviewed_count,
                        AVG(s.total_score::float / NULLIF(e.total_marks, 0) * 100) as avg_pct
                 FROM exams e
                 LEFT JOIN submissions s ON s.exam_id = e.id
                 WHERE e.teacher_id = $1
-                GROUP BY e.id, e.name, e.exam_date, e.total_marks, e.status
+                GROUP BY e.id, e.name, e.exam_date, e.total_marks, e.status, e.created_at
                 ORDER BY e.created_at DESC
                 LIMIT 10
                 ''',
@@ -2144,7 +2379,7 @@ async def list_reevaluations_proxy(exam_id: Optional[str] = None, authorization:
         try:
             conn = await asyncpg.connect(webapp_db_url)
             query = '''
-                SELECT r.id, r.student_name, r.roll_number, r.reason, r.status,
+                SELECT r.id, s.student_name, s.student_roll_number as roll_number, r.reason, r.status,
                        r.teacher_response, r.created_at, e.name as exam_name, e.id as exam_id
                 FROM re_evaluations r
                 JOIN submissions s ON s.id = r.submission_id
@@ -2226,7 +2461,7 @@ async def get_exam_jobs_proxy(exam_id: str, authorization: Optional[str] = Heade
             rows = await conn.fetch(
                 '''
                 SELECT j.id, j.type, j.status, j.progress, j.processed_items, j.total_items, j.updated_at
-                FROM jobs j
+                FROM grading_jobs j
                 WHERE j.exam_id = $1
                 ORDER BY j.created_at DESC
                 LIMIT 5
