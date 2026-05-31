@@ -1,6 +1,6 @@
 # Mobile Smoke Test Report
 
-- Generated: 2026-05-31T10:34:43.223110+00:00
+- Generated: 2026-05-31T11:59:46.750445+00:00
 - Overall: PASS
 
 ### Backend unit tests: PASS
@@ -34,16 +34,16 @@ OK
 - Exit code: `0`
 
 ```text
-✔ normalizeManagedExams maps API rows into display-ready exam records (1.0415ms)
-✔ normalizeManagePerformance returns stable empty arrays for partial payloads (1.4802ms)
-✔ buildReviewFileSlides orders document types without mutating signed urls (1.8552ms)
-✔ buildLocalReviewFiles maps local session question, model, and active student pages (0.6466ms)
-✔ normalizeReviewScores preserves extracted student answer text from existing API fields (0.2355ms)
-✔ normalizeReviewSettings returns complete webapp review settings from partial API data (0.2928ms)
-✔ buildReviewSettingsPayload trims instructions for API writes (0.1765ms)
-✔ buildImproveAIRequest sends question-level reusable correction context (0.241ms)
-✔ normalizeImproveAIResponseScore updates score while preserving local question text (0.2194ms)
-✔ manage screen does not expose sandbox backdoor controls to teachers (0.8307ms)
+✔ normalizeManagedExams maps API rows into display-ready exam records (1.6815ms)
+✔ normalizeManagePerformance returns stable empty arrays for partial payloads (1.3601ms)
+✔ buildReviewFileSlides orders document types without mutating signed urls (1.788ms)
+✔ buildLocalReviewFiles maps local session question, model, and active student pages (0.4972ms)
+✔ normalizeReviewScores preserves extracted student answer text from existing API fields (0.6119ms)
+✔ normalizeReviewSettings returns complete webapp review settings from partial API data (0.7752ms)
+✔ buildReviewSettingsPayload trims instructions for API writes (0.3309ms)
+✔ buildImproveAIRequest sends question-level reusable correction context (0.3993ms)
+✔ normalizeImproveAIResponseScore updates score while preserving local question text (0.3403ms)
+✔ manage screen does not expose sandbox backdoor controls to teachers (0.8156ms)
 ℹ tests 10
 ℹ suites 0
 ℹ pass 10
@@ -51,7 +51,7 @@ OK
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 515.0977
+ℹ duration_ms 524.4825
 ```
 
 ### Frontend TypeScript: PASS
@@ -95,7 +95,7 @@ node_modules\expo-router\assets\sitemap.png (465 B)
 node_modules\expo-router\assets\unmatched.png (4.75 kB)
 
 › android bundles (1):
-_expo/static/js/android/entry-1f32c537cef978d22e05314fac2f47c6.hbc (5.15 MB)
+_expo/static/js/android/entry-eb1878a7d03710ecc88525ee4f64a21a.hbc (5.15 MB)
 
 › Files (1):
 metadata.json (3.03 kB)
