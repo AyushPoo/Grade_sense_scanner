@@ -1722,9 +1722,9 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                                 None,
                                 "teacher_bulk",
                                 "pending",
-                                None,
+                                0.0,
                                 float(session.get("total_marks") or 100.0),
-                                None,
+                                0.0,
                                 None,
                                 None,
                                 None,
@@ -1824,6 +1824,15 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                         logger.error(f"Failed to update final flow session progress: {e}")
                         
             logger.info("Direct Neon DB and GCS background sync completed successfully!")
+            await db.scan_sessions.update_one(
+                {"session_id": session_id, "user_id": user_id},
+                {"$set": {
+                    "status": "uploaded",
+                    "upload_progress": 100,
+                    "last_sync_error": None,
+                    "updated_at": datetime.now(timezone.utc),
+                }}
+            )
             return
         except Exception as e:
             logger.exception(f"Failed direct Neon background sync for session {session_id}")
@@ -1869,14 +1878,16 @@ async def complete_scan_session(
             # Create exam synchronously first (takes ~1s)
             exam_id = await create_exam_on_webapp(session_id, user.user_id, token)
             
-            # CRITICAL: Save exam_id and mark as 'uploaded' IMMEDIATELY after creation.
+            # CRITICAL: Save exam_id immediately after creation, but keep the
+            # session in syncing until the background task has inserted files,
+            # submissions, and grading jobs into the webapp database.
             # This must happen before any flow-session or background-task code so that
             # a later exception cannot leave MongoDB with exam_id=None.
             await db.scan_sessions.update_one(
                 {"session_id": session_id, "user_id": user.user_id},
-                {"$set": {"exam_id": exam_id, "status": "uploaded"}}
+                {"$set": {"exam_id": exam_id, "status": "syncing", "upload_progress": 100}}
             )
-            logger.info(f"Saved exam_id={exam_id} and status=uploaded to MongoDB for session {session_id}")
+            logger.info(f"Saved exam_id={exam_id} and status=syncing to MongoDB for session {session_id}")
             
             # Fetch scan session details to build flow session card
             session = await db.scan_sessions.find_one({"session_id": session_id, "user_id": user.user_id})
@@ -1948,7 +1959,7 @@ async def complete_scan_session(
             # Enqueue compilation and sync as background task
             background_tasks.add_task(async_sync_session_data, session_id, user.user_id, token, exam_id, flow_session_id)
             
-            return {"exam_id": exam_id, "status": "completed"}
+            return {"exam_id": exam_id, "status": "syncing"}
         except Exception as e:
             logger.error(f"Failed to sync scan session to webapp: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to sync scanned data to webapp: {str(e)}")

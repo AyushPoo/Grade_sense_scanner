@@ -972,10 +972,20 @@ export const useScanStore = create<ScanState>()(
                                      (fetched.model_answer?.pages?.length || 0) + 
                                      (fetched.students?.reduce((sum, st) => sum + (st.pages?.length || 0), 0) || 0);
 
-                const authoritativeStatuses = ['uploaded', 'uploading', 'completed', 'ready', 'failed'];
+                const serverTerminalStatuses = ['uploaded', 'sync_failed', 'failed'];
+                const localAuthoritativeStatuses = ['uploading', 'syncing', 'ready'];
+
+                if (serverTerminalStatuses.includes(fetched.status)) {
+                  merged[localIdx] = {
+                    ...local,
+                    ...fetched,
+                    stats: recomputeStats(localPages >= fetchedPages ? local : fetched),
+                  };
+                  return;
+                }
                 
                 // If local has more pages (offline scanning completed but not fully synced) or is in an authoritative status, keep local version
-                if (localPages > fetchedPages || authoritativeStatuses.includes(local.status)) {
+                if (localPages > fetchedPages || localAuthoritativeStatuses.includes(local.status)) {
                   merged[localIdx] = {
                     ...fetched,
                     ...local,

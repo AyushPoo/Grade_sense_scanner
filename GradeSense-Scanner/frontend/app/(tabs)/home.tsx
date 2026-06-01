@@ -81,7 +81,8 @@ function GradingProgressCard({ session, job, onPress }: any) {
   const processed = job?.processed ?? 0;
   const total = job?.total ?? 1;
   const percent = Math.round((processed / total) * 100);
-  const isComplete = job?.status === 'completed';
+  const isSyncFailed = session.status === 'sync_failed' || session.status === 'failed';
+  const isComplete = job?.status === 'completed' && total > 0;
 
   useEffect(() => {
     if (!isComplete) {
@@ -95,6 +96,25 @@ function GradingProgressCard({ session, job, onPress }: any) {
       return () => pulse.stop();
     }
   }, [isComplete]);
+
+  if (isSyncFailed) {
+    return (
+      <View style={[gradingStyles.card, gradingStyles.failedCard]}>
+        <View style={gradingStyles.completeTop}>
+          <View style={[gradingStyles.completeIconBadge, gradingStyles.failedIconBadge]}>
+            <Ionicons name="alert-circle" size={28} color={COLORS.error} />
+          </View>
+          <View style={{ flex: 1, marginLeft: 14 }}>
+            <Text style={gradingStyles.sessionTitle} numberOfLines={1}>{session.session_name}</Text>
+            <Text style={[gradingStyles.statusText, { color: COLORS.error }]}>Sync failed before grading</Text>
+          </View>
+        </View>
+        <Text style={gradingStyles.completeDetail} numberOfLines={2}>
+          {session.last_sync_error || 'The server could not create webapp submissions. Re-upload this exam after backend fixes are deployed.'}
+        </Text>
+      </View>
+    );
+  }
 
   if (isComplete) {
     return (
@@ -117,7 +137,7 @@ function GradingProgressCard({ session, job, onPress }: any) {
     );
   }
 
-  const statusLabel = job ? "AI grading in progress…" : "Syncing & starting AI grading…";
+  const statusLabel = job ? "AI grading in progress…" : "Syncing papers to webapp…";
 
   return (
     <View style={gradingStyles.card}>
@@ -158,6 +178,10 @@ const gradingStyles = StyleSheet.create({
     borderColor: COLORS.success,
     shadowColor: COLORS.success,
   },
+  failedCard: {
+    borderColor: COLORS.error,
+    shadowColor: COLORS.error,
+  },
   cardTop: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -175,6 +199,9 @@ const gradingStyles = StyleSheet.create({
     backgroundColor: COLORS.successLight,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  failedIconBadge: {
+    backgroundColor: COLORS.errorLight,
   },
   sessionTitle: {
     fontSize: 16,
@@ -364,7 +391,7 @@ export default function HomeScreen() {
     if (!token || !webappUrl) return;
 
     const pollJobs = async () => {
-      const pending = sessions.filter(s => s.status === 'uploaded' && s.exam_id);
+      const pending = sessions.filter(s => (s.status === 'uploaded' || s.status === 'syncing') && s.exam_id);
       for (const s of pending) {
         if (!s.exam_id) continue;
         try {
@@ -374,7 +401,8 @@ export default function HomeScreen() {
           if (res.ok && active) {
             const json = await res.json();
             const jobs = json.data || [];
-            const job = jobs.find((j: any) => j.type === 'bulk_grade' || j.status !== 'completed') || jobs[0];
+            const gradingJobs = jobs.filter((j: any) => ['bulk_grade', 'grade_submissions'].includes(j.type));
+            const job = gradingJobs.find((j: any) => j.status !== 'completed') || gradingJobs[0];
             if (job) {
               setGradingProgress(prev => ({
                 ...prev,
@@ -470,16 +498,16 @@ export default function HomeScreen() {
         </View>
 
         {/* Grading Progress Cards */}
-        {sessions.some(s => s.status === 'uploaded') && (
+        {sessions.some(s => ['syncing', 'uploaded', 'sync_failed', 'failed'].includes(s.status)) && (
           <View style={styles.section}>
             <Text style={styles.sectionLabel}>GRADING STATUS</Text>
             <View style={styles.cardList}>
               {sessions
-                .filter(s => s.status === 'uploaded')
+                .filter(s => ['syncing', 'uploaded', 'sync_failed', 'failed'].includes(s.status))
                 .slice(0, 3)
                 .map(session => {
                   const job = gradingProgress[session.session_id];
-                  const isComplete = job?.status === 'completed';
+                  const isComplete = job?.status === 'completed' && (job?.total || 0) > 0;
                   return (
                     <GradingProgressCard
                       key={session.session_id}
