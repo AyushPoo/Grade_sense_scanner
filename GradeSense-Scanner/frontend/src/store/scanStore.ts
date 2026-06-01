@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ScanSession, ScanPhase, ScannedPage, ScanSessionSettings, ScannedStudent, Batch, Subject } from '../types';
+import { ScanSession, ScanPhase, ScannedPage, ScanSessionSettings, Batch, Subject } from '../types';
 import * as FileSystem from 'expo-file-system';
 import { getBackendUrl } from '../config';
 
@@ -972,7 +972,7 @@ export const useScanStore = create<ScanState>()(
                                      (fetched.model_answer?.pages?.length || 0) + 
                                      (fetched.students?.reduce((sum, st) => sum + (st.pages?.length || 0), 0) || 0);
 
-                const serverTerminalStatuses = ['uploaded', 'sync_failed', 'failed'];
+                const serverTerminalStatuses = ['uploaded', 'grading', 'graded', 'sync_failed', 'failed'];
                 const localAuthoritativeStatuses = ['uploading', 'syncing', 'ready'];
 
                 if (serverTerminalStatuses.includes(fetched.status)) {

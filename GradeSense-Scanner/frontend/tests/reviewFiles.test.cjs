@@ -1,3 +1,5 @@
+/* global __dirname */
+
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -38,6 +40,12 @@ const {
   buildImproveAIRequest,
   normalizeImproveAIResponseScore,
 } = loadTsModule('src/utils/improveAI.ts');
+const {
+  isCompletedGradingJob,
+  isFailedGradingJob,
+  isReviewReadyExam,
+  shouldShowGradingStatus,
+} = loadTsModule('src/utils/gradingLifecycle.ts');
 
 test('buildReviewFileSlides orders document types without mutating signed urls', () => {
   const slides = buildReviewFileSlides(
@@ -241,4 +249,35 @@ test('manage screen does not expose sandbox backdoor controls to teachers', () =
   assert.equal(manageSource.includes('BACKDOOR CONSOLE'), false);
   assert.equal(manageSource.includes('/api/backdoor/seed'), false);
   assert.equal(manageSource.includes('/api/backdoor/reset'), false);
+});
+
+test('grading lifecycle ignores completed jobs in home progress section', () => {
+  const completedJob = {
+    type: 'grade_submissions',
+    status: 'completed',
+    processedItems: 2,
+    totalItems: 2,
+  };
+
+  assert.equal(isCompletedGradingJob(completedJob), true);
+  assert.equal(shouldShowGradingStatus({ status: 'grading' }, completedJob), false);
+  assert.equal(shouldShowGradingStatus({ status: 'syncing' }, null), true);
+});
+
+test('grading lifecycle surfaces failed real grading jobs', () => {
+  const failedJob = {
+    type: 'grade_submissions',
+    status: 'failed',
+    processedItems: 0,
+    totalItems: 3,
+  };
+
+  assert.equal(isFailedGradingJob(failedJob), true);
+  assert.equal(shouldShowGradingStatus({ status: 'uploaded' }, failedJob), true);
+});
+
+test('review-ready exams require completed grading data', () => {
+  assert.equal(isReviewReadyExam({ status: 'draft', submissionCount: 2, gradedSubmissionCount: 0 }), false);
+  assert.equal(isReviewReadyExam({ status: 'draft', submissionCount: 2, gradedSubmissionCount: 2 }), true);
+  assert.equal(isReviewReadyExam({ reviewReady: true, submissionCount: 2, gradedSubmissionCount: 1 }), true);
 });

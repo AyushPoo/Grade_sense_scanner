@@ -1,5 +1,7 @@
 from typing import Any, Iterable
 
+from grading_lifecycle_service import is_review_ready_exam
+
 VALID_EXAM_STATUSES = {"draft", "uploaded", "processing", "graded", "published", "closed", "archived"}
 
 
@@ -85,6 +87,8 @@ def build_managed_exams(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
             "resultsPublished": bool(row.get("results_published")),
             "publishedAt": as_iso(row.get("published_at")),
             "submissionCount": int(row.get("submission_count") or 0),
+            "gradedSubmissionCount": int(row.get("graded_submission_count") or 0),
+            "reviewReady": is_review_ready_exam(row),
             "averagePercentage": round(float(row.get("average_percentage") or 0), 1),
         })
     return exams

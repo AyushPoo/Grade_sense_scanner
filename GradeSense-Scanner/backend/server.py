@@ -29,6 +29,20 @@ from review_settings_service import (
     utc_now_text,
 )
 from improve_ai_service import ImproveAIServiceError, save_question_improvement
+from grading_lifecycle_service import (
+    build_grading_jobs,
+    is_successful_blueprint_job,
+    student_answer_text_select_expression,
+)
+from grading_retry_service import (
+    exam_has_blueprint,
+    fetch_exam_submission_ids,
+    insert_blueprint_extraction_job,
+    insert_grade_submissions_job,
+    resolve_source_paper_mode,
+    retry_grading_after_blueprint,
+    update_scan_grading_state,
+)
 from manage_analytics_service import (
     build_managed_exams,
     build_question_stats,
@@ -1607,6 +1621,7 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
 
                 # 4. Enqueue Blueprint Extraction Job and poll for completion
                 blueprint_extracted_and_locked = False
+                blueprint_failure_message = None
                 if ma_pages:
                     blueprint_job_id = generate_drizzle_id("job_")
                     logger.info(f"Enqueuing blueprint extraction job {blueprint_job_id} in Neon...")
@@ -1643,17 +1658,32 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                     while (datetime.utcnow() - poll_start).total_seconds() < 300:
                         await asyncio.sleep(3.0)
                         conn = await asyncpg.connect(webapp_db_url)
-                        j_row = await conn.fetchrow("SELECT status, error FROM grading_jobs WHERE id = $1", blueprint_job_id)
+                        j_row = await conn.fetchrow(
+                            "SELECT status, error, success_count, processed_items FROM grading_jobs WHERE id = $1",
+                            blueprint_job_id,
+                        )
                         await conn.close()
                         if j_row:
                             status = j_row["status"]
-                            if status == "completed":
+                            if status == "completed" and is_successful_blueprint_job(dict(j_row)):
                                 blueprint_extracted_and_locked = True
                                 logger.info("Blueprint extraction completed successfully by worker!")
                                 break
-                            elif status == "failed":
-                                logger.error(f"Blueprint extraction failed: {j_row['error']}")
+                            elif status == "completed":
+                                blueprint_failure_message = "Blueprint extraction completed without producing a usable exam blueprint."
+                                logger.error(blueprint_failure_message)
                                 break
+                            elif status == "failed":
+                                blueprint_failure_message = f"Blueprint extraction failed: {j_row['error'] or 'unknown error'}"
+                                logger.error(blueprint_failure_message)
+                                break
+
+                    if not blueprint_extracted_and_locked:
+                        await mark_sync_failed(
+                            blueprint_failure_message
+                            or "Blueprint extraction timed out before producing a usable exam blueprint."
+                        )
+                        return
                     
                     # Update upload flow session step 5 if blueprint ready
                     if blueprint_extracted_and_locked and flow_session_id:
@@ -1760,6 +1790,7 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                 if session_submission_ids:
                     active_job_id = generate_drizzle_id("job_")
                     logger.info(f"Enqueuing grading job {active_job_id} in Neon...")
+                    queued_submission_ids = session_submission_ids
                     conn = await asyncpg.connect(webapp_db_url)
                     await conn.execute(
                         '''
@@ -1775,21 +1806,36 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                         exam_id,
                         user_id,
                         0.0,
-                        len(session_submission_ids),
+                        len(queued_submission_ids),
                         0,
                         0,
                         0,
                         0,
                         json.dumps({
-                            "submissionIds": session_submission_ids,
+                            "submissionIds": queued_submission_ids,
                             "teacherId": user_id,
-                            "flow": "batch_grading"
+                            "flow": "batch_grading",
+                            "source": "mobile_scanner",
+                            "queueFirstOnly": False,
                         }),
                         "{}",
                         datetime.utcnow().isoformat() + 'Z',
                         datetime.utcnow().isoformat() + 'Z'
                     )
                     await conn.close()
+                    await db.scan_sessions.update_one(
+                        {"session_id": session_id, "user_id": user_id},
+                        {"$set": {
+                            "status": "grading",
+                            "grading_job_id": active_job_id,
+                            "grading_job_type": "grade_submissions",
+                            "grading_status": "queued",
+                            "grading_progress": 0.0,
+                            "grading_processed_items": 0,
+                            "grading_total_items": len(queued_submission_ids),
+                            "updated_at": datetime.now(timezone.utc),
+                        }}
+                    )
 
                 # Update upload flow session step 5 (completed / draft)
                 if flow_session_id:
@@ -1824,14 +1870,25 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                         logger.error(f"Failed to update final flow session progress: {e}")
                         
             logger.info("Direct Neon DB and GCS background sync completed successfully!")
+            final_status = "grading" if active_job_id else "uploaded"
+            update_payload = {
+                "status": final_status,
+                "upload_progress": 100,
+                "last_sync_error": None,
+                "updated_at": datetime.now(timezone.utc),
+            }
+            if active_job_id:
+                update_payload.update({
+                    "grading_job_id": active_job_id,
+                    "grading_job_type": "grade_submissions",
+                    "grading_status": "queued",
+                    "grading_progress": 0.0,
+                    "grading_processed_items": 0,
+                    "grading_total_items": len(queued_submission_ids),
+                })
             await db.scan_sessions.update_one(
                 {"session_id": session_id, "user_id": user_id},
-                {"$set": {
-                    "status": "uploaded",
-                    "upload_progress": 100,
-                    "last_sync_error": None,
-                    "updated_at": datetime.now(timezone.utc),
-                }}
+                {"$set": update_payload}
             )
             return
         except Exception as e:
@@ -1984,8 +2041,22 @@ async def get_session_status(session_id: str, authorization: Optional[str] = Hea
 
 @api_router.delete("/scan-sessions/{session_id}")
 async def delete_scan_session(session_id: str, authorization: Optional[str] = Header(None)):
-    """Delete a scan session"""
+    """Delete a scan session and its linked webapp exam when one exists."""
     user = await get_current_user(authorization)
+    session = await db.scan_sessions.find_one({"session_id": session_id, "user_id": user.user_id}, {"_id": 0})
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found or already deleted")
+
+    exam_id = session.get("exam_id")
+    if exam_id:
+        try:
+            await soft_delete_webapp_exam(str(exam_id), user.user_id)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error deleting linked webapp exam {exam_id} for scan session {session_id}: {e}")
+            raise HTTPException(status_code=500, detail="Failed to delete linked webapp exam")
+
     result = await db.scan_sessions.delete_many({"session_id": session_id, "user_id": user.user_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Session not found or already deleted")
@@ -2252,10 +2323,21 @@ async def get_submission_detail_proxy(submission_id: str, authorization: Optiona
                 user.user_id
             )
             if sub_row:
-                score_rows = await conn.fetch(
+                score_columns = await conn.fetch(
                     '''
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_name = 'question_scores'
+                    '''
+                )
+                student_answer_expr = student_answer_text_select_expression(
+                    [row["column_name"] for row in score_columns]
+                )
+                score_rows = await conn.fetch(
+                    f'''
                     SELECT sc.id, sc.question_number, sc.obtained_marks, sc.max_marks,
-                           qi.question_text, sc.ai_feedback, sc.teacher_correction
+                           qi.question_text, sc.ai_feedback, sc.teacher_correction,
+                           {student_answer_expr} AS student_answer_text
                     FROM question_scores sc
                     LEFT JOIN question_items qi ON qi.id = sc.question_id
                     WHERE sc.submission_id = $1
@@ -2363,7 +2445,7 @@ async def get_submission_detail_proxy(submission_id: str, authorization: Optiona
                                 "questionText": sc["question_text"] or "",
                                 "aiFeedback": sc["ai_feedback"],
                                 "teacherCorrection": sc["teacher_correction"],
-                                "studentAnswerText": None,
+                                "studentAnswerText": sc["student_answer_text"],
                             }
                             for sc in score_rows
                         ]
@@ -2704,6 +2786,7 @@ async def fetch_managed_exam(conn, exam_id: str, teacher_id: str):
                e.grading_mode, e.grading_instructions, e.feedback_enabled,
                e.results_published, e.published_at,
                COUNT(s.id) AS submission_count,
+               COUNT(CASE WHEN s.status IN ('graded', 'reviewed', 'published') THEN 1 END) AS graded_submission_count,
                AVG(s.percentage) AS average_percentage
         FROM exams e
         LEFT JOIN batches b ON b.id = e.batch_id
@@ -2726,6 +2809,33 @@ async def fetch_managed_exam(conn, exam_id: str, teacher_id: str):
     return exams[0] if exams else None
 
 
+async def soft_delete_webapp_exam(exam_id: str, teacher_id: str) -> bool:
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if not webapp_db_url:
+        raise HTTPException(status_code=503, detail="WEBAPP_DB_URL is not configured")
+
+    conn = None
+    try:
+        conn = await asyncpg.connect(webapp_db_url)
+        row = await conn.fetchrow(
+            '''
+            UPDATE exams
+            SET status = 'deleted', updated_at = $3
+            WHERE id = $1
+              AND teacher_id = $2
+              AND COALESCE(status, '') <> 'deleted'
+            RETURNING id
+            ''',
+            exam_id,
+            teacher_id,
+            utc_now_text()
+        )
+        return bool(row)
+    finally:
+        if conn:
+            await conn.close()
+
+
 @api_router.get("/v1/exams")
 async def list_exams_v1(authorization: Optional[str] = Header(None)):
     """List exams - reads directly from Neon PostgreSQL (always reachable from Render)"""
@@ -2742,6 +2852,7 @@ async def list_exams_v1(authorization: Optional[str] = Header(None)):
                        e.grading_mode, e.grading_instructions, e.feedback_enabled,
                        e.results_published, e.published_at,
                        COUNT(s.id) AS submission_count,
+                       COUNT(CASE WHEN s.status IN ('graded', 'reviewed', 'published') THEN 1 END) AS graded_submission_count,
                        AVG(s.percentage) AS average_percentage
                 FROM exams e
                 LEFT JOIN batches b ON b.id = e.batch_id
@@ -2927,27 +3038,9 @@ async def publish_exam_results_v1(exam_id: str, authorization: Optional[str] = H
 async def archive_exam_v1(exam_id: str, authorization: Optional[str] = Header(None)):
     """Soft-delete an exam from mobile while preserving historical records."""
     user = await get_current_user(authorization)
-    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
-    if not webapp_db_url:
-        raise HTTPException(status_code=503, detail="WEBAPP_DB_URL is not configured")
-
-    conn = None
     try:
-        conn = await asyncpg.connect(webapp_db_url)
-        row = await conn.fetchrow(
-            '''
-            UPDATE exams
-            SET status = 'deleted', updated_at = $3
-            WHERE id = $1
-              AND teacher_id = $2
-              AND COALESCE(status, '') <> 'deleted'
-            RETURNING id
-            ''',
-            exam_id,
-            user.user_id,
-            utc_now_text()
-        )
-        if not row:
+        deleted = await soft_delete_webapp_exam(exam_id, user.user_id)
+        if not deleted:
             raise HTTPException(status_code=404, detail="Exam not found")
         return {"success": True, "id": exam_id}
     except HTTPException:
@@ -2955,9 +3048,6 @@ async def archive_exam_v1(exam_id: str, authorization: Optional[str] = Header(No
     except Exception as e:
         logger.error(f"Error archiving exam in Neon: {e}")
         raise HTTPException(status_code=500, detail="Failed to archive exam")
-    finally:
-        if conn:
-            await conn.close()
 
 
 @api_router.get("/v1/exams/{exam_id}/settings")
@@ -3347,36 +3437,124 @@ async def get_exam_jobs_proxy(exam_id: str, authorization: Optional[str] = Heade
                 exam_id
             )
             await conn.close()
-            if rows:
-                jobs = [
-                    {
-                        "id": str(r["id"]),
-                        "type": r["type"] or "bulk_grade",
-                        "status": r["status"] or "processing",
-                        "progress": float(r["progress"]) if r["progress"] is not None else 0.0,
-                        "processedItems": r["processed_items"] or 0,
-                        "totalItems": r["total_items"] or 0
-                    }
-                    for r in rows
-                ]
+            jobs = build_grading_jobs([dict(r) for r in rows])
+            if jobs:
                 return {"data": jobs}
         except Exception as e:
             logger.error(f"Error querying Neon for exam jobs: {e}")
 
     # Fallback: check scan session status in MongoDB
     session = await db.scan_sessions.find_one({"exam_id": exam_id})
-    if session and session.get("status") == "completed":
+    session_job_type = session.get("grading_job_type") if session else None
+    if session and session.get("grading_job_id") and session_job_type in (None, "bulk_grade", "grade_submissions"):
         return {
             "data": [{
-                "id": f"job_local_{exam_id}",
-                "type": "bulk_grade",
-                "status": "processing",
-                "progress": 0.1,
-                "processedItems": 0,
-                "totalItems": len(session.get("students", []))
+                "id": session.get("grading_job_id"),
+                "type": session_job_type or "grade_submissions",
+                "status": session.get("grading_status") or "queued",
+                "progress": float(session.get("grading_progress") or 0.0),
+                "processedItems": int(session.get("grading_processed_items") or 0),
+                "totalItems": int(session.get("grading_total_items") or len(session.get("students", [])))
             }]
         }
     return {"data": []}
+
+
+@api_router.post("/v1/exams/{exam_id}/retry-grading")
+async def retry_exam_grading_v1(
+    exam_id: str,
+    background_tasks: BackgroundTasks,
+    authorization: Optional[str] = Header(None),
+):
+    """Retry a failed mobile grading flow without requiring the teacher to rescan papers."""
+    user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if not webapp_db_url:
+        raise HTTPException(status_code=503, detail="WEBAPP_DB_URL is not configured")
+
+    conn = None
+    try:
+        conn = await asyncpg.connect(webapp_db_url)
+        submission_ids = await fetch_exam_submission_ids(conn, exam_id, user.user_id)
+        if not submission_ids:
+            raise HTTPException(status_code=409, detail="No student submissions are available for grading")
+
+        if await exam_has_blueprint(conn, exam_id):
+            grading_job_id = await insert_grade_submissions_job(
+                conn,
+                exam_id,
+                user.user_id,
+                submission_ids,
+                generate_drizzle_id,
+                utc_now_text,
+                source="mobile_retry",
+            )
+            await update_scan_grading_state(
+                db.scan_sessions,
+                exam_id,
+                user.user_id,
+                status="grading",
+                job_id=grading_job_id,
+                job_type="grade_submissions",
+                total_items=len(submission_ids),
+                message=None,
+            )
+            return {
+                "data": {
+                    "status": "grading_queued",
+                    "examId": exam_id,
+                    "jobId": grading_job_id,
+                    "totalItems": len(submission_ids),
+                }
+            }
+
+        source_paper_mode = await resolve_source_paper_mode(conn, exam_id)
+        blueprint_job_id = await insert_blueprint_extraction_job(
+            conn,
+            exam_id,
+            user.user_id,
+            source_paper_mode,
+            generate_drizzle_id,
+            utc_now_text,
+        )
+        await update_scan_grading_state(
+            db.scan_sessions,
+            exam_id,
+            user.user_id,
+            status="syncing",
+            job_id=blueprint_job_id,
+            job_type="blueprint_extraction",
+            total_items=1,
+            message="Rebuilding exam blueprint before grading.",
+        )
+        background_tasks.add_task(
+            retry_grading_after_blueprint,
+            webapp_db_url=webapp_db_url,
+            scan_sessions=db.scan_sessions,
+            logger=logger,
+            id_factory=generate_drizzle_id,
+            now_factory=utc_now_text,
+            exam_id=exam_id,
+            teacher_id=user.user_id,
+            blueprint_job_id=blueprint_job_id,
+            submission_ids=submission_ids,
+        )
+        return {
+            "data": {
+                "status": "blueprint_retry_queued",
+                "examId": exam_id,
+                "jobId": blueprint_job_id,
+                "totalItems": len(submission_ids),
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrying grading for exam {exam_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retry grading")
+    finally:
+        if conn:
+            await conn.close()
 
 
 @api_router.post("/v1/exams/{exam_id}/regrade")

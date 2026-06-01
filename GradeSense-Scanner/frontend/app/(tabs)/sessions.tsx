@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -28,6 +28,10 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
 const STATUS_MAP: Record<string, { icon: React.ComponentProps<typeof Ionicons>['name']; color: string; bg: string; label: string }> = {
   uploaded:  { icon: 'checkmark-circle', color: COLORS.success,  bg: COLORS.successLight,  label: 'Uploaded'    },
   completed: { icon: 'checkmark-circle', color: COLORS.success,  bg: COLORS.successLight,  label: 'Uploaded'    },
+  grading:   { icon: 'sync-circle',      color: COLORS.primary,  bg: COLORS.primaryXLight, label: 'Grading'     },
+  graded:    { icon: 'checkmark-circle', color: COLORS.success,  bg: COLORS.successLight,  label: 'Graded'      },
+  syncing:   { icon: 'sync',             color: COLORS.primary,  bg: COLORS.primaryXLight, label: 'Syncing'     },
+  sync_failed: { icon: 'alert-circle',   color: COLORS.error,    bg: COLORS.errorLight,    label: 'Sync failed' },
   ready:     { icon: 'time',             color: COLORS.warning,  bg: COLORS.warningLight,  label: 'Pending'     },
   uploading: { icon: 'cloud-upload',     color: COLORS.info,     bg: COLORS.infoLight,     label: 'Uploading…'  },
   failed:    { icon: 'alert-circle',     color: COLORS.error,    bg: COLORS.errorLight,    label: 'Failed'      },
@@ -70,16 +74,9 @@ export default function SessionsScreen() {
   const [examsByBatch, setExamsByBatch] = useState<Record<string, Exam[]>>({});
   const [loadingExams, setLoadingExams] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetchSessions().catch(() => {});
-    if (activeTab === 'batches') {
-      loadBatches();
-    }
-  }, [activeTab]);
-
   const sessions = Array.isArray(savedSessions) ? savedSessions : [];
 
-  const loadBatches = async () => {
+  const loadBatches = useCallback(async () => {
     if (!token) return;
     setLoadingBatches(true);
     try {
@@ -98,7 +95,14 @@ export default function SessionsScreen() {
       setLoadingBatches(false);
       setRefreshing(false);
     }
-  };
+  }, [token]);
+
+  useEffect(() => {
+    fetchSessions().catch(() => {});
+    if (activeTab === 'batches') {
+      loadBatches();
+    }
+  }, [activeTab, fetchSessions, loadBatches]);
 
   const loadExamsForBatch = async (batchId: string) => {
     if (!token) return;

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -7,18 +7,24 @@ import {
   ScrollView,
   RefreshControl,
   Animated,
-  Dimensions,
-  Image,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { COLORS, getBackendUrl } from '../../src/config';
 import { useAuthStore } from '../../src/store/authStore';
 import { useScanStore } from '../../src/store/scanStore';
-
-const { width: SCREEN_W } = Dimensions.get('window');
+import {
+  isActualGradingJob,
+  isCompletedGradingJob,
+  isFailedGradingJob,
+  isReviewReadyExam,
+  normalizeJobProgress,
+  shouldShowGradingStatus,
+} from '../../src/utils/gradingLifecycle';
 
 // ─── Sub-components ───────────────────────────────────────────────────
 
@@ -76,13 +82,12 @@ const statStyles = StyleSheet.create({
 });
 
 // ─── Grading Progress Card ─────────────────────────────────────────────
-function GradingProgressCard({ session, job, onPress }: any) {
+function GradingProgressCard({ session, job, onPress, onRetry, isRetrying }: any) {
   const pulseAnim = useRef(new Animated.Value(1)).current;
-  const processed = job?.processed ?? 0;
-  const total = job?.total ?? 1;
-  const percent = Math.round((processed / total) * 100);
+  const { processed, total, percent } = normalizeJobProgress(job);
   const isSyncFailed = session.status === 'sync_failed' || session.status === 'failed';
-  const isComplete = job?.status === 'completed' && total > 0;
+  const isGradingFailed = isFailedGradingJob(job);
+  const isComplete = isCompletedGradingJob(job);
 
   useEffect(() => {
     if (!isComplete) {
@@ -95,9 +100,9 @@ function GradingProgressCard({ session, job, onPress }: any) {
       pulse.start();
       return () => pulse.stop();
     }
-  }, [isComplete]);
+  }, [isComplete, pulseAnim]);
 
-  if (isSyncFailed) {
+  if (isSyncFailed || isGradingFailed) {
     return (
       <View style={[gradingStyles.card, gradingStyles.failedCard]}>
         <View style={gradingStyles.completeTop}>
@@ -106,12 +111,25 @@ function GradingProgressCard({ session, job, onPress }: any) {
           </View>
           <View style={{ flex: 1, marginLeft: 14 }}>
             <Text style={gradingStyles.sessionTitle} numberOfLines={1}>{session.session_name}</Text>
-            <Text style={[gradingStyles.statusText, { color: COLORS.error }]}>Sync failed before grading</Text>
+            <Text style={[gradingStyles.statusText, { color: COLORS.error }]}>
+              {isGradingFailed ? 'AI grading failed' : 'Sync failed before grading'}
+            </Text>
           </View>
         </View>
         <Text style={gradingStyles.completeDetail} numberOfLines={2}>
-          {session.last_sync_error || 'The server could not create webapp submissions. Re-upload this exam after backend fixes are deployed.'}
+          {job?.error || session.last_sync_error || 'The server could not create webapp submissions. Re-upload this exam after backend fixes are deployed.'}
         </Text>
+        {session.exam_id ? (
+          <TouchableOpacity
+            style={gradingStyles.retryCTA}
+            onPress={onRetry}
+            disabled={isRetrying}
+            activeOpacity={0.86}
+          >
+            <Ionicons name="refresh" size={15} color="#fff" />
+            <Text style={gradingStyles.reviewCTAText}>{isRetrying ? 'Retrying...' : 'Retry grading'}</Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
     );
   }
@@ -262,6 +280,15 @@ const gradingStyles = StyleSheet.create({
     paddingVertical: 13,
     borderRadius: 12,
   },
+  retryCTA: {
+    alignItems: 'center',
+    backgroundColor: COLORS.error,
+    borderRadius: 12,
+    flexDirection: 'row',
+    gap: 8,
+    justifyContent: 'center',
+    paddingVertical: 13,
+  },
   reviewCTAText: {
     color: '#fff',
     fontSize: 14,
@@ -275,6 +302,14 @@ function SessionRow({ session, onPress }: { session: any; onPress: () => void })
     switch (status) {
       case 'uploaded': case 'completed':
         return { icon: 'checkmark-circle' as const, color: COLORS.success, bg: COLORS.successLight, label: 'Uploaded' };
+      case 'grading':
+        return { icon: 'sync-circle' as const, color: COLORS.primary, bg: COLORS.primaryXLight, label: 'Grading' };
+      case 'graded':
+        return { icon: 'checkmark-circle' as const, color: COLORS.success, bg: COLORS.successLight, label: 'Graded' };
+      case 'syncing':
+        return { icon: 'sync' as const, color: COLORS.primary, bg: COLORS.primaryXLight, label: 'Syncing' };
+      case 'sync_failed':
+        return { icon: 'alert-circle' as const, color: COLORS.error, bg: COLORS.errorLight, label: 'Sync failed' };
       case 'ready':
         return { icon: 'time' as const, color: COLORS.warning, bg: COLORS.warningLight, label: 'Pending' };
       case 'failed':
@@ -348,40 +383,47 @@ const rowStyles = StyleSheet.create({
 // ─── Main Screen ──────────────────────────────────────────────────────
 export default function HomeScreen() {
   const router = useRouter();
-  const { user, logout } = useAuthStore();
+  const { user } = useAuthStore();
   const { savedSessions, fetchSessions } = useScanStore();
   const [refreshing, setRefreshing] = useState(false);
-  const [gradingProgress, setGradingProgress] = useState<Record<string, { progress: number, processed: number, total: number, status: string }>>({});
+  const [gradingProgress, setGradingProgress] = useState<Record<string, { progress: number, processed: number, total: number, status: string, type?: string, error?: string | null }>>({});
   const [exams, setExams] = useState<any[]>([]);
-  const [loadingExams, setLoadingExams] = useState(false);
+  const [dismissedExamIds, setDismissedExamIds] = useState<string[]>([]);
+  const [retryingExamIds, setRetryingExamIds] = useState<string[]>([]);
   const fadeAnim = useRef(new Animated.Value(0)).current;
+  const sessions = useMemo(
+    () => (Array.isArray(savedSessions) ? savedSessions : []),
+    [savedSessions]
+  );
 
-  const fetchExams = async () => {
+  const fetchExams = useCallback(async () => {
     const token = useAuthStore.getState().sessionToken;
     const backendUrl = getBackendUrl();
     if (!token || !backendUrl) return;
     
-    setLoadingExams(true);
     try {
       const res = await fetch(`${backendUrl}/api/v1/exams`, {
         headers: { 'Authorization': `Bearer ${token}`, 'Bypass-Tunnel-Reminder': 'true' }
       });
       if (res.ok) {
         const json = await res.json();
-        setExams(json.data || []);
+        setExams((json.data || []).filter((exam: any) => isReviewReadyExam(exam)));
       }
     } catch (err) {
       console.warn('Failed to fetch exams for home:', err);
-    } finally {
-      setLoadingExams(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     Animated.timing(fadeAnim, { toValue: 1, duration: 350, useNativeDriver: true }).start();
     fetchSessions().catch(err => console.error('Initial fetch failed:', err));
     fetchExams().catch(err => console.error('Failed to load exams:', err));
-  }, []);
+    AsyncStorage.getItem('gradesense.dismissedReviewExamIds')
+      .then(value => {
+        if (value) setDismissedExamIds(JSON.parse(value));
+      })
+      .catch(() => {});
+  }, [fadeAnim, fetchExams, fetchSessions]);
 
   // Poll active grading jobs
   useEffect(() => {
@@ -391,7 +433,7 @@ export default function HomeScreen() {
     if (!token || !webappUrl) return;
 
     const pollJobs = async () => {
-      const pending = sessions.filter(s => (s.status === 'uploaded' || s.status === 'syncing') && s.exam_id);
+      const pending = sessions.filter(s => ['syncing', 'grading', 'uploaded'].includes(s.status) && s.exam_id);
       for (const s of pending) {
         if (!s.exam_id) continue;
         try {
@@ -401,12 +443,19 @@ export default function HomeScreen() {
           if (res.ok && active) {
             const json = await res.json();
             const jobs = json.data || [];
-            const gradingJobs = jobs.filter((j: any) => ['bulk_grade', 'grade_submissions'].includes(j.type));
+            const gradingJobs = jobs.filter((j: any) => isActualGradingJob(j));
             const job = gradingJobs.find((j: any) => j.status !== 'completed') || gradingJobs[0];
             if (job) {
               setGradingProgress(prev => ({
                 ...prev,
-                [s.session_id]: { progress: job.progress, processed: job.processedItems || 0, total: job.totalItems || 0, status: job.status }
+                [s.session_id]: {
+                  progress: job.progress,
+                  processed: job.processedItems || 0,
+                  total: job.totalItems || 0,
+                  status: job.status,
+                  type: job.type,
+                  error: job.error || null,
+                }
               }));
             }
           }
@@ -417,9 +466,8 @@ export default function HomeScreen() {
     pollJobs();
     const interval = setInterval(pollJobs, 5000);
     return () => { active = false; clearInterval(interval); };
-  }, [savedSessions]);
+  }, [sessions]);
 
-  const sessions = Array.isArray(savedSessions) ? savedSessions : [];
   const todaySessions = sessions.filter(s => s.created_at && new Date(s.created_at).toDateString() === new Date().toDateString()).length;
   const pendingUploads = sessions.filter(s => s.status === 'ready' || s.status === 'failed').length;
   const totalPages = sessions.reduce((sum, s) => sum + (s.stats?.total_pages || 0), 0);
@@ -443,6 +491,52 @@ export default function HomeScreen() {
   };
 
   const firstName = user?.name?.split(' ')[0] || 'Teacher';
+  const visibleStatusSessions = sessions.filter(session =>
+    shouldShowGradingStatus(session, gradingProgress[session.session_id])
+  );
+  const readyExams = exams.filter(exam => !dismissedExamIds.includes(String(exam.id)));
+
+  const openReadyExam = async (exam: any) => {
+    const examId = String(exam.id);
+    const nextDismissed = Array.from(new Set([...dismissedExamIds, examId]));
+    setDismissedExamIds(nextDismissed);
+    AsyncStorage.setItem('gradesense.dismissedReviewExamIds', JSON.stringify(nextDismissed)).catch(() => {});
+    router.push({ pathname: '/review-grading' as any, params: { examId: exam.id, sessionName: exam.name } });
+  };
+
+  const retryGrading = async (session: any) => {
+    const token = useAuthStore.getState().sessionToken;
+    const backendUrl = getBackendUrl();
+    if (!token || !backendUrl || !session.exam_id) {
+      Alert.alert('Retry unavailable', 'This scan is missing the linked webapp exam.');
+      return;
+    }
+
+    const examId = String(session.exam_id);
+    setRetryingExamIds(prev => Array.from(new Set([...prev, examId])));
+    try {
+      const res = await fetch(`${backendUrl}/api/v1/exams/${examId}/retry-grading`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Bypass-Tunnel-Reminder': 'true',
+        },
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `Status ${res.status}`);
+      }
+
+      await fetchSessions();
+      await fetchExams();
+      Alert.alert('Retry queued', 'GradeSense will rebuild the exam blueprint if needed and retry grading.');
+    } catch (err: any) {
+      Alert.alert('Retry failed', err?.message || 'Could not retry grading right now.');
+    } finally {
+      setRetryingExamIds(prev => prev.filter(id => id !== examId));
+    }
+  };
 
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
@@ -498,21 +592,22 @@ export default function HomeScreen() {
         </View>
 
         {/* Grading Progress Cards */}
-        {sessions.some(s => ['syncing', 'uploaded', 'sync_failed', 'failed'].includes(s.status)) && (
+        {visibleStatusSessions.length > 0 && (
           <View style={styles.section}>
             <Text style={styles.sectionLabel}>GRADING STATUS</Text>
             <View style={styles.cardList}>
-              {sessions
-                .filter(s => ['syncing', 'uploaded', 'sync_failed', 'failed'].includes(s.status))
+              {visibleStatusSessions
                 .slice(0, 3)
                 .map(session => {
                   const job = gradingProgress[session.session_id];
-                  const isComplete = job?.status === 'completed' && (job?.total || 0) > 0;
+                  const isComplete = isCompletedGradingJob(job);
                   return (
                     <GradingProgressCard
                       key={session.session_id}
                       session={session}
                       job={job}
+                      onRetry={() => retryGrading(session)}
+                      isRetrying={retryingExamIds.includes(String(session.exam_id))}
                       onPress={isComplete ? () => router.push({
                         pathname: '/review-grading' as any,
                         params: { examId: session.exam_id, sessionName: session.session_name }
@@ -525,17 +620,17 @@ export default function HomeScreen() {
         )}
 
         {/* Exams Ready for Review */}
-        {exams.length > 0 && (
+        {readyExams.length > 0 && (
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionLabel}>EXAMS READY FOR REVIEW</Text>
             </View>
             <View style={styles.cardList}>
-              {exams.slice(0, 3).map(exam => (
+              {readyExams.slice(0, 3).map(exam => (
                 <TouchableOpacity
                   key={exam.id}
                   style={styles.examItem}
-                  onPress={() => router.push({ pathname: '/review-grading' as any, params: { examId: exam.id, sessionName: exam.name } })}
+                  onPress={() => openReadyExam(exam)}
                   activeOpacity={0.8}
                 >
                   <View style={styles.examIconWrap}>

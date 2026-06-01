@@ -66,6 +66,7 @@ class ManageAnalyticsServiceTest(unittest.TestCase):
                 "results_published": True,
                 "published_at": "2026-05-01T08:00:00+00:00",
                 "submission_count": 12,
+                "graded_submission_count": 12,
                 "average_percentage": 77.96,
             }
         ])
@@ -76,6 +77,8 @@ class ManageAnalyticsServiceTest(unittest.TestCase):
         self.assertEqual(exams[0]["status"], "graded")
         self.assertEqual(exams[0]["resultsPublished"], True)
         self.assertEqual(exams[0]["submissionCount"], 12)
+        self.assertEqual(exams[0]["gradedSubmissionCount"], 12)
+        self.assertEqual(exams[0]["reviewReady"], True)
         self.assertEqual(exams[0]["averagePercentage"], 78.0)
 
     def test_normalize_exam_update_payload_trims_and_filters_values(self):
