@@ -281,3 +281,21 @@ test('review-ready exams require completed grading data', () => {
   assert.equal(isReviewReadyExam({ status: 'draft', submissionCount: 2, gradedSubmissionCount: 2 }), true);
   assert.equal(isReviewReadyExam({ reviewReady: true, submissionCount: 2, gradedSubmissionCount: 1 }), true);
 });
+
+test('grading control opens teacher notes in a dedicated editor modal', () => {
+  const panelSource = fs.readFileSync(
+    path.join(__dirname, '..', 'src/components/review/GradingControlPanel.tsx'),
+    'utf8'
+  );
+
+  assert.equal(panelSource.includes('TeacherNoteEditorModal'), true);
+  assert.equal(panelSource.includes('KeyboardAvoidingView'), false);
+});
+
+test('legacy upload subject selector can create subjects on mobile', () => {
+  const uploadSource = fs.readFileSync(path.join(__dirname, '..', 'app/upload.tsx'), 'utf8');
+
+  assert.equal(uploadSource.includes('createSubject'), true);
+  assert.equal(uploadSource.includes('Please create one on the webapp'), false);
+  assert.equal(uploadSource.includes('handleCreateSubject'), true);
+});

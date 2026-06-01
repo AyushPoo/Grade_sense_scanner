@@ -5,9 +5,11 @@ import {
   StyleSheet,
   TouchableOpacity,
   Alert,
+  ActivityIndicator,
   Linking,
   Modal,
   FlatList,
+  TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -55,7 +57,7 @@ export default function UploadScreen() {
   // ── PHASE 1 FIX: Granular selectors — UploadScreen is now isolated from broad store changes.
   const updateSessionStatus = useScanStore(state => state.updateSessionStatus);
   const updateSessionDetails = useScanStore(state => state.updateSessionDetails);
-  const { savedSubjects, fetchSubjects } = useScanStore();
+  const { savedSubjects, fetchSubjects, createSubject } = useScanStore();
   const sessionDataFromStore = useScanStore(useShallow(state => 
     state.savedSessions.find(s => s.session_id === sessionId) || null
   ));
@@ -66,10 +68,13 @@ export default function UploadScreen() {
   const [currentItem, setCurrentItem] = useState('');
   const [uploadComplete, setUploadComplete] = useState(false);
   const [showSubjectSelector, setShowSubjectSelector] = useState(false);
+  const [newSubjectName, setNewSubjectName] = useState('');
+  const [newSubjectClass, setNewSubjectClass] = useState('');
+  const [isCreatingSubject, setIsCreatingSubject] = useState(false);
 
   useEffect(() => {
     fetchSubjects().catch(err => console.error('Failed to load subjects:', err));
-  }, []);
+  }, [fetchSubjects]);
 
   useEffect(() => {
     if (sessionId) {
@@ -127,6 +132,22 @@ export default function UploadScreen() {
     setTimeout(() => {
       simulateUpload();
     }, 150);
+  };
+
+  const handleCreateSubject = async () => {
+    if (!newSubjectName.trim()) return;
+
+    setIsCreatingSubject(true);
+    try {
+      const subject = await createSubject(newSubjectName, newSubjectClass);
+      setNewSubjectName('');
+      setNewSubjectClass('');
+      handleSelectSubject(subject.id);
+    } catch (error: any) {
+      Alert.alert('Subject not created', error?.message || 'Could not create this subject.');
+    } finally {
+      setIsCreatingSubject(false);
+    }
   };
 
   const handleStartUpload = () => {
@@ -361,9 +382,7 @@ export default function UploadScreen() {
 
             <View style={modalStyles.body}>
               <Text style={modalStyles.subtitle}>Please select a subject for this session before uploading:</Text>
-              {savedSubjects.length === 0 ? (
-                <Text style={modalStyles.emptyText}>No subjects available. Please create one on the webapp.</Text>
-              ) : (
+              {savedSubjects.length > 0 ? (
                 <FlatList
                   data={savedSubjects}
                   keyExtractor={(item) => item.id}
@@ -380,7 +399,48 @@ export default function UploadScreen() {
                   style={{ maxHeight: 300 }}
                   contentContainerStyle={{ paddingBottom: 16 }}
                 />
+              ) : (
+                <Text style={modalStyles.emptyText}>No subjects available yet. Add one below to continue.</Text>
               )}
+
+              <View style={modalStyles.createCard}>
+                <View style={modalStyles.createHeader}>
+                  <Ionicons name="add-circle-outline" size={20} color={COLORS.primary} />
+                  <Text style={modalStyles.createTitle}>Add New Subject</Text>
+                </View>
+                <TextInput
+                  style={modalStyles.input}
+                  value={newSubjectName}
+                  onChangeText={setNewSubjectName}
+                  placeholder="Subject name"
+                  placeholderTextColor={COLORS.textMuted}
+                />
+                <TextInput
+                  style={modalStyles.input}
+                  value={newSubjectClass}
+                  onChangeText={setNewSubjectClass}
+                  placeholder="Class or standard (optional)"
+                  placeholderTextColor={COLORS.textMuted}
+                />
+                <TouchableOpacity
+                  style={[
+                    modalStyles.createButton,
+                    (!newSubjectName.trim() || isCreatingSubject) && modalStyles.createButtonDisabled,
+                  ]}
+                  onPress={handleCreateSubject}
+                  disabled={!newSubjectName.trim() || isCreatingSubject}
+                  activeOpacity={0.8}
+                >
+                  {isCreatingSubject ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <>
+                      <Ionicons name="checkmark" size={18} color="#fff" />
+                      <Text style={modalStyles.createButtonText}>Add & Continue</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
         </View>
@@ -691,5 +751,52 @@ const modalStyles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: COLORS.text,
+  },
+  createCard: {
+    backgroundColor: COLORS.cardBg,
+    borderColor: COLORS.border,
+    borderRadius: 16,
+    borderWidth: 1,
+    marginTop: 8,
+    padding: 14,
+  },
+  createHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12,
+  },
+  createTitle: {
+    color: COLORS.text,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  input: {
+    backgroundColor: COLORS.backgroundDark || '#F5F5F5',
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    borderWidth: 1,
+    color: COLORS.text,
+    fontSize: 15,
+    marginBottom: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  createButton: {
+    alignItems: 'center',
+    backgroundColor: COLORS.primary,
+    borderRadius: 12,
+    flexDirection: 'row',
+    gap: 8,
+    justifyContent: 'center',
+    paddingVertical: 13,
+  },
+  createButtonDisabled: {
+    opacity: 0.55,
+  },
+  createButtonText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
   },
 });

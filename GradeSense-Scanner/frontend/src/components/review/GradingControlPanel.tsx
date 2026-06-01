@@ -1,17 +1,16 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
   Platform,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../../config';
 import type { ScoreItem } from '../../types/review';
+import { TeacherNoteEditorModal } from './TeacherNoteEditorModal';
 
 interface GradingControlPanelProps {
   activeScore: ScoreItem;
@@ -32,11 +31,16 @@ export function GradingControlPanel({
   onOpenDictation,
   onSaveAndNext,
 }: GradingControlPanelProps) {
+  const [isNoteEditorVisible, setIsNoteEditorVisible] = useState(false);
+  const teacherNote = activeScore.teacherCorrection || '';
+
+  const handleSaveNote = (note: string) => {
+    onCommentChange(activeScore.id, note);
+    setIsNoteEditorVisible(false);
+  };
+
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 12 : 0}
-    >
+    <>
       <View style={styles.panel}>
         <View style={styles.stepperRow}>
           <View style={styles.questionSummary}>
@@ -65,17 +69,18 @@ export function GradingControlPanel({
 
         <Text style={styles.commentLabel}>Teacher note</Text>
         <View style={styles.commentRow}>
-          <View style={styles.commentInputContainer}>
-            <TextInput
-              style={styles.commentInput}
-              value={activeScore.teacherCorrection || ''}
-              onChangeText={value => onCommentChange(activeScore.id, value)}
-              placeholder="Add a short correction or override note..."
-              placeholderTextColor={COLORS.textMuted}
-              multiline
-              textAlignVertical="top"
-            />
-          </View>
+          <TouchableOpacity
+            style={styles.commentInputContainer}
+            onPress={() => setIsNoteEditorVisible(true)}
+            activeOpacity={0.78}
+          >
+            <Text
+              style={[styles.commentPreview, !teacherNote && styles.commentPlaceholder]}
+              numberOfLines={2}
+            >
+              {teacherNote || 'Add a short correction or override note...'}
+            </Text>
+          </TouchableOpacity>
           <TouchableOpacity style={styles.micButton} onPress={onOpenDictation} activeOpacity={0.75}>
             <Ionicons name="mic-outline" size={22} color={COLORS.primary} />
           </TouchableOpacity>
@@ -99,7 +104,15 @@ export function GradingControlPanel({
           )}
         </TouchableOpacity>
       </View>
-    </KeyboardAvoidingView>
+
+      <TeacherNoteEditorModal
+        visible={isNoteEditorVisible}
+        initialValue={teacherNote}
+        questionNumber={activeScore.questionNumber}
+        onClose={() => setIsNoteEditorVisible(false)}
+        onSave={handleSaveNote}
+      />
+    </>
   );
 }
 
@@ -187,15 +200,18 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     flex: 1,
+    justifyContent: 'center',
+    minHeight: 46,
   },
-  commentInput: {
+  commentPreview: {
     color: COLORS.text,
     fontSize: 14,
     lineHeight: 20,
-    maxHeight: 76,
-    minHeight: 44,
     paddingHorizontal: 14,
     paddingVertical: 10,
+  },
+  commentPlaceholder: {
+    color: COLORS.textMuted,
   },
   micButton: {
     alignItems: 'center',

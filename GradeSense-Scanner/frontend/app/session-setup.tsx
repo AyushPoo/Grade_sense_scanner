@@ -395,8 +395,8 @@ export default function SessionSetupScreen() {
                     <Ionicons name="chatbubble-ellipses-outline" size={20} color={COLORS.primary} />
                   </View>
                   <View style={styles.optionTextContainer}>
-                    <Text style={styles.optionLabel}>Student Feedback</Text>
-                    <Text style={styles.optionHint}>Turn off when you only want marks, not AI feedback text</Text>
+                    <Text style={styles.optionLabel}>Generate detailed student feedback</Text>
+                    <Text style={styles.optionHint}>Turn this off when teachers only need marks from AI</Text>
                   </View>
                 </View>
                 <Switch
