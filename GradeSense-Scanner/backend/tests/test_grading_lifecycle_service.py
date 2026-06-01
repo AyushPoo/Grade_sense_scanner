@@ -1,7 +1,10 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 
 from grading_lifecycle_service import (
     build_grading_jobs,
+    derive_scan_session_reconciliation,
+    validate_scan_session_ready_for_sync,
     is_review_ready_exam,
     is_successful_blueprint_job,
     select_primary_grading_job,
@@ -84,6 +87,105 @@ class GradingLifecycleServiceTest(unittest.TestCase):
             "success_count": 0,
             "processed_items": 0,
         }))
+
+    def test_scan_session_ready_for_sync_requires_student_answer_pages(self):
+        errors = validate_scan_session_ready_for_sync({
+            "model_answer": {"pages": [{"page_number": 1}]},
+            "question_paper": {"pages": []},
+            "students": [{"label": "Student 1", "pages": []}],
+        })
+
+        self.assertEqual(errors, ["Scan at least one student answer paper before starting grading."])
+
+    def test_reconciliation_marks_failed_grading_job_as_sync_failed(self):
+        payload = derive_scan_session_reconciliation(
+            {"status": "grading"},
+            [{
+                "id": "job_grade",
+                "type": "grade_submissions",
+                "status": "failed",
+                "total_items": 3,
+                "processed_items": 0,
+                "error": "Exam blueprint not found",
+            }],
+            3,
+        )
+
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["status"], "sync_failed")
+        self.assertEqual(payload["last_sync_error"], "Exam blueprint not found")
+
+    def test_reconciliation_marks_zero_output_blueprint_as_sync_failed(self):
+        payload = derive_scan_session_reconciliation(
+            {"status": "syncing"},
+            [{
+                "id": "job_blueprint",
+                "type": "blueprint_extraction",
+                "status": "completed",
+                "total_items": 1,
+                "processed_items": 0,
+                "success_count": 0,
+            }],
+            0,
+        )
+
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["status"], "sync_failed")
+        self.assertIn("usable exam blueprint", payload["last_sync_error"])
+
+    def test_reconciliation_marks_stale_empty_exam_as_sync_failed(self):
+        payload = derive_scan_session_reconciliation(
+            {
+                "status": "syncing",
+                "updated_at": datetime.now(timezone.utc) - timedelta(minutes=20),
+            },
+            [],
+            0,
+            now=datetime.now(timezone.utc),
+            stale_after_seconds=600,
+        )
+
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["status"], "sync_failed")
+        self.assertIn("No student answer submissions", payload["last_sync_error"])
+
+    def test_reconciliation_does_not_mark_partial_completed_job_as_graded(self):
+        payload = derive_scan_session_reconciliation(
+            {"status": "grading"},
+            [{
+                "id": "job_grade",
+                "type": "grade_submissions",
+                "status": "completed",
+                "total_items": 3,
+                "processed_items": 0,
+            }],
+            3,
+        )
+
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["status"], "sync_failed")
+        self.assertIn("without processing all submitted papers", payload["last_sync_error"])
+
+    def test_reconciliation_marks_stale_unstarted_grading_job_as_failed(self):
+        now = datetime.now(timezone.utc)
+        payload = derive_scan_session_reconciliation(
+            {"status": "grading"},
+            [{
+                "id": "job_grade",
+                "type": "grade_submissions",
+                "status": "queued",
+                "total_items": 3,
+                "processed_items": 0,
+                "created_at": now - timedelta(minutes=20),
+            }],
+            3,
+            now=now,
+            stale_after_seconds=600,
+        )
+
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["status"], "sync_failed")
+        self.assertIn("did not start", payload["last_sync_error"])
         self.assertTrue(is_successful_blueprint_job({
             "status": "completed",
             "success_count": 1,

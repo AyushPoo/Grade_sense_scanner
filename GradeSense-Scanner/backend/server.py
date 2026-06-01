@@ -31,8 +31,10 @@ from review_settings_service import (
 from improve_ai_service import ImproveAIServiceError, save_question_improvement
 from grading_lifecycle_service import (
     build_grading_jobs,
+    derive_scan_session_reconciliation,
     is_successful_blueprint_job,
     student_answer_text_select_expression,
+    validate_scan_session_ready_for_sync,
 )
 from grading_retry_service import (
     exam_has_blueprint,
@@ -1785,6 +1787,10 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                             await conn.close()
                             session_submission_ids.append(sub_id)
 
+                if not session_submission_ids:
+                    await mark_sync_failed("No student answer submissions were saved for this exam.")
+                    return
+
                 # 6. Enqueue Grading Job for Submissions and Update Flow Session Card
                 active_job_id = None
                 if session_submission_ids:
@@ -1906,6 +1912,19 @@ async def complete_scan_session(
     """Mark scan session as complete and sync to webapp"""
     user = await get_current_user(authorization)
     token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
+    session = await db.scan_sessions.find_one({"session_id": session_id, "user_id": user.user_id})
+    validation_errors = validate_scan_session_ready_for_sync(session)
+    if validation_errors:
+        message = " ".join(validation_errors)
+        await db.scan_sessions.update_one(
+            {"session_id": session_id, "user_id": user.user_id},
+            {"$set": {
+                "status": "failed",
+                "last_sync_error": message[:500],
+                "updated_at": datetime.now(timezone.utc),
+            }}
+        )
+        raise HTTPException(status_code=422, detail=message)
 
     if token != "sess_mock_token_12345":
         try:
@@ -2039,6 +2058,77 @@ async def get_session_status(session_id: str, authorization: Optional[str] = Hea
     return {"status": session.get("status", "unknown"), "progress": session.get("upload_progress", 0)}
 
 
+async def reconcile_scan_sessions_with_webapp(user_id: str, sessions: list[dict]) -> list[dict]:
+    """Keep mobile scan sessions aligned with the authoritative webapp grading jobs."""
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    candidates = [
+        session
+        for session in sessions
+        if session.get("exam_id") and session.get("status") in {"syncing", "grading", "uploaded"}
+    ]
+    if not webapp_db_url or not candidates:
+        return sessions
+
+    exam_ids = [str(session["exam_id"]) for session in candidates]
+    conn = None
+    try:
+        conn = await asyncpg.connect(webapp_db_url)
+        job_rows = await conn.fetch(
+            '''
+            SELECT id, type, status, exam_id, progress, total_items, processed_items,
+                   success_count, failure_count, error, created_at
+            FROM grading_jobs
+            WHERE exam_id = ANY($1::text[])
+            ORDER BY created_at DESC
+            ''',
+            exam_ids,
+        )
+        submission_rows = await conn.fetch(
+            '''
+            SELECT exam_id, COUNT(*) AS submission_count
+            FROM submissions
+            WHERE exam_id = ANY($1::text[])
+            GROUP BY exam_id
+            ''',
+            exam_ids,
+        )
+    except Exception as exc:
+        logger.error(f"Failed to reconcile scan sessions with webapp jobs: {exc}")
+        return sessions
+    finally:
+        if conn:
+            await conn.close()
+
+    jobs_by_exam: dict[str, list[dict]] = {}
+    for row in job_rows:
+        row_dict = dict(row)
+        jobs_by_exam.setdefault(str(row_dict["exam_id"]), []).append(row_dict)
+
+    submissions_by_exam = {
+        str(row["exam_id"]): int(row["submission_count"] or 0)
+        for row in submission_rows
+    }
+
+    for session in candidates:
+        exam_id = str(session["exam_id"])
+        patch = derive_scan_session_reconciliation(
+            session,
+            jobs_by_exam.get(exam_id, []),
+            submissions_by_exam.get(exam_id, 0),
+        )
+        if not patch:
+            continue
+
+        patch["updated_at"] = datetime.now(timezone.utc)
+        await db.scan_sessions.update_one(
+            {"session_id": session["session_id"], "user_id": user_id},
+            {"$set": patch},
+        )
+        session.update(patch)
+
+    return sessions
+
+
 @api_router.delete("/scan-sessions/{session_id}")
 async def delete_scan_session(session_id: str, authorization: Optional[str] = Header(None)):
     """Delete a scan session and its linked webapp exam when one exists."""
@@ -2068,6 +2158,7 @@ async def get_user_sessions(authorization: Optional[str] = Header(None)):
     """Get all scan sessions for the user"""
     user = await get_current_user(authorization)
     sessions = await db.scan_sessions.find({"user_id": user.user_id}, {"_id": 0}).to_list(100)
+    sessions = await reconcile_scan_sessions_with_webapp(user.user_id, sessions)
     return {"sessions": sessions}
 
 
@@ -2624,7 +2715,7 @@ async def get_analytics_overview_proxy(authorization: Optional[str] = Header(Non
                 '''
                 SELECT COUNT(DISTINCT e.id) AS exams_count,
                        COUNT(s.id) AS submission_count,
-                       COUNT(CASE WHEN s.status IN ('graded', 'reviewed', 'published') THEN 1 END) AS reviewed_count,
+                       COUNT(CASE WHEN s.status IN ('ai_graded', 'graded', 'reviewed', 'published') THEN 1 END) AS reviewed_count,
                        AVG(s.percentage) AS average_percentage
                 FROM exams e
                 LEFT JOIN submissions s ON s.exam_id = e.id
@@ -2786,7 +2877,7 @@ async def fetch_managed_exam(conn, exam_id: str, teacher_id: str):
                e.grading_mode, e.grading_instructions, e.feedback_enabled,
                e.results_published, e.published_at,
                COUNT(s.id) AS submission_count,
-               COUNT(CASE WHEN s.status IN ('graded', 'reviewed', 'published') THEN 1 END) AS graded_submission_count,
+               COUNT(CASE WHEN s.status IN ('ai_graded', 'graded', 'reviewed', 'published') THEN 1 END) AS graded_submission_count,
                AVG(s.percentage) AS average_percentage
         FROM exams e
         LEFT JOIN batches b ON b.id = e.batch_id
@@ -2852,7 +2943,7 @@ async def list_exams_v1(authorization: Optional[str] = Header(None)):
                        e.grading_mode, e.grading_instructions, e.feedback_enabled,
                        e.results_published, e.published_at,
                        COUNT(s.id) AS submission_count,
-                       COUNT(CASE WHEN s.status IN ('graded', 'reviewed', 'published') THEN 1 END) AS graded_submission_count,
+                       COUNT(CASE WHEN s.status IN ('ai_graded', 'graded', 'reviewed', 'published') THEN 1 END) AS graded_submission_count,
                        AVG(s.percentage) AS average_percentage
                 FROM exams e
                 LEFT JOIN batches b ON b.id = e.batch_id
