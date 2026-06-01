@@ -5,6 +5,7 @@ import {
   Modal,
   Platform,
   ScrollView,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -20,7 +21,7 @@ interface ImproveAIModalProps {
   score: ScoreItem | null;
   isSubmitting: boolean;
   onClose: () => void;
-  onSubmit: (expectedGrade: number, teacherCorrection: string) => void;
+  onSubmit: (expectedGrade: number, teacherCorrection: string, options: { regradeAll: boolean; applyGlobally: boolean }) => void;
 }
 
 export function ImproveAIModal({
@@ -32,11 +33,15 @@ export function ImproveAIModal({
 }: ImproveAIModalProps) {
   const [expectedGrade, setExpectedGrade] = useState('');
   const [teacherCorrection, setTeacherCorrection] = useState('');
+  const [regradeAll, setRegradeAll] = useState(false);
+  const [applyGlobally, setApplyGlobally] = useState(false);
 
   useEffect(() => {
     if (visible && score) {
       setExpectedGrade(String(score.obtainedMarks));
       setTeacherCorrection(score.teacherCorrection || '');
+      setRegradeAll(false);
+      setApplyGlobally(false);
     }
   }, [score, visible]);
 
@@ -115,6 +120,34 @@ export function ImproveAIModal({
                 textAlignVertical="top"
               />
             </View>
+
+            <View style={styles.optionCard}>
+              <View style={styles.optionText}>
+                <Text style={styles.optionTitle}>Regrade all papers</Text>
+                <Text style={styles.optionSubtitle}>Apply this correction to this exam after saving.</Text>
+              </View>
+              <Switch
+                value={regradeAll}
+                onValueChange={setRegradeAll}
+                disabled={isSubmitting}
+                trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
+                thumbColor={regradeAll ? COLORS.primary : '#f4f3f4'}
+              />
+            </View>
+
+            <View style={styles.optionCard}>
+              <View style={styles.optionText}>
+                <Text style={styles.optionTitle}>Apply globally</Text>
+                <Text style={styles.optionSubtitle}>Save this as an AI Brain rule for future exams.</Text>
+              </View>
+              <Switch
+                value={applyGlobally}
+                onValueChange={setApplyGlobally}
+                disabled={isSubmitting}
+                trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
+                thumbColor={applyGlobally ? COLORS.primary : '#f4f3f4'}
+              />
+            </View>
           </ScrollView>
 
           <View style={styles.footer}>
@@ -128,7 +161,7 @@ export function ImproveAIModal({
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.submitButton, (!isValid || isSubmitting) && styles.submitButtonDisabled]}
-              onPress={() => onSubmit(expectedGradeNumber, teacherCorrection)}
+              onPress={() => onSubmit(expectedGradeNumber, teacherCorrection, { regradeAll, applyGlobally })}
               disabled={!isValid || isSubmitting}
               activeOpacity={0.82}
             >

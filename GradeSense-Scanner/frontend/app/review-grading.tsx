@@ -7,6 +7,8 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -23,7 +25,6 @@ import { GradingControlPanel } from '../src/components/review/GradingControlPane
 import { PaperFileViewer } from '../src/components/review/PaperFileViewer';
 import { RubricReviewPanel } from '../src/components/review/RubricReviewPanel';
 import { VoiceDictationModal } from '../src/components/review/VoiceDictationModal';
-import { ReviewSettingsSheet } from '../src/components/review/ReviewSettingsSheet';
 import { StudentAnswerSheetPanel } from '../src/components/review/StudentAnswerSheetPanel';
 import { ImproveAIModal } from '../src/components/review/ImproveAIModal';
 import type { ReviewFileItem, ReviewFileSlide, ScoreItem, SubmissionListItem } from '../src/types/review';
@@ -31,11 +32,7 @@ import { buildLocalReviewFiles, buildReviewFileSlides, mergeReviewFiles } from '
 import { normalizeReviewScores } from '../src/utils/reviewScores';
 import { DEFAULT_REVIEW_SETTINGS, ReviewSettings } from '../src/utils/reviewSettings';
 import { submitQuestionImprovement } from '../src/api/improveAI';
-import {
-  fetchExamReviewSettings,
-  flagExamGrading,
-  updateExamReviewSettings,
-} from '../src/api/reviewSettings';
+import { fetchExamReviewSettings } from '../src/api/reviewSettings';
 
 export default function ReviewGradingScreen() {
   const router = useRouter();
@@ -44,13 +41,9 @@ export default function ReviewGradingScreen() {
   const savedSessions = useScanStore(state => state.savedSessions);
   const webappUrl = getBackendUrl();
   const [isReevaluating, setIsReevaluating] = useState(false);
-  const [showSettingsSheet, setShowSettingsSheet] = useState(false);
   const [showImproveAIModal, setShowImproveAIModal] = useState(false);
-  const [isFlaggingGrading, setIsFlaggingGrading] = useState(false);
   const [isSubmittingImprovement, setIsSubmittingImprovement] = useState(false);
-  const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [reviewSettings, setReviewSettings] = useState<ReviewSettings>(DEFAULT_REVIEW_SETTINGS);
-  const [settingsSyncStatus, setSettingsSyncStatus] = useState<'idle' | 'loaded' | 'unavailable'>('idle');
 
   const handleReevaluate = () => {
     if (!examId || !token) return;
@@ -242,55 +235,19 @@ export default function ReviewGradingScreen() {
       try {
         const settings = await fetchExamReviewSettings({ backendUrl: webappUrl, token, examId });
         setReviewSettings(settings);
-        setSettingsSyncStatus('loaded');
       } catch (err) {
         console.error('Failed to fetch synced review settings:', err);
-        setSettingsSyncStatus('unavailable');
       }
     };
 
     loadSettings();
   }, [examId, token, webappUrl]);
 
-  const handleSaveReviewSettings = async (settings: ReviewSettings) => {
-    if (!examId || !token || !webappUrl) return;
-
-    setIsSavingSettings(true);
-    try {
-      const saved = await updateExamReviewSettings({ backendUrl: webappUrl, token, examId }, settings);
-      setReviewSettings(saved);
-      setSettingsSyncStatus('loaded');
-      setShowSettingsSheet(false);
-    } catch (err: any) {
-      if (err.status === 404 || err.status === 405) {
-        Alert.alert('Sync Endpoint Missing', 'The webapp/scanner API needs an exam settings endpoint before mobile can update these synced settings.');
-      } else {
-        Alert.alert('Save Failed', err.message || 'Could not save review settings.');
-      }
-    } finally {
-      setIsSavingSettings(false);
-    }
-  };
-
-  const handleFlagGrading = async () => {
-    if (!examId || !token || !webappUrl) return;
-
-    setIsFlaggingGrading(true);
-    try {
-      await flagExamGrading({ backendUrl: webappUrl, token, examId }, reviewSettings);
-      Alert.alert('Flag Submitted', 'This grading issue was sent for review.');
-    } catch (err: any) {
-      if (err.status === 404 || err.status === 405) {
-        Alert.alert('Not Available Yet', 'AI grading flags need server support before they can be submitted from mobile.');
-      } else {
-        Alert.alert('Flag Failed', err.message || 'Could not flag grading.');
-      }
-    } finally {
-      setIsFlaggingGrading(false);
-    }
-  };
-
-  const handleSubmitQuestionImprovement = async (expectedGrade: number, teacherCorrection: string) => {
+  const handleSubmitQuestionImprovement = async (
+    expectedGrade: number,
+    teacherCorrection: string,
+    options: { regradeAll: boolean; applyGlobally: boolean }
+  ) => {
     if (!activeSubId || !activeScore || !token || !webappUrl) return;
 
     setIsSubmittingImprovement(true);
@@ -302,10 +259,17 @@ export default function ReviewGradingScreen() {
         score: activeScore,
         expectedGrade,
         teacherCorrection,
+        regradeAll: options.regradeAll,
+        applyGlobally: options.applyGlobally,
       });
       setScores(prev => prev.map(score => (score.id === result.score.id ? result.score : score)));
       setShowImproveAIModal(false);
-      Alert.alert('Improve AI Saved', 'This correction was saved for this question and future grading.');
+      Alert.alert(
+        'Improve AI Saved',
+        options.regradeAll
+          ? 'This correction was saved and all papers were queued for regrading.'
+          : 'This correction was saved for future grading.'
+      );
     } catch (err: any) {
       if (err.status === 404 || err.status === 405) {
         Alert.alert('Not Available Yet', 'Question-level Improve AI needs the latest scanner backend deployment.');
@@ -543,6 +507,11 @@ export default function ReviewGradingScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      <KeyboardAvoidingView
+        style={styles.keyboardRoot}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={0}
+      >
       {/* Top Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
@@ -555,13 +524,6 @@ export default function ReviewGradingScreen() {
           </Text>
         </View>
         <View style={styles.headerActions}>
-          <TouchableOpacity
-            style={styles.headerIconBtn}
-            onPress={() => setShowSettingsSheet(true)}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="settings-outline" size={18} color={COLORS.primary} />
-          </TouchableOpacity>
           {isReevaluating ? (
             <ActivityIndicator size="small" color={COLORS.primary} style={{ marginRight: 8 }} />
           ) : (
@@ -689,16 +651,6 @@ export default function ReviewGradingScreen() {
         onClose={handleCloseDictation}
         onInsert={handleInsertDictation}
       />
-      <ReviewSettingsSheet
-        visible={showSettingsSheet}
-        settings={reviewSettings}
-        isFlagging={isFlaggingGrading}
-        isSaving={isSavingSettings}
-        syncStatusText={settingsSyncStatus === 'loaded' ? 'Synced from webapp' : 'Waiting for webapp settings sync'}
-        onClose={() => setShowSettingsSheet(false)}
-        onSave={handleSaveReviewSettings}
-        onFlagGrading={handleFlagGrading}
-      />
       <ImproveAIModal
         visible={showImproveAIModal}
         score={activeScore || null}
@@ -706,6 +658,7 @@ export default function ReviewGradingScreen() {
         onClose={() => setShowImproveAIModal(false)}
         onSubmit={handleSubmitQuestionImprovement}
       />
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -714,6 +667,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.backgroundDark,
+  },
+  keyboardRoot: {
+    flex: 1,
   },
   loadingContainer: {
     flex: 1,

@@ -11,6 +11,8 @@ interface ImproveAIOptions {
   score: ScoreItem;
   expectedGrade: number;
   teacherCorrection: string;
+  applyGlobally?: boolean;
+  regradeAll?: boolean;
 }
 
 export interface ImproveAIResult {
@@ -25,8 +27,10 @@ export async function submitQuestionImprovement({
   score,
   expectedGrade,
   teacherCorrection,
+  applyGlobally,
+  regradeAll,
 }: ImproveAIOptions): Promise<ImproveAIResult> {
-  const payload = buildImproveAIRequest(score, expectedGrade, teacherCorrection);
+  const payload = buildImproveAIRequest(score, expectedGrade, teacherCorrection, { applyGlobally, regradeAll });
   const res = await fetch(`${backendUrl}/api/v1/submissions/${submissionId}/scores/${score.id}/improve-ai`, {
     method: 'POST',
     headers: {

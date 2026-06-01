@@ -74,6 +74,7 @@ interface ScanState {
   fetchSessions: () => Promise<void>;
   fetchBatches: () => Promise<void>;
   fetchSubjects: () => Promise<void>;
+  createSubject: (name: string, classStandard?: string) => Promise<Subject>;
   createSession: (
     name: string,
     batchId: string,
@@ -1058,6 +1059,50 @@ export const useScanStore = create<ScanState>()(
         } catch (error) {
           console.error("Error fetching subjects:", error);
         }
+      },
+
+      createSubject: async (name: string, classStandard?: string) => {
+        const cleanName = name.trim();
+        if (!cleanName) {
+          throw new Error('Subject name is required');
+        }
+
+        const { useAuthStore } = await import('./authStore');
+        const token = useAuthStore.getState().sessionToken;
+        const backendUrl = getBackendUrl();
+
+        const response = await fetch(`${backendUrl}/api/subjects`, {
+          method: 'POST',
+          headers: {
+            'Authorization': token ? `Bearer ${token}` : '',
+            'Bypass-Tunnel-Reminder': 'true',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: cleanName,
+            classStandard: classStandard?.trim() || null,
+          }),
+        });
+
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(text || `Failed to create subject: ${response.status}`);
+        }
+
+        const data = await response.json();
+        const subject = data.subject || data.data;
+        const normalizedSubject: Subject = {
+          id: subject.id,
+          name: subject.name,
+          classStandard: subject.classStandard || subject.class_standard,
+        };
+        set(state => ({
+          savedSubjects: [
+            normalizedSubject,
+            ...state.savedSubjects.filter(item => item.id !== normalizedSubject.id),
+          ],
+        }));
+        return normalizedSubject;
       },
 
       syncCurrentMetadata: async (phaseOverride?: 'question_paper' | 'model_answer' | 'student', studentIndexOverride?: number) => {

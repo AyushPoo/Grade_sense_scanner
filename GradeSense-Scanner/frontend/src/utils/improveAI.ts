@@ -11,6 +11,8 @@ export interface ImproveAIRequest {
   aiFeedback: string;
   teacherCorrection: string;
   applyToFuture: boolean;
+  applyGlobally: boolean;
+  regradeAll: boolean;
 }
 
 type RawImprovedScore = Partial<ScoreItem> & {
@@ -24,7 +26,8 @@ type RawImprovedScore = Partial<ScoreItem> & {
 export function buildImproveAIRequest(
   score: ScoreItem,
   expectedGrade: number,
-  teacherCorrection: string
+  teacherCorrection: string,
+  options: { applyGlobally?: boolean; regradeAll?: boolean } = {}
 ): ImproveAIRequest {
   return {
     scoreId: score.id,
@@ -37,6 +40,8 @@ export function buildImproveAIRequest(
     aiFeedback: score.aiFeedback || '',
     teacherCorrection: teacherCorrection.trim(),
     applyToFuture: true,
+    applyGlobally: Boolean(options.applyGlobally),
+    regradeAll: Boolean(options.regradeAll),
   };
 }
 

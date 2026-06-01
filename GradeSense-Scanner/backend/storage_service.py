@@ -1,17 +1,37 @@
 import os
 import shutil
+import json
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 import logging
 from datetime import timedelta
 
 logger = logging.getLogger(__name__)
+
+
+class StorageConfigurationError(RuntimeError):
+    pass
+
+
+def resolve_gcs_credentials(env: Mapping[str, str | None]) -> dict:
+    credentials_json = env.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+    if isinstance(credentials_json, str) and credentials_json.strip():
+        return {"mode": "json", "value": json.loads(credentials_json)}
+
+    credentials_path = env.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if isinstance(credentials_path, str) and credentials_path.strip():
+        return {"mode": "path", "value": credentials_path.strip()}
+
+    return {"mode": "default", "value": None}
+
 
 class StorageService:
     """
     Abstraction layer for file storage.
     Supports local filesystem.
     """
+    backend = "local"
+
     def __init__(self, base_dir: Path):
         self.base_dir = base_dir
         self.base_dir.mkdir(exist_ok=True, parents=True)
@@ -58,13 +78,26 @@ class GcsStorageService:
     """
     Cloud file storage using Google Cloud Storage.
     """
-    def __init__(self, bucket_name: str, credentials_path: Optional[str] = None):
+    backend = "gcs"
+
+    def __init__(self, bucket_name: str):
         try:
             from google.cloud import storage
-            if credentials_path:
-                self.client = storage.Client.from_service_account_json(credentials_path)
+            credentials_config = resolve_gcs_credentials(os.environ)
+
+            if credentials_config["mode"] == "json":
+                from google.oauth2 import service_account
+
+                credentials = service_account.Credentials.from_service_account_info(credentials_config["value"])
+                self.client = storage.Client(
+                    credentials=credentials,
+                    project=credentials.project_id,
+                )
+            elif credentials_config["mode"] == "path":
+                self.client = storage.Client.from_service_account_json(credentials_config["value"])
             else:
                 self.client = storage.Client()
+
             self.bucket_name = bucket_name
             self.bucket = self.client.bucket(self.bucket_name)
             logger.info(f"Initialized GcsStorageService with bucket: {self.bucket_name}")
@@ -146,14 +179,8 @@ def get_storage_service(uploads_dir: Path):
     if provider == "gcs":
         bucket_name = os.environ.get("GCS_BUCKET_NAME")
         if not bucket_name:
-            logger.warning("STORAGE_PROVIDER is set to GCS, but GCS_BUCKET_NAME is not set. Falling back to local storage.")
-            return StorageService(uploads_dir)
+            raise StorageConfigurationError("STORAGE_PROVIDER=gcs requires GCS_BUCKET_NAME")
         
-        credentials_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-        try:
-            return GcsStorageService(bucket_name, credentials_path)
-        except Exception as e:
-            logger.error(f"Failed to create GcsStorageService: {e}. Falling back to local storage.")
-            return StorageService(uploads_dir)
+        return GcsStorageService(bucket_name)
     else:
         return StorageService(uploads_dir)

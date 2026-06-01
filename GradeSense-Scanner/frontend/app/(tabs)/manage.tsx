@@ -29,6 +29,7 @@ import {
 import { AnalyticsPerformancePanel } from '../../src/components/manage/AnalyticsPerformancePanel';
 import { ExamManagementPanel } from '../../src/components/manage/ExamManagementPanel';
 import { ManagedExam, ManagePerformance } from '../../src/utils/manageData';
+import { AIBrainRule, createAIBrainRule, fetchAIBrainRules } from '../../src/api/aiBrain';
 
 interface TeacherOverview {
   examsCount: number;
@@ -165,7 +166,7 @@ export default function ManageScreen() {
   const token = useAuthStore(s => s.sessionToken);
   const { savedSessions } = useScanStore();
 
-  const [activeTab, setActiveTab] = useState<'analytics' | 'exams' | 'classroom' | 'reevaluation'>('analytics');
+  const [activeTab, setActiveTab] = useState<'analytics' | 'exams' | 'classroom' | 'brain' | 'reevaluation'>('analytics');
   const [overview, setOverview] = useState<TeacherOverview | null>(null);
   const [performance, setPerformance] = useState<ManagePerformance | null>(null);
   const [managedExams, setManagedExams] = useState<ManagedExam[]>([]);
@@ -175,6 +176,10 @@ export default function ManageScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [isOffline, setIsOffline] = useState(false);
   const [processingExamId, setProcessingExamId] = useState<string | null>(null);
+  const [aiBrainRules, setAIBrainRules] = useState<AIBrainRule[]>([]);
+  const [loadingAIBrain, setLoadingAIBrain] = useState(false);
+  const [newBrainRule, setNewBrainRule] = useState('');
+  const [savingBrainRule, setSavingBrainRule] = useState(false);
 
   // Classroom Management States
   const [batches, setBatches] = useState<Batch[]>([]);
@@ -327,6 +332,38 @@ export default function ManageScreen() {
     }
   }, [token]);
 
+  const fetchAIBrain = useCallback(async () => {
+    if (!token) return;
+    setLoadingAIBrain(true);
+    try {
+      const data = await fetchAIBrainRules({ backendUrl: getBackendUrl(), token });
+      setAIBrainRules(data);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingAIBrain(false);
+      setRefreshing(false);
+    }
+  }, [token]);
+
+  const handleSaveBrainRule = async () => {
+    if (!token || !newBrainRule.trim()) return;
+    setSavingBrainRule(true);
+    try {
+      const created = await createAIBrainRule({
+        backendUrl: getBackendUrl(),
+        token,
+        rule: newBrainRule.trim(),
+      });
+      setAIBrainRules(prev => [created, ...prev]);
+      setNewBrainRule('');
+    } catch (err: any) {
+      Alert.alert('AI Brain not saved', err.message || 'Could not save this rule.');
+    } finally {
+      setSavingBrainRule(false);
+    }
+  };
+
   const handleResolveReeval = async () => {
     if (!activeReeval || !token) return;
     if (!teacherResponse.trim()) {
@@ -451,10 +488,12 @@ export default function ManageScreen() {
       fetchExamManagement();
     } else if (activeTab === 'classroom') {
       fetchBatches();
+    } else if (activeTab === 'brain') {
+      fetchAIBrain();
     } else if (activeTab === 'reevaluation') {
       fetchReevaluations();
     }
-  }, [activeTab, fetchBatches, fetchExamManagement, fetchOverview, fetchPerformanceInsights, fetchReevaluations]);
+  }, [activeTab, fetchAIBrain, fetchBatches, fetchExamManagement, fetchOverview, fetchPerformanceInsights, fetchReevaluations]);
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -468,6 +507,8 @@ export default function ManageScreen() {
       if (expandedBatchId) {
         fetchStudents(expandedBatchId);
       }
+    } else if (activeTab === 'brain') {
+      fetchAIBrain();
     } else if (activeTab === 'reevaluation') {
       fetchReevaluations();
     }
@@ -648,7 +689,9 @@ export default function ManageScreen() {
                 ? 'Publish, close, and review exams'
                 : activeTab === 'classroom'
                   ? 'Manage batches and students'
-                  : 'Student grade re-evaluation requests'}
+                  : activeTab === 'brain'
+                    ? 'Synced AI grading memory'
+                    : 'Student grade re-evaluation requests'}
           </Text>
         </View>
         <TouchableOpacity style={styles.refreshBtn} onPress={onRefresh}>
@@ -657,7 +700,12 @@ export default function ManageScreen() {
       </View>
 
       {/* Segmented Control */}
-      <View style={styles.segmentContainer}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.segmentScroll}
+        contentContainerStyle={styles.segmentContainer}
+      >
         <TouchableOpacity
           style={[styles.segmentBtn, activeTab === 'analytics' && styles.segmentBtnActive]}
           onPress={() => setActiveTab('analytics')}
@@ -707,6 +755,22 @@ export default function ManageScreen() {
         </TouchableOpacity>
 
         <TouchableOpacity
+          style={[styles.segmentBtn, activeTab === 'brain' && styles.segmentBtnActive]}
+          onPress={() => setActiveTab('brain')}
+          activeOpacity={0.8}
+        >
+          <Ionicons
+            name={activeTab === 'brain' ? 'bulb' : 'bulb-outline'}
+            size={16}
+            color={activeTab === 'brain' ? '#fff' : COLORS.textLight}
+            style={{ marginRight: 6 }}
+          />
+          <Text style={[styles.segmentText, activeTab === 'brain' && styles.segmentTextActive]}>
+            AI Brain
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
           style={[styles.segmentBtn, activeTab === 'reevaluation' && styles.segmentBtnActive]}
           onPress={() => setActiveTab('reevaluation')}
           activeOpacity={0.8}
@@ -721,7 +785,7 @@ export default function ManageScreen() {
             Re-evals
           </Text>
         </TouchableOpacity>
-      </View>
+      </ScrollView>
 
       {isLoading ? (
         <View style={styles.loader}>
@@ -960,6 +1024,60 @@ export default function ManageScreen() {
                     </View>
                   );
                 })
+              )}
+            </View>
+          ) : activeTab === 'brain' ? (
+            <View>
+              <Text style={styles.sectionLabel}>GLOBAL GRADING MEMORY</Text>
+              <View style={styles.brainComposer}>
+                <TextInput
+                  value={newBrainRule}
+                  onChangeText={setNewBrainRule}
+                  placeholder="Example: Award method marks when the final answer is slightly off due to arithmetic."
+                  placeholderTextColor={COLORS.textMuted}
+                  multiline
+                  style={styles.brainInput}
+                  textAlignVertical="top"
+                />
+                <TouchableOpacity
+                  style={[styles.brainSaveBtn, (!newBrainRule.trim() || savingBrainRule) && styles.brainSaveBtnDisabled]}
+                  onPress={handleSaveBrainRule}
+                  disabled={!newBrainRule.trim() || savingBrainRule}
+                  activeOpacity={0.82}
+                >
+                  {savingBrainRule ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <>
+                      <Ionicons name="save-outline" size={16} color="#fff" />
+                      <Text style={styles.brainSaveText}>Save Rule</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </View>
+
+              <Text style={styles.sectionLabel}>LEARNED RULES</Text>
+              {loadingAIBrain ? (
+                <ActivityIndicator size="small" color={COLORS.primary} style={{ marginVertical: 20 }} />
+              ) : aiBrainRules.length === 0 ? (
+                <View style={styles.emptyClassRoster}>
+                  <Ionicons name="bulb-outline" size={40} color={COLORS.textMuted} />
+                  <Text style={styles.noBatchesText}>No AI Brain rules saved yet.</Text>
+                </View>
+              ) : (
+                aiBrainRules.map(rule => (
+                  <View key={rule.id} style={styles.brainRuleCard}>
+                    <View style={styles.brainRuleTop}>
+                      <View style={[styles.reevalBadge, { backgroundColor: rule.scope === 'global' ? COLORS.infoLight : COLORS.primaryXLight }]}>
+                        <Text style={[styles.reevalBadgeText, { color: rule.scope === 'global' ? COLORS.info : COLORS.primary }]}>
+                          {rule.scope === 'global' ? 'Global' : `Q${rule.questionNumber || '-'}`}
+                        </Text>
+                      </View>
+                      <Text style={styles.brainRuleDate}>{rule.createdAt ? new Date(rule.createdAt).toLocaleDateString() : ''}</Text>
+                    </View>
+                    <Text style={styles.brainRuleText}>{rule.teacherCorrection}</Text>
+                  </View>
+                ))
               )}
             </View>
           ) : (
@@ -1219,6 +1337,9 @@ const styles = StyleSheet.create({
   },
 
   // Segmented Control
+  segmentScroll: {
+    flexGrow: 0,
+  },
   segmentContainer: {
     flexDirection: 'row',
     backgroundColor: COLORS.surfaceElevated,
@@ -1229,10 +1350,11 @@ const styles = StyleSheet.create({
     padding: 3,
   },
   segmentBtn: {
-    flex: 1,
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
+    minWidth: 106,
+    paddingHorizontal: 12,
     paddingVertical: 10,
     borderRadius: 9,
   },
@@ -1628,6 +1750,64 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     paddingVertical: 8,
     textAlign: 'center',
+  },
+  brainComposer: {
+    backgroundColor: COLORS.surface,
+    borderColor: COLORS.borderLight,
+    borderRadius: 14,
+    borderWidth: 1,
+    marginBottom: 22,
+    padding: 14,
+  },
+  brainInput: {
+    color: COLORS.text,
+    fontSize: 14,
+    lineHeight: 20,
+    minHeight: 104,
+    padding: 0,
+  },
+  brainSaveBtn: {
+    alignItems: 'center',
+    alignSelf: 'flex-end',
+    backgroundColor: COLORS.primary,
+    borderRadius: 10,
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+  },
+  brainSaveBtnDisabled: {
+    opacity: 0.5,
+  },
+  brainSaveText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  brainRuleCard: {
+    backgroundColor: COLORS.surface,
+    borderColor: COLORS.borderLight,
+    borderRadius: 14,
+    borderWidth: 1,
+    marginBottom: 10,
+    padding: 14,
+  },
+  brainRuleTop: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  brainRuleDate: {
+    color: COLORS.textMuted,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  brainRuleText: {
+    color: COLORS.text,
+    fontSize: 14,
+    lineHeight: 20,
   },
   studentItem: {
     flexDirection: 'row',

@@ -103,6 +103,31 @@ export const styles = StyleSheet.create({
     backgroundColor: COLORS.backgroundDark,
     color: COLORS.textLight,
   },
+  optionCard: {
+    alignItems: 'center',
+    backgroundColor: COLORS.backgroundDark,
+    borderColor: COLORS.borderLight,
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    padding: 14,
+  },
+  optionText: {
+    flex: 1,
+    paddingRight: 12,
+  },
+  optionTitle: {
+    color: COLORS.text,
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  optionSubtitle: {
+    color: COLORS.textLight,
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 3,
+  },
   footer: {
     alignItems: 'center',
     borderTopColor: COLORS.border,

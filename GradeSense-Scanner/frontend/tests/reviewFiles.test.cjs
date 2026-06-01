@@ -207,6 +207,8 @@ test('buildImproveAIRequest sends question-level reusable correction context', (
     aiFeedback: 'Mostly correct.',
     teacherCorrection: 'Give full marks for this definition.',
     applyToFuture: true,
+    applyGlobally: false,
+    regradeAll: false,
   });
 });
 

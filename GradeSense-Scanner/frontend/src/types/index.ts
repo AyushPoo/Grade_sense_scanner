@@ -78,6 +78,7 @@ export interface ScanSessionSettings {
   page_mode: 'single' | 'double'; // single = 1 page per capture, double = 2 pages (split left/right)
   grading_mode?: 'strict' | 'balanced' | 'conceptual' | 'lenient';
   pilot_review_first?: boolean;
+  feedback_enabled?: boolean;
 }
 
 export interface ScanSession {
@@ -92,7 +93,7 @@ export interface ScanSession {
   user_id?: string;
   exam_id?: string;
   created_at: string;
-  status: 'scanning' | 'ready' | 'uploading' | 'uploaded' | 'failed';
+  status: 'scanning' | 'ready' | 'uploading' | 'uploaded' | 'failed' | 'sync_failed';
   upload_progress: number;
   settings: ScanSessionSettings;
   question_paper: {

@@ -20,6 +20,7 @@ from fastapi import File, UploadFile, Form
 from fastapi.responses import FileResponse
 import shutil
 from storage_service import StorageService, get_storage_service
+from sync_preflight_service import SyncPreflightError, assert_webapp_sync_ready
 from review_settings_service import (
     build_grading_flag_payload,
     difficulty_from_state_json,
@@ -224,6 +225,11 @@ class UploadStudentRequest(BaseModel):
 class UploadResponse(BaseModel):
     status: str
     pages_received: int
+
+
+class SubjectCreateRequest(BaseModel):
+    name: str
+    classStandard: Optional[str] = None
 
 
 # ==================== AUTH HELPERS ====================
@@ -1078,6 +1084,86 @@ async def get_subjects(authorization: Optional[str] = Header(None)):
     return {"subjects": subjects}
 
 
+@api_router.post("/subjects")
+async def create_subject(data: SubjectCreateRequest, authorization: Optional[str] = Header(None)):
+    """Create a subject for the current teacher and sync it with the webapp database."""
+    user = await get_current_user(authorization)
+    subject_name = data.name.strip()
+    if not subject_name:
+        raise HTTPException(status_code=400, detail="Subject name is required")
+
+    now = utc_now_text()
+    subject_id = generate_drizzle_id("sub_")
+    subject = {
+        "id": subject_id,
+        "name": subject_name,
+        "class_standard": data.classStandard,
+        "classStandard": data.classStandard,
+        "teacher_id": user.user_id,
+    }
+
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if webapp_db_url:
+        conn = None
+        try:
+            conn = await asyncpg.connect(webapp_db_url)
+            row = await conn.fetchrow(
+                '''
+                INSERT INTO subjects (id, teacher_id, name, class_standard, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                RETURNING id, name, class_standard
+                ''',
+                subject_id,
+                user.user_id,
+                subject_name,
+                data.classStandard,
+                now,
+                now,
+            )
+            subject.update({
+                "id": str(row["id"]),
+                "name": row["name"],
+                "class_standard": row["class_standard"],
+                "classStandard": row["class_standard"],
+            })
+        except Exception as e:
+            logger.error(f"Error creating subject in Neon: {e}")
+            raise HTTPException(status_code=500, detail="Failed to create subject")
+        finally:
+            if conn:
+                await conn.close()
+    else:
+        webapp_url = os.environ.get("WEBAPP_URL")
+        token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
+        if webapp_url and token != "sess_mock_token_12345":
+            try:
+                async with httpx.AsyncClient() as client_http:
+                    response = await client_http.post(
+                        f"{webapp_url.rstrip('/')}/api/v1/subjects",
+                        json={"name": subject_name, "classStandard": data.classStandard},
+                        headers={"Authorization": f"Bearer {token}", "Bypass-Tunnel-Reminder": "true"},
+                        timeout=15.0,
+                    )
+                    if response.status_code in (200, 201):
+                        created = response.json().get("data", {})
+                        subject.update({
+                            "id": created.get("id") or subject_id,
+                            "name": created.get("name") or subject_name,
+                            "class_standard": created.get("classStandard"),
+                            "classStandard": created.get("classStandard"),
+                        })
+                    else:
+                        raise HTTPException(status_code=response.status_code, detail=response.text)
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error creating subject through webapp: {e}")
+                raise HTTPException(status_code=500, detail="Failed to create subject")
+
+    await db.subjects.update_one({"id": subject["id"]}, {"$set": subject}, upsert=True)
+    return {"subject": subject}
+
+
 # ==================== SCAN SESSIONS ROUTES ====================
 
 @api_router.post("/scan-sessions/create")
@@ -1350,6 +1436,24 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
     session = await db.scan_sessions.find_one({"session_id": session_id, "user_id": user_id})
     if not session:
         logger.error(f"Scan session {session_id} not found in background sync")
+        return
+
+    async def mark_sync_failed(message: str) -> None:
+        await db.scan_sessions.update_one(
+            {"session_id": session_id, "user_id": user_id},
+            {"$set": {
+                "status": "sync_failed",
+                "last_sync_error": message[:500],
+                "updated_at": datetime.now(timezone.utc),
+            }}
+        )
+
+    try:
+        assert_webapp_sync_ready(getattr(storage, "backend", "local"), os.environ)
+    except SyncPreflightError as exc:
+        message = str(exc)
+        logger.error(f"Webapp sync preflight failed for session {session_id}: {message}")
+        await mark_sync_failed(message)
         return
 
     # Helper to download a page file from storage (Local or GCS)
@@ -1722,7 +1826,9 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
             logger.info("Direct Neon DB and GCS background sync completed successfully!")
             return
         except Exception as e:
-            logger.error(f"Failed direct Neon background sync: {e}. Falling back to HTTP proxy path.")
+            logger.exception(f"Failed direct Neon background sync for session {session_id}")
+            await mark_sync_failed(str(e))
+            return
 
 
 @api_router.post("/scan-sessions/{session_id}/complete")
@@ -1734,6 +1840,22 @@ async def complete_scan_session(
     """Mark scan session as complete and sync to webapp"""
     user = await get_current_user(authorization)
     token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
+
+    if token != "sess_mock_token_12345":
+        try:
+            assert_webapp_sync_ready(getattr(storage, "backend", "local"), os.environ)
+        except SyncPreflightError as exc:
+            message = str(exc)
+            logger.error(f"Refusing to complete scan session {session_id}: {message}")
+            await db.scan_sessions.update_one(
+                {"session_id": session_id, "user_id": user.user_id},
+                {"$set": {
+                    "status": "failed",
+                    "last_sync_error": message[:500],
+                    "updated_at": datetime.now(timezone.utc),
+                }}
+            )
+            raise HTTPException(status_code=503, detail=message)
     
     # 1. Update session status locally to completed
     await db.scan_sessions.update_one(
@@ -2229,7 +2351,8 @@ async def get_submission_detail_proxy(submission_id: str, authorization: Optiona
                                 "maxMarks": sc["max_marks"] or 0,
                                 "questionText": sc["question_text"] or "",
                                 "aiFeedback": sc["ai_feedback"],
-                                "teacherCorrection": sc["teacher_correction"]
+                                "teacherCorrection": sc["teacher_correction"],
+                                "studentAnswerText": None,
                             }
                             for sc in score_rows
                         ]
@@ -2313,6 +2436,51 @@ async def improve_question_grading(
             generate_id=generate_drizzle_id,
             now_text=utc_now_text,
         )
+        if bool(data.get("regradeAll")) and result.get("examId"):
+            submission_rows = await conn.fetch(
+                '''
+                SELECT s.id
+                FROM submissions s
+                JOIN exams e ON e.id = s.exam_id
+                WHERE s.exam_id = $1 AND e.teacher_id = $2
+                ORDER BY s.created_at ASC
+                ''',
+                result["examId"],
+                user.user_id,
+            )
+            submission_ids = [str(row["id"]) for row in submission_rows]
+            if submission_ids:
+                now = utc_now_text()
+                await conn.execute(
+                    '''
+                    INSERT INTO grading_jobs (
+                        id, type, status, exam_id, teacher_id,
+                        progress, total_items, processed_items, success_count, failure_count,
+                        attempts, payload_json, result_json, created_at, updated_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                    ''',
+                    generate_drizzle_id("job_"),
+                    "grade_submissions",
+                    "queued",
+                    result["examId"],
+                    user.user_id,
+                    0.0,
+                    len(submission_ids),
+                    0,
+                    0,
+                    0,
+                    0,
+                    json.dumps({
+                        "submissionIds": submission_ids,
+                        "teacherId": user.user_id,
+                        "flow": "mobile_improve_ai_regrade",
+                        "sourceScoreId": score_id,
+                    }),
+                    "{}",
+                    now,
+                    now,
+                )
+                result["regradeQueued"] = True
         return {"data": result}
     except ImproveAIServiceError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
@@ -2961,6 +3129,111 @@ async def flag_exam_grading(exam_id: str, data: dict, authorization: Optional[st
         raise HTTPException(status_code=500, detail="Failed to flag grading")
 
     return {"success": True, "id": feedback_id}
+
+
+@api_router.get("/v1/ai-brain")
+async def list_ai_brain_rules(authorization: Optional[str] = Header(None)):
+    """List synced teacher AI Brain grading memories."""
+    user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if not webapp_db_url:
+        raise HTTPException(status_code=503, detail="WEBAPP_DB_URL is not configured")
+
+    conn = None
+    try:
+        conn = await asyncpg.connect(webapp_db_url)
+        rows = await conn.fetch(
+            '''
+            SELECT id, exam_id, question_number, original_ai_feedback,
+                   teacher_correction, pattern_json, created_at, updated_at
+            FROM teacher_feedback_patterns
+            WHERE teacher_id = $1
+            ORDER BY created_at DESC
+            LIMIT 100
+            ''',
+            user.user_id,
+        )
+    except Exception as e:
+        logger.error(f"Error reading AI Brain rules from Neon: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load AI Brain")
+    finally:
+        if conn:
+            await conn.close()
+
+    return {
+        "data": [
+            {
+                "id": str(row["id"]),
+                "examId": row["exam_id"],
+                "questionNumber": row["question_number"],
+                "originalAiFeedback": row["original_ai_feedback"],
+                "teacherCorrection": row["teacher_correction"],
+                "patternJson": row["pattern_json"],
+                "scope": "global" if row["exam_id"] is None else "exam",
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+            }
+            for row in rows
+        ]
+    }
+
+
+@api_router.post("/v1/ai-brain")
+async def create_ai_brain_rule(data: dict, authorization: Optional[str] = Header(None)):
+    """Create a global teacher grading memory from mobile."""
+    user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if not webapp_db_url:
+        raise HTTPException(status_code=503, detail="WEBAPP_DB_URL is not configured")
+
+    correction = str(data.get("teacherCorrection") or data.get("rule") or "").strip()
+    if not correction:
+        raise HTTPException(status_code=400, detail="AI Brain rule text is required")
+
+    now = utc_now_text()
+    rule_id = generate_drizzle_id("tfp_")
+    pattern_json = json.dumps({
+        "source": "mobile_scanner",
+        "type": "global_grading_memory",
+        "teacherCorrection": correction,
+        "applyToFuture": True,
+    })
+
+    conn = None
+    try:
+        conn = await asyncpg.connect(webapp_db_url)
+        await conn.execute(
+            '''
+            INSERT INTO teacher_feedback_patterns (
+                id, teacher_id, exam_id, question_number,
+                original_ai_feedback, teacher_correction, pattern_json,
+                created_at, updated_at
+            ) VALUES ($1, $2, NULL, NULL, NULL, $3, $4, $5, $6)
+            ''',
+            rule_id,
+            user.user_id,
+            correction,
+            pattern_json,
+            now,
+            now,
+        )
+    except Exception as e:
+        logger.error(f"Error creating AI Brain rule in Neon: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save AI Brain rule")
+    finally:
+        if conn:
+            await conn.close()
+
+    return {
+        "data": {
+            "id": rule_id,
+            "scope": "global",
+            "teacherCorrection": correction,
+            "patternJson": pattern_json,
+            "createdAt": now,
+            "updatedAt": now,
+        }
+    }
 
 
 @api_router.get("/v1/re-evaluations")

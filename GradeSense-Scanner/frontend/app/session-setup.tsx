@@ -10,6 +10,7 @@ import {
   Modal,
   KeyboardAvoidingView,
   Platform,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -21,7 +22,7 @@ import { Batch, ScanSessionSettings, Subject } from '../src/types';
 export default function SessionSetupScreen() {
   const router = useRouter();
   const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
-  const { createSession, savedSessions, updateSessionDetails, savedBatches, addBatch, deleteBatch, fetchBatches, savedSubjects, fetchSubjects } = useScanStore();
+  const { createSession, savedSessions, updateSessionDetails, savedBatches, addBatch, deleteBatch, fetchBatches, savedSubjects, fetchSubjects, createSubject } = useScanStore();
   
   useEffect(() => {
     fetchBatches().catch(err => console.error('Failed to load batches:', err));
@@ -40,6 +41,10 @@ export default function SessionSetupScreen() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newBatchName, setNewBatchName] = useState('');
   const [newBatchStudentCount, setNewBatchStudentCount] = useState('');
+  const [showSubjectModal, setShowSubjectModal] = useState(false);
+  const [newSubjectName, setNewSubjectName] = useState('');
+  const [newSubjectClass, setNewSubjectClass] = useState('');
+  const [isCreatingSubject, setIsCreatingSubject] = useState(false);
   
   // Scan options
   const [settings, setSettings] = useState<ScanSessionSettings>({
@@ -53,6 +58,7 @@ export default function SessionSetupScreen() {
     page_mode: 'single', // default to single page
     grading_mode: 'balanced', // default to balanced
     pilot_review_first: false,
+    feedback_enabled: true,
   });
 
   // Populate existing session details if in edit mode
@@ -81,6 +87,7 @@ export default function SessionSetupScreen() {
           ...existing.settings,
           grading_mode: existing.settings.grading_mode || 'balanced',
           pilot_review_first: Boolean(existing.settings.pilot_review_first || (existing.settings as any).pilotReviewFirst),
+          feedback_enabled: existing.settings.feedback_enabled ?? (existing.settings as any).feedbackEnabled ?? true,
         });
       }
     }
@@ -110,6 +117,23 @@ export default function SessionSetupScreen() {
     deleteBatch(batchId);
     if (selectedBatch?.batch_id === batchId) {
       setSelectedBatch(null);
+    }
+  };
+
+  const handleCreateSubject = async () => {
+    if (!newSubjectName.trim()) return;
+
+    setIsCreatingSubject(true);
+    try {
+      const subject = await createSubject(newSubjectName, newSubjectClass);
+      setSelectedSubject(subject);
+      setShowSubjectModal(false);
+      setNewSubjectName('');
+      setNewSubjectClass('');
+    } catch (err: any) {
+      Alert.alert('Subject not created', err.message || 'Could not create this subject.');
+    } finally {
+      setIsCreatingSubject(false);
     }
   };
 
@@ -184,9 +208,23 @@ export default function SessionSetupScreen() {
 
           {/* Subject Selection */}
           <View style={styles.section}>
-            <Text style={styles.label}>Select Subject</Text>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.label}>Select Subject</Text>
+              <TouchableOpacity
+                style={styles.createBatchBtn}
+                onPress={() => setShowSubjectModal(true)}
+              >
+                <Ionicons name="add-circle" size={20} color={COLORS.primary} />
+                <Text style={styles.createBatchText}>New Subject</Text>
+              </TouchableOpacity>
+            </View>
             {savedSubjects.length === 0 ? (
-              <Text style={styles.emptyTextSub}>No subjects available. Please create one on the webapp.</Text>
+              <View style={styles.emptySubjectBox}>
+                <Text style={styles.emptyTextSub}>No subjects available yet.</Text>
+                <TouchableOpacity style={styles.inlineCreateBtn} onPress={() => setShowSubjectModal(true)}>
+                  <Text style={styles.inlineCreateText}>Add subject</Text>
+                </TouchableOpacity>
+              </View>
             ) : (
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.subjectScroll}>
                 {savedSubjects.map(subject => {
@@ -351,6 +389,23 @@ export default function SessionSetupScreen() {
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>AI REVIEW LOOP</Text>
             <View style={styles.optionCard}>
+              <View style={styles.optionRow}>
+                <View style={styles.optionLeft}>
+                  <View style={[styles.optionIcon, { backgroundColor: COLORS.primaryXLight }]}>
+                    <Ionicons name="chatbubble-ellipses-outline" size={20} color={COLORS.primary} />
+                  </View>
+                  <View style={styles.optionTextContainer}>
+                    <Text style={styles.optionLabel}>Student Feedback</Text>
+                    <Text style={styles.optionHint}>Turn off when you only want marks, not AI feedback text</Text>
+                  </View>
+                </View>
+                <Switch
+                  value={settings.feedback_enabled !== false}
+                  onValueChange={(value) => updateSetting('feedback_enabled', value)}
+                  trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
+                  thumbColor={settings.feedback_enabled !== false ? COLORS.primary : '#f4f3f4'}
+                />
+              </View>
               <View style={[styles.optionRow, { borderBottomWidth: 0 }]}>
                 <View style={styles.optionLeft}>
                   <View style={[styles.optionIcon, { backgroundColor: '#FFF3E0' }]}>
@@ -640,6 +695,65 @@ export default function SessionSetupScreen() {
           </View>
         </View>
       </Modal>
+
+      <Modal
+        visible={showSubjectModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowSubjectModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Add Subject</Text>
+              <TouchableOpacity onPress={() => setShowSubjectModal(false)} disabled={isCreatingSubject}>
+                <Ionicons name="close" size={24} color={COLORS.text} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.modalBody}>
+              <Text style={styles.modalLabel}>Subject Name *</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={newSubjectName}
+                onChangeText={setNewSubjectName}
+                placeholder="e.g., Accounts"
+                placeholderTextColor={COLORS.textMuted}
+                autoFocus
+              />
+
+              <Text style={styles.modalLabel}>Class / Standard (optional)</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={newSubjectClass}
+                onChangeText={setNewSubjectClass}
+                placeholder="e.g., Class 10-A"
+                placeholderTextColor={COLORS.textMuted}
+              />
+            </View>
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => setShowSubjectModal(false)}
+                disabled={isCreatingSubject}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.modalCreateBtn,
+                  (!newSubjectName.trim() || isCreatingSubject) && styles.modalCreateBtnDisabled,
+                ]}
+                onPress={handleCreateSubject}
+                disabled={!newSubjectName.trim() || isCreatingSubject}
+              >
+                <Text style={styles.modalCreateText}>{isCreatingSubject ? 'Saving...' : 'Add Subject'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -724,6 +838,28 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: COLORS.textMuted,
     marginTop: 4,
+  },
+  emptySubjectBox: {
+    alignItems: 'center',
+    backgroundColor: COLORS.cardBg,
+    borderColor: COLORS.borderLight,
+    borderRadius: 12,
+    borderWidth: 1,
+    gap: 10,
+    padding: 16,
+  },
+  inlineCreateBtn: {
+    backgroundColor: COLORS.primaryXLight,
+    borderColor: `${COLORS.primary}30`,
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  inlineCreateText: {
+    color: COLORS.primary,
+    fontSize: 13,
+    fontWeight: '800',
   },
   createFirstBatch: {
     flexDirection: 'row',

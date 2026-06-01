@@ -57,6 +57,18 @@ async def save_question_improvement(
             pattern_json=pattern_json,
             now=now,
         )
+        if bool(data.get("applyGlobally")):
+            await _insert_feedback_pattern(
+                conn,
+                pattern_id=generate_id("tfp_"),
+                teacher_id=teacher_id,
+                exam_id=None,
+                question_number=str(score_row["question_number"]),
+                ai_feedback=score_row["ai_feedback"] or "",
+                teacher_correction=teacher_correction,
+                pattern_json=pattern_json,
+                now=now,
+            )
         updated_score = await _update_question_score(
             conn,
             submission_id=submission_id,
@@ -69,6 +81,7 @@ async def save_question_improvement(
 
     return {
         "patternId": pattern_id,
+        "examId": score_row["exam_id"],
         "score": {
             "id": str(updated_score["id"]),
             "questionNumber": updated_score["question_number"],
@@ -116,7 +129,7 @@ async def _insert_feedback_pattern(
     *,
     pattern_id: str,
     teacher_id: str,
-    exam_id: str,
+    exam_id: str | None,
     question_number: str,
     ai_feedback: str,
     teacher_correction: str,
