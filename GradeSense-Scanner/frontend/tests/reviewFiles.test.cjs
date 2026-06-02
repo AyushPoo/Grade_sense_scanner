@@ -292,28 +292,26 @@ test('grading control opens teacher notes in a dedicated editor modal', () => {
   assert.equal(panelSource.includes('KeyboardAvoidingView'), false);
 });
 
-test('student answer sheet renders every graded question and compact file shortcuts', () => {
-  const panelSource = fs.readFileSync(
-    path.join(__dirname, '..', 'src/components/review/StudentAnswerSheetPanel.tsx'),
-    'utf8'
-  );
+test('review screen shows source paper files directly and keeps grading controls on rubric tab', () => {
+  const reviewSource = fs.readFileSync(path.join(__dirname, '..', 'app/review-grading.tsx'), 'utf8');
 
-  assert.equal(panelSource.includes('scores.map'), true);
-  assert.equal(panelSource.includes('onSelectScore(index)'), true);
-  assert.equal(panelSource.includes('label="Question"'), true);
-  assert.equal(panelSource.includes('Student-answer text is not stored'), true);
+  assert.equal(reviewSource.includes('StudentAnswerSheetPanel'), false);
+  assert.equal(reviewSource.includes('sheetMode'), false);
+  assert.equal(reviewSource.includes("activeTab === 'rubric' && activeScore"), true);
+  assert.equal(reviewSource.includes('PaperFileViewer'), true);
 });
 
-test('paper viewer uses readable compare mode instead of cramped split panes', () => {
+test('paper viewer compares student sheet and model answer in split panes', () => {
   const viewerSource = fs.readFileSync(
     path.join(__dirname, '..', 'src/components/review/PaperFileViewer.tsx'),
     'utf8'
   );
 
   assert.equal(viewerSource.includes('CompareDocumentView'), true);
+  assert.equal(viewerSource.includes('SplitComparePane'), true);
+  assert.equal(viewerSource.includes("group.type === 'student' || group.type === 'model'"), true);
   assert.equal(viewerSource.includes('Open source'), true);
   assert.equal(viewerSource.includes('Refresh link'), true);
-  assert.equal(viewerSource.includes('>Split<'), false);
   assert.equal(viewerSource.includes('compactWebView'), true);
 });
 
@@ -322,6 +320,9 @@ test('manage screen renders operational tabs without waiting on analytics loader
 
   assert.equal(manageSource.includes("useState(false)"), true);
   assert.equal(manageSource.includes("useState<'analytics' | 'exams' | 'classroom' | 'brain' | 'reevaluation'>('exams')"), true);
+  assert.equal(manageSource.includes('style={styles.segmentScroll}'), false);
+  assert.equal(manageSource.includes('contentContainerStyle={styles.segmentContainer}'), false);
+  assert.equal(manageSource.includes('minWidth: 0'), true);
 });
 
 test('sessions screen exposes a dedicated review-ready exams tab', () => {

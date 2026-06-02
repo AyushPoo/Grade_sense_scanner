@@ -698,12 +698,7 @@ export default function ManageScreen() {
       </View>
 
       {/* Segmented Control */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.segmentScroll}
-        contentContainerStyle={styles.segmentContainer}
-      >
+      <View style={styles.segmentContainer}>
         <TouchableOpacity
           style={[styles.segmentBtn, activeTab === 'exams' && styles.segmentBtnActive]}
           onPress={() => setActiveTab('exams')}
@@ -751,7 +746,7 @@ export default function ManageScreen() {
             Re-evals
           </Text>
         </TouchableOpacity>
-      </ScrollView>
+      </View>
 
       {isLoading ? (
         <View style={styles.loader}>
@@ -1303,9 +1298,6 @@ const styles = StyleSheet.create({
   },
 
   // Segmented Control
-  segmentScroll: {
-    flexGrow: 0,
-  },
   segmentContainer: {
     flexDirection: 'row',
     backgroundColor: COLORS.surfaceElevated,
@@ -1316,12 +1308,14 @@ const styles = StyleSheet.create({
     padding: 3,
   },
   segmentBtn: {
+    flex: 1,
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-    minWidth: 96,
-    paddingHorizontal: 10,
-    paddingVertical: 9,
+    minHeight: 38,
+    minWidth: 0,
+    paddingHorizontal: 4,
+    paddingVertical: 8,
     borderRadius: 9,
   },
   segmentBtnActive: {
@@ -1336,6 +1330,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: COLORS.textLight,
+    lineHeight: 16,
   },
   segmentTextActive: {
     color: '#fff',

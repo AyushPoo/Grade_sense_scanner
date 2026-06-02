@@ -25,9 +25,8 @@ import { GradingControlPanel } from '../src/components/review/GradingControlPane
 import { PaperFileViewer } from '../src/components/review/PaperFileViewer';
 import { RubricReviewPanel } from '../src/components/review/RubricReviewPanel';
 import { VoiceDictationModal } from '../src/components/review/VoiceDictationModal';
-import { StudentAnswerSheetPanel } from '../src/components/review/StudentAnswerSheetPanel';
 import { ImproveAIModal } from '../src/components/review/ImproveAIModal';
-import type { ReviewFileItem, ReviewFileSlide, ScoreItem, SubmissionListItem } from '../src/types/review';
+import type { ReviewFileItem, ScoreItem, SubmissionListItem } from '../src/types/review';
 import { buildLocalReviewFiles, buildReviewFileSlides, mergeReviewFiles } from '../src/utils/reviewFiles';
 import { normalizeReviewScores } from '../src/utils/reviewScores';
 import { DEFAULT_REVIEW_SETTINGS, ReviewSettings } from '../src/utils/reviewSettings';
@@ -95,7 +94,6 @@ export default function ReviewGradingScreen() {
 
   // UI state
   const [activeTab, setActiveTab] = useState<'sheet' | 'rubric'>('sheet');
-  const [sheetMode, setSheetMode] = useState<'answer' | 'files'>('answer');
   const [activeScoreIndex, setActiveScoreIndex] = useState(0);
   const [activeFileIndex, setActiveFileIndex] = useState(0);
   const [failedImageIds, setFailedImageIds] = useState<Record<string, boolean>>({});
@@ -382,10 +380,21 @@ export default function ReviewGradingScreen() {
   }, [fetchActiveSubmissionDetail, submissions.length]);
 
   useEffect(() => {
-    if (activeFileIndex >= fileSlides.length) {
-      setActiveFileIndex(0);
-    }
-  }, [activeFileIndex, fileSlides.length]);
+    if (!fileSlides.length) return;
+
+    const preferredIndex = fileSlides.findIndex(slide => slide.type === 'student');
+    setActiveFileIndex(currentIndex => {
+      if (currentIndex >= fileSlides.length) {
+        return preferredIndex >= 0 ? preferredIndex : 0;
+      }
+
+      if (!fileSlides[currentIndex] || fileSlides[currentIndex].type === 'question') {
+        return preferredIndex >= 0 ? preferredIndex : currentIndex;
+      }
+
+      return currentIndex;
+    });
+  }, [fileSlides, activeSubId]);
 
   const handleImageError = useCallback((slideId: string) => {
     setFailedImageIds(prev => ({ ...prev, [slideId]: true }));
@@ -395,14 +404,6 @@ export default function ReviewGradingScreen() {
     setFailedImageIds({});
     await fetchActiveSubmissionDetail();
   }, [fetchActiveSubmissionDetail]);
-
-  const handleOpenFileType = useCallback((type: ReviewFileSlide['type']) => {
-    const index = fileSlides.findIndex(slide => slide.type === type);
-    if (index >= 0) {
-      setActiveFileIndex(index);
-      setSheetMode('files');
-    }
-  }, [fileSlides]);
 
   const handleScoreChange = (scoreId: string, obtained: number) => {
     setScores(prev =>
@@ -592,30 +593,16 @@ export default function ReviewGradingScreen() {
       ) : (
         <View style={{ flex: 1 }}>
           {activeTab === 'sheet' ? (
-            sheetMode === 'answer' ? (
-              <StudentAnswerSheetPanel
-                scores={scores}
-                activeScoreIndex={activeScoreIndex}
-                fileSlides={fileSlides}
-                onSelectScore={setActiveScoreIndex}
-                onOpenFileType={handleOpenFileType}
+            <View style={styles.paperFilesContainer}>
+              <PaperFileViewer
+                slides={fileSlides}
+                activeIndex={activeFileIndex}
+                failedImageIds={failedImageIds}
+                onSelectIndex={setActiveFileIndex}
+                onImageError={handleImageError}
+                onRetry={handleRetryPaperFiles}
               />
-            ) : (
-              <View style={styles.paperFilesContainer}>
-                <TouchableOpacity style={styles.answerTextButton} onPress={() => setSheetMode('answer')} activeOpacity={0.82}>
-                  <Ionicons name="reader-outline" size={16} color={COLORS.primary} />
-                  <Text style={styles.answerTextButtonText}>Back to student answer text</Text>
-                </TouchableOpacity>
-                <PaperFileViewer
-                  slides={fileSlides}
-                  activeIndex={activeFileIndex}
-                  failedImageIds={failedImageIds}
-                  onSelectIndex={setActiveFileIndex}
-                  onImageError={handleImageError}
-                  onRetry={handleRetryPaperFiles}
-                />
-              </View>
-            )
+            </View>
           ) : (
             <RubricReviewPanel
               scores={scores}
@@ -627,7 +614,7 @@ export default function ReviewGradingScreen() {
             />
           )}
 
-          {activeScore && (
+          {activeTab === 'rubric' && activeScore && (
             <GradingControlPanel
               activeScore={activeScore}
               isSaving={isSaving}
@@ -724,27 +711,27 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     backgroundColor: COLORS.surface,
     paddingHorizontal: 10,
-    paddingVertical: 7,
+    paddingVertical: 5,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.borderLight,
   },
   backButton: {
-    padding: 7,
+    padding: 6,
   },
   headerCenter: {
     alignItems: 'center',
     flex: 1,
   },
   headerTitle: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '800',
     color: COLORS.text,
     textAlign: 'center',
   },
   headerSubtitle: {
-    fontSize: 11,
+    fontSize: 10,
     color: COLORS.textLight,
-    marginTop: 2,
+    marginTop: 1,
   },
   // Student Switcher
   studentSwitcher: {
@@ -755,12 +742,12 @@ const styles = StyleSheet.create({
     borderBottomColor: COLORS.borderLight,
     borderBottomWidth: 1,
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: 6,
   },
   switchArrow: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     backgroundColor: COLORS.backgroundDark,
     justifyContent: 'center',
     alignItems: 'center',
@@ -780,19 +767,19 @@ const styles = StyleSheet.create({
   },
   studentLabel: {
     color: COLORS.textMuted,
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '800',
     letterSpacing: 0.8,
     marginBottom: 1,
     textTransform: 'uppercase',
   },
   studentName: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '800',
     color: COLORS.text,
   },
   studentRoll: {
-    fontSize: 11,
+    fontSize: 10,
     color: COLORS.textLight,
     marginTop: 2,
   },
@@ -802,9 +789,9 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     borderBottomColor: COLORS.borderLight,
     borderBottomWidth: 1,
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    gap: 7,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
   },
   tab: {
     flex: 1,
@@ -812,14 +799,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     gap: 6,
-    borderRadius: 12,
-    paddingVertical: 9,
+    borderRadius: 11,
+    paddingVertical: 8,
   },
   activeTab: {
     backgroundColor: COLORS.primaryXLight,
   },
   tabText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
     color: COLORS.textLight,
   },
@@ -841,21 +828,6 @@ const styles = StyleSheet.create({
   paperFilesContainer: {
     flex: 1,
     backgroundColor: '#141414',
-  },
-  answerTextButton: {
-    alignItems: 'center',
-    backgroundColor: COLORS.surface,
-    borderBottomColor: COLORS.borderLight,
-    borderBottomWidth: 1,
-    flexDirection: 'row',
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  answerTextButtonText: {
-    color: COLORS.primary,
-    fontSize: 13,
-    fontWeight: '800',
   },
   headerActions: {
     alignItems: 'center',
