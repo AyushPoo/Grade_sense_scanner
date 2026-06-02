@@ -1,0 +1,348 @@
+import React, { useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import { COLORS } from '../../src/config';
+import { useAuthStore } from '../../src/store/authStore';
+import { AnalyticsPerformancePanel } from '../../src/components/manage/AnalyticsPerformancePanel';
+import { useInsightsData } from '../../src/hooks/useInsightsData';
+
+type InsightsTab = 'performance' | 'brain';
+
+function MetricCard({
+  value,
+  label,
+  icon,
+  color,
+  background,
+}: {
+  value: string | number;
+  label: string;
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  color: string;
+  background: string;
+}) {
+  return (
+    <View style={styles.metricCard}>
+      <View style={[styles.metricIcon, { backgroundColor: background }]}>
+        <Ionicons name={icon} size={17} color={color} />
+      </View>
+      <Text style={[styles.metricValue, { color }]}>{value}</Text>
+      <Text style={styles.metricLabel}>{label}</Text>
+    </View>
+  );
+}
+
+export default function InsightsScreen() {
+  const token = useAuthStore(state => state.sessionToken);
+  const [activeTab, setActiveTab] = useState<InsightsTab>('performance');
+  const [brainDraft, setBrainDraft] = useState('');
+  const {
+    overview,
+    performance,
+    brainRules,
+    isLoading,
+    isRefreshing,
+    isOffline,
+    savingBrainRule,
+    refresh,
+    saveBrainRule,
+  } = useInsightsData({ token });
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const handleSaveBrainRule = async () => {
+    const saved = await saveBrainRule(brainDraft);
+    if (saved) {
+      setBrainDraft('');
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <SafeAreaView style={styles.loader} edges={['top']}>
+        <ActivityIndicator size="large" color={COLORS.primary} />
+        <Text style={styles.loaderText}>Loading synced insights...</Text>
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <SafeAreaView style={styles.root} edges={['top']}>
+      <View style={styles.header}>
+        <View>
+          <Text style={styles.headerTitle}>Insights</Text>
+          <Text style={styles.headerSub}>Performance and AI grading memory</Text>
+        </View>
+        <TouchableOpacity style={styles.refreshBtn} onPress={() => refresh()} activeOpacity={0.8}>
+          <Ionicons name="refresh" size={19} color={COLORS.primary} />
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.segmentContainer}>
+        <TouchableOpacity
+          style={[styles.segmentBtn, activeTab === 'performance' && styles.segmentBtnActive]}
+          onPress={() => setActiveTab('performance')}
+          activeOpacity={0.82}
+        >
+          <Ionicons name="bar-chart-outline" size={15} color={activeTab === 'performance' ? '#fff' : COLORS.textLight} />
+          <Text style={[styles.segmentText, activeTab === 'performance' && styles.segmentTextActive]}>Performance</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.segmentBtn, activeTab === 'brain' && styles.segmentBtnActive]}
+          onPress={() => setActiveTab('brain')}
+          activeOpacity={0.82}
+        >
+          <Ionicons name="bulb-outline" size={15} color={activeTab === 'brain' ? '#fff' : COLORS.textLight} />
+          <Text style={[styles.segmentText, activeTab === 'brain' && styles.segmentTextActive]}>AI Brain</Text>
+        </TouchableOpacity>
+      </View>
+
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={() => refresh()} tintColor={COLORS.primary} />}
+      >
+        {isOffline ? (
+          <View style={styles.offlineBanner}>
+            <Ionicons name="cloud-offline-outline" size={18} color={COLORS.warning} />
+            <Text style={styles.offlineText}>Some synced insight data could not be loaded.</Text>
+          </View>
+        ) : null}
+
+        {activeTab === 'performance' ? (
+          <>
+            <LinearGradient colors={[COLORS.primary, COLORS.primaryDark]} style={styles.spotlightCard}>
+              <View>
+                <Text style={styles.spotlightLabel}>Class Average</Text>
+                <Text style={styles.spotlightValue}>{Math.round(overview?.averagePercentage ?? 0)}%</Text>
+                <Text style={styles.spotlightSub}>Across all graded exams</Text>
+              </View>
+              <Ionicons name="analytics-outline" size={44} color="rgba(255,255,255,0.34)" />
+            </LinearGradient>
+
+            <View style={styles.metricRow}>
+              <MetricCard value={overview?.examsCount ?? 0} label="Exams" icon="school" color={COLORS.info} background={COLORS.infoLight} />
+              <MetricCard value={overview?.submissionsCount ?? 0} label="Submissions" icon="documents" color={COLORS.primary} background={COLORS.primaryXLight} />
+              <MetricCard value={overview?.reviewedCount ?? 0} label="Reviewed" icon="checkmark-done" color={COLORS.success} background={COLORS.successLight} />
+            </View>
+
+            <Text style={styles.sectionLabel}>Synced Performance</Text>
+            <AnalyticsPerformancePanel performance={performance} isLoading={false} />
+          </>
+        ) : (
+          <>
+            <Text style={styles.sectionLabel}>Global Grading Memory</Text>
+            <View style={styles.brainComposer}>
+              <TextInput
+                value={brainDraft}
+                onChangeText={setBrainDraft}
+                placeholder="Example: Award method marks when the final answer is slightly off due to arithmetic."
+                placeholderTextColor={COLORS.textMuted}
+                multiline
+                style={styles.brainInput}
+                textAlignVertical="top"
+              />
+              <TouchableOpacity
+                style={[styles.brainSaveBtn, (!brainDraft.trim() || savingBrainRule) && styles.brainSaveBtnDisabled]}
+                onPress={handleSaveBrainRule}
+                disabled={!brainDraft.trim() || savingBrainRule}
+                activeOpacity={0.84}
+              >
+                {savingBrainRule ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="save-outline" size={15} color="#fff" />
+                    <Text style={styles.brainSaveText}>Save Rule</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.sectionLabel}>Learned Rules</Text>
+            {brainRules.length === 0 ? (
+              <View style={styles.emptyCard}>
+                <Ionicons name="bulb-outline" size={34} color={COLORS.textMuted} />
+                <Text style={styles.emptyTitle}>No AI Brain rules saved yet.</Text>
+              </View>
+            ) : (
+              brainRules.map(rule => (
+                <View key={rule.id} style={styles.brainRuleCard}>
+                  <View style={styles.ruleTop}>
+                    <View style={[styles.ruleBadge, { backgroundColor: rule.scope === 'global' ? COLORS.infoLight : COLORS.primaryXLight }]}>
+                      <Text style={[styles.ruleBadgeText, { color: rule.scope === 'global' ? COLORS.info : COLORS.primary }]}>
+                        {rule.scope === 'global' ? 'Global' : `Q${rule.questionNumber || '-'}`}
+                      </Text>
+                    </View>
+                    <Text style={styles.ruleDate}>{rule.createdAt ? new Date(rule.createdAt).toLocaleDateString() : ''}</Text>
+                  </View>
+                  <Text style={styles.ruleText}>{rule.teacherCorrection}</Text>
+                </View>
+              ))
+            )}
+          </>
+        )}
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: COLORS.backgroundDark },
+  loader: { alignItems: 'center', flex: 1, gap: 12, justifyContent: 'center', backgroundColor: COLORS.backgroundDark },
+  loaderText: { color: COLORS.textLight, fontSize: 14 },
+  header: {
+    alignItems: 'center',
+    backgroundColor: COLORS.background,
+    borderBottomColor: COLORS.borderLight,
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  headerTitle: { color: COLORS.text, fontSize: 23, fontWeight: '800' },
+  headerSub: { color: COLORS.textMuted, fontSize: 12, marginTop: 1 },
+  refreshBtn: {
+    alignItems: 'center',
+    backgroundColor: COLORS.primaryXLight,
+    borderRadius: 18,
+    height: 36,
+    justifyContent: 'center',
+    width: 36,
+  },
+  segmentContainer: {
+    backgroundColor: COLORS.surfaceElevated,
+    borderRadius: 12,
+    flexDirection: 'row',
+    gap: 4,
+    marginHorizontal: 16,
+    marginTop: 12,
+    padding: 3,
+  },
+  segmentBtn: {
+    alignItems: 'center',
+    borderRadius: 9,
+    flex: 1,
+    flexDirection: 'row',
+    gap: 6,
+    justifyContent: 'center',
+    paddingVertical: 9,
+  },
+  segmentBtnActive: { backgroundColor: COLORS.primary },
+  segmentText: { color: COLORS.textLight, fontSize: 13, fontWeight: '700' },
+  segmentTextActive: { color: '#fff' },
+  content: { padding: 16, paddingBottom: 32 },
+  offlineBanner: {
+    alignItems: 'center',
+    backgroundColor: COLORS.warningLight,
+    borderColor: `${COLORS.warning}44`,
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  offlineText: { color: COLORS.warning, flex: 1, fontSize: 12, fontWeight: '700' },
+  spotlightCard: {
+    alignItems: 'flex-end',
+    borderRadius: 18,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+    padding: 20,
+  },
+  spotlightLabel: { color: 'rgba(255,255,255,0.82)', fontSize: 12, fontWeight: '700' },
+  spotlightValue: { color: '#fff', fontSize: 42, fontWeight: '900', lineHeight: 48 },
+  spotlightSub: { color: 'rgba(255,255,255,0.78)', fontSize: 12 },
+  metricRow: { flexDirection: 'row', gap: 10, marginBottom: 20 },
+  metricCard: {
+    alignItems: 'center',
+    backgroundColor: COLORS.surface,
+    borderColor: COLORS.borderLight,
+    borderRadius: 12,
+    borderWidth: 1,
+    flex: 1,
+    padding: 12,
+  },
+  metricIcon: { alignItems: 'center', borderRadius: 9, height: 32, justifyContent: 'center', marginBottom: 7, width: 32 },
+  metricValue: { fontSize: 22, fontWeight: '900' },
+  metricLabel: { color: COLORS.textMuted, fontSize: 10, fontWeight: '800', marginTop: 2, textAlign: 'center' },
+  sectionLabel: {
+    color: COLORS.textMuted,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    marginBottom: 10,
+    textTransform: 'uppercase',
+  },
+  brainComposer: {
+    backgroundColor: COLORS.surface,
+    borderColor: COLORS.borderLight,
+    borderRadius: 14,
+    borderWidth: 1,
+    marginBottom: 18,
+    padding: 12,
+  },
+  brainInput: {
+    backgroundColor: COLORS.backgroundDark,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    borderWidth: 1,
+    color: COLORS.text,
+    fontSize: 13,
+    lineHeight: 19,
+    minHeight: 110,
+    padding: 12,
+  },
+  brainSaveBtn: {
+    alignItems: 'center',
+    alignSelf: 'flex-end',
+    backgroundColor: COLORS.primary,
+    borderRadius: 10,
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  brainSaveBtnDisabled: { opacity: 0.58 },
+  brainSaveText: { color: '#fff', fontSize: 13, fontWeight: '800' },
+  emptyCard: {
+    alignItems: 'center',
+    backgroundColor: COLORS.surface,
+    borderColor: COLORS.borderLight,
+    borderRadius: 14,
+    borderWidth: 1,
+    gap: 8,
+    padding: 24,
+  },
+  emptyTitle: { color: COLORS.textLight, fontSize: 13, fontWeight: '700' },
+  brainRuleCard: {
+    backgroundColor: COLORS.surface,
+    borderColor: COLORS.borderLight,
+    borderRadius: 14,
+    borderWidth: 1,
+    marginBottom: 10,
+    padding: 13,
+  },
+  ruleTop: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
+  ruleBadge: { borderRadius: 999, paddingHorizontal: 8, paddingVertical: 4 },
+  ruleBadgeText: { fontSize: 10, fontWeight: '900' },
+  ruleDate: { color: COLORS.textMuted, fontSize: 11, fontWeight: '700' },
+  ruleText: { color: COLORS.text, fontSize: 13, lineHeight: 19 },
+});

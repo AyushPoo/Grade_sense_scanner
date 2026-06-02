@@ -42,11 +42,14 @@ export function PaperFileViewer({
   onImageError,
   onRetry,
 }: PaperFileViewerProps) {
-  const [splitMode, setSplitMode] = useState(false);
+  const [compareMode, setCompareMode] = useState(false);
+  const [compareType, setCompareType] = useState<DocumentType>('student');
   const groups = useMemo(() => buildDocumentGroups(slides), [slides]);
   const activeType = slides[activeIndex]?.type || groups[0]?.type;
   const activeGroup = groups.find(group => group.type === activeType) || groups[0];
-  const canSplit = Boolean(groups.find(group => group.type === 'student') && groups.find(group => group.type === 'model'));
+  const compareGroups = groups.filter(group => group.type === 'student' || group.type === 'model' || group.type === 'question');
+  const canCompare = compareGroups.length > 1;
+  const compareGroup = compareGroups.find(group => group.type === compareType) || compareGroups[0];
 
   if (slides.length === 0 || !activeGroup) {
     return (
@@ -62,7 +65,7 @@ export function PaperFileViewer({
   }
 
   const openGroup = (group: DocumentGroup) => {
-    setSplitMode(false);
+    setCompareMode(false);
     onSelectIndex(group.firstIndex);
   };
 
@@ -73,31 +76,36 @@ export function PaperFileViewer({
           {groups.map(group => (
             <TouchableOpacity
               key={group.type}
-              style={[styles.documentTab, !splitMode && activeGroup.type === group.type && styles.activeDocumentTab]}
+              style={[styles.documentTab, !compareMode && activeGroup.type === group.type && styles.activeDocumentTab]}
               onPress={() => openGroup(group)}
               activeOpacity={0.8}
             >
-              <Text style={[styles.documentTabText, !splitMode && activeGroup.type === group.type && styles.activeDocumentTabText]}>
+              <Text style={[styles.documentTabText, !compareMode && activeGroup.type === group.type && styles.activeDocumentTabText]}>
                 {group.title}
               </Text>
             </TouchableOpacity>
           ))}
-          {canSplit ? (
+          {canCompare ? (
             <TouchableOpacity
-              style={[styles.documentTab, splitMode && styles.activeDocumentTab]}
-              onPress={() => setSplitMode(value => !value)}
+              style={[styles.documentTab, compareMode && styles.activeDocumentTab]}
+              onPress={() => {
+                setCompareMode(value => !value);
+                setCompareType(activeGroup.type === 'other' ? 'student' : activeGroup.type);
+              }}
               activeOpacity={0.8}
             >
-              <Ionicons name="git-compare-outline" size={14} color={splitMode ? '#fff' : '#E7E7E7'} />
-              <Text style={[styles.documentTabText, splitMode && styles.activeDocumentTabText]}>Split</Text>
+              <Ionicons name="git-compare-outline" size={14} color={compareMode ? '#fff' : '#E7E7E7'} />
+              <Text style={[styles.documentTabText, compareMode && styles.activeDocumentTabText]}>Compare</Text>
             </TouchableOpacity>
           ) : null}
         </ScrollView>
       </View>
 
-      {splitMode ? (
-        <SplitDocumentView
-          groups={groups}
+      {compareMode && compareGroup ? (
+        <CompareDocumentView
+          groups={compareGroups}
+          activeType={compareGroup.type}
+          onSelectType={setCompareType}
           failedImageIds={failedImageIds}
           onImageError={onImageError}
           onRetry={onRetry}
@@ -114,59 +122,41 @@ export function PaperFileViewer({
   );
 }
 
-function SplitDocumentView({
+function CompareDocumentView({
   groups,
+  activeType,
+  onSelectType,
   failedImageIds,
   onImageError,
   onRetry,
 }: {
   groups: DocumentGroup[];
+  activeType: DocumentType;
+  onSelectType: (type: DocumentType) => void;
   failedImageIds: Record<string, boolean>;
   onImageError: (slideId: string) => void;
   onRetry: () => void;
 }) {
-  const studentGroup = groups.find(group => group.type === 'student');
-  const modelGroup = groups.find(group => group.type === 'model');
+  const activeGroup = groups.find(group => group.type === activeType) || groups[0];
 
   return (
-    <View style={styles.splitContainer}>
-      {studentGroup ? (
-        <SplitPane
-          group={studentGroup}
-          failedImageIds={failedImageIds}
-          onImageError={onImageError}
-          onRetry={onRetry}
-        />
-      ) : null}
-      {modelGroup ? (
-        <SplitPane
-          group={modelGroup}
-          failedImageIds={failedImageIds}
-          onImageError={onImageError}
-          onRetry={onRetry}
-        />
-      ) : null}
-    </View>
-  );
-}
-
-function SplitPane({
-  group,
-  failedImageIds,
-  onImageError,
-  onRetry,
-}: {
-  group: DocumentGroup;
-  failedImageIds: Record<string, boolean>;
-  onImageError: (slideId: string) => void;
-  onRetry: () => void;
-}) {
-  return (
-    <View style={styles.splitPane}>
-      <Text style={styles.splitTitle}>{group.title}</Text>
+    <View style={styles.compareContainer}>
+      <View style={styles.compareTabs}>
+        {groups.map(group => (
+          <TouchableOpacity
+            key={group.type}
+            style={[styles.compareTab, activeGroup.type === group.type && styles.activeCompareTab]}
+            onPress={() => onSelectType(group.type)}
+            activeOpacity={0.8}
+          >
+            <Text style={[styles.compareTabText, activeGroup.type === group.type && styles.activeCompareTabText]}>
+              {group.title}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
       <DocumentGroupView
-        group={group}
-        compact
+        group={activeGroup}
         failedImageIds={failedImageIds}
         onImageError={onImageError}
         onRetry={onRetry}
@@ -333,11 +323,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#101010',
     borderBottomColor: '#272727',
     borderBottomWidth: 1,
-    paddingVertical: 9,
+    paddingVertical: 7,
   },
   documentTabs: {
-    gap: 8,
-    paddingHorizontal: 14,
+    gap: 7,
+    paddingHorizontal: 10,
   },
   documentTab: {
     alignItems: 'center',
@@ -346,9 +336,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     flexDirection: 'row',
     gap: 6,
-    minHeight: 38,
-    paddingHorizontal: 13,
-    paddingVertical: 8,
+    minHeight: 34,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
   },
   activeDocumentTab: {
     backgroundColor: COLORS.primary,
@@ -366,9 +356,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   documentContent: {
-    gap: 14,
-    padding: 12,
-    paddingBottom: 28,
+    gap: 12,
+    padding: 9,
+    paddingBottom: 24,
   },
   compactDocumentContent: {
     padding: 8,
@@ -377,7 +367,7 @@ const styles = StyleSheet.create({
   pageFrame: {
     backgroundColor: '#0E0E0E',
     borderColor: '#2A2A2A',
-    borderRadius: 12,
+    borderRadius: 10,
     borderWidth: 1,
     overflow: 'hidden',
   },
@@ -394,32 +384,49 @@ const styles = StyleSheet.create({
   },
   webView: {
     backgroundColor: '#111',
-    height: Math.max(520, SCREEN_WIDTH * 1.35),
+    height: Math.max(560, SCREEN_WIDTH * 1.48),
     width: '100%',
   },
   compactWebView: {
     height: 310,
   },
-  splitContainer: {
+  compareContainer: {
     flex: 1,
-    gap: 10,
-    padding: 10,
   },
-  splitPane: {
-    backgroundColor: '#0E0E0E',
-    borderColor: '#2A2A2A',
-    borderRadius: 14,
+  compareTabs: {
+    backgroundColor: '#141414',
+    borderBottomColor: '#272727',
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+    gap: 7,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  compareTab: {
+    alignItems: 'center',
+    borderColor: '#333',
+    borderRadius: 999,
     borderWidth: 1,
     flex: 1,
-    minHeight: 0,
-    overflow: 'hidden',
+    justifyContent: 'center',
+    minHeight: 34,
+    paddingHorizontal: 8,
   },
-  splitTitle: {
-    color: '#F5F5F5',
-    fontSize: 13,
-    fontWeight: '900',
-    paddingHorizontal: 12,
-    paddingTop: 10,
+  activeCompareTab: {
+    backgroundColor: '#F5F5F5',
+    borderColor: '#F5F5F5',
+  },
+  compareTabText: {
+    color: '#E7E7E7',
+    fontSize: 11,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  activeCompareTabText: {
+    color: '#111',
+  },
+  splitContainer: {
+    flex: 1,
   },
   emptyContainer: {
     alignItems: 'center',

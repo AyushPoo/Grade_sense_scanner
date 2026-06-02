@@ -63,11 +63,20 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="insights"
+        options={{
+          title: 'Insights',
+          tabBarIcon: ({ color, focused }) => (
+            <TabIcon name={focused ? 'bar-chart' : 'bar-chart-outline'} color={color} focused={focused} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="manage"
         options={{
           title: 'Manage',
           tabBarIcon: ({ color, focused }) => (
-            <TabIcon name={focused ? 'bar-chart' : 'bar-chart-outline'} color={color} focused={focused} />
+            <TabIcon name={focused ? 'settings' : 'settings-outline'} color={color} focused={focused} />
           ),
         }}
       />

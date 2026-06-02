@@ -594,8 +594,10 @@ export default function ReviewGradingScreen() {
           {activeTab === 'sheet' ? (
             sheetMode === 'answer' ? (
               <StudentAnswerSheetPanel
-                activeScore={activeScore}
+                scores={scores}
+                activeScoreIndex={activeScoreIndex}
                 fileSlides={fileSlides}
+                onSelectScore={setActiveScoreIndex}
                 onOpenFileType={handleOpenFileType}
               />
             ) : (
@@ -721,26 +723,26 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     backgroundColor: COLORS.surface,
-    paddingHorizontal: 14,
-    paddingVertical: 11,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.borderLight,
   },
   backButton: {
-    padding: 8,
+    padding: 7,
   },
   headerCenter: {
     alignItems: 'center',
     flex: 1,
   },
   headerTitle: {
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: '800',
     color: COLORS.text,
     textAlign: 'center',
   },
   headerSubtitle: {
-    fontSize: 12,
+    fontSize: 11,
     color: COLORS.textLight,
     marginTop: 2,
   },
@@ -752,13 +754,13 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     borderBottomColor: COLORS.borderLight,
     borderBottomWidth: 1,
-    paddingHorizontal: 16,
-    paddingVertical: 13,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
   switchArrow: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     backgroundColor: COLORS.backgroundDark,
     justifyContent: 'center',
     alignItems: 'center',
@@ -781,16 +783,16 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '800',
     letterSpacing: 0.8,
-    marginBottom: 2,
+    marginBottom: 1,
     textTransform: 'uppercase',
   },
   studentName: {
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '800',
     color: COLORS.text,
   },
   studentRoll: {
-    fontSize: 12,
+    fontSize: 11,
     color: COLORS.textLight,
     marginTop: 2,
   },
@@ -801,8 +803,8 @@ const styles = StyleSheet.create({
     borderBottomColor: COLORS.borderLight,
     borderBottomWidth: 1,
     gap: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
   tab: {
     flex: 1,
@@ -810,14 +812,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     gap: 6,
-    borderRadius: 14,
-    paddingVertical: 11,
+    borderRadius: 12,
+    paddingVertical: 9,
   },
   activeTab: {
     backgroundColor: COLORS.primaryXLight,
   },
   tabText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
     color: COLORS.textLight,
   },
@@ -847,8 +849,8 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     flexDirection: 'row',
     gap: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
   answerTextButtonText: {
     color: COLORS.primary,
@@ -873,8 +875,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 4,
     backgroundColor: COLORS.primary,
-    paddingHorizontal: 13,
-    paddingVertical: 7,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
     borderRadius: 999,
     shadowColor: COLORS.primary,
     shadowOffset: { width: 0, height: 2 },

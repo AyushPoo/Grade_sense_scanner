@@ -292,6 +292,29 @@ test('grading control opens teacher notes in a dedicated editor modal', () => {
   assert.equal(panelSource.includes('KeyboardAvoidingView'), false);
 });
 
+test('student answer sheet renders every graded question and compact file shortcuts', () => {
+  const panelSource = fs.readFileSync(
+    path.join(__dirname, '..', 'src/components/review/StudentAnswerSheetPanel.tsx'),
+    'utf8'
+  );
+
+  assert.equal(panelSource.includes('scores.map'), true);
+  assert.equal(panelSource.includes('onSelectScore(index)'), true);
+  assert.equal(panelSource.includes('label="Question"'), true);
+  assert.equal(panelSource.includes('Student-answer text is not stored'), true);
+});
+
+test('paper viewer uses readable compare mode instead of cramped split panes', () => {
+  const viewerSource = fs.readFileSync(
+    path.join(__dirname, '..', 'src/components/review/PaperFileViewer.tsx'),
+    'utf8'
+  );
+
+  assert.equal(viewerSource.includes('CompareDocumentView'), true);
+  assert.equal(viewerSource.includes('>Split<'), false);
+  assert.equal(viewerSource.includes('compactWebView'), true);
+});
+
 test('legacy upload subject selector can create subjects on mobile', () => {
   const uploadSource = fs.readFileSync(path.join(__dirname, '..', 'app/upload.tsx'), 'utf8');
 

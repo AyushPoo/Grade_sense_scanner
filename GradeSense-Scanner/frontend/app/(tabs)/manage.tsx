@@ -166,7 +166,7 @@ export default function ManageScreen() {
   const token = useAuthStore(s => s.sessionToken);
   const { savedSessions } = useScanStore();
 
-  const [activeTab, setActiveTab] = useState<'analytics' | 'exams' | 'classroom' | 'brain' | 'reevaluation'>('analytics');
+  const [activeTab, setActiveTab] = useState<'analytics' | 'exams' | 'classroom' | 'brain' | 'reevaluation'>('exams');
   const [overview, setOverview] = useState<TeacherOverview | null>(null);
   const [performance, setPerformance] = useState<ManagePerformance | null>(null);
   const [managedExams, setManagedExams] = useState<ManagedExam[]>([]);
@@ -683,9 +683,7 @@ export default function ManageScreen() {
         <View>
           <Text style={styles.headerTitle}>Manage</Text>
           <Text style={styles.headerSub}>
-            {activeTab === 'analytics'
-              ? 'Synced grading insights'
-              : activeTab === 'exams'
+            {activeTab === 'exams'
                 ? 'Publish, close, and review exams'
                 : activeTab === 'classroom'
                   ? 'Manage batches and students'
@@ -706,22 +704,6 @@ export default function ManageScreen() {
         style={styles.segmentScroll}
         contentContainerStyle={styles.segmentContainer}
       >
-        <TouchableOpacity
-          style={[styles.segmentBtn, activeTab === 'analytics' && styles.segmentBtnActive]}
-          onPress={() => setActiveTab('analytics')}
-          activeOpacity={0.8}
-        >
-          <Ionicons 
-            name={activeTab === 'analytics' ? 'bar-chart' : 'bar-chart-outline'} 
-            size={16} 
-            color={activeTab === 'analytics' ? '#fff' : COLORS.textLight} 
-            style={{ marginRight: 6 }}
-          />
-          <Text style={[styles.segmentText, activeTab === 'analytics' && styles.segmentTextActive]}>
-            Insights
-          </Text>
-        </TouchableOpacity>
-
         <TouchableOpacity
           style={[styles.segmentBtn, activeTab === 'exams' && styles.segmentBtnActive]}
           onPress={() => setActiveTab('exams')}
@@ -751,22 +733,6 @@ export default function ManageScreen() {
           />
           <Text style={[styles.segmentText, activeTab === 'classroom' && styles.segmentTextActive]}>
             Roster
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.segmentBtn, activeTab === 'brain' && styles.segmentBtnActive]}
-          onPress={() => setActiveTab('brain')}
-          activeOpacity={0.8}
-        >
-          <Ionicons
-            name={activeTab === 'brain' ? 'bulb' : 'bulb-outline'}
-            size={16}
-            color={activeTab === 'brain' ? '#fff' : COLORS.textLight}
-            style={{ marginRight: 6 }}
-          />
-          <Text style={[styles.segmentText, activeTab === 'brain' && styles.segmentTextActive]}>
-            AI Brain
           </Text>
         </TouchableOpacity>
 
@@ -1319,18 +1285,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     backgroundColor: COLORS.background,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.borderLight,
   },
-  headerTitle: { fontSize: 26, fontWeight: '800', color: COLORS.text },
-  headerSub: { fontSize: 13, color: COLORS.textMuted, marginTop: 2 },
+  headerTitle: { fontSize: 23, fontWeight: '800', color: COLORS.text },
+  headerSub: { fontSize: 12, color: COLORS.textMuted, marginTop: 1 },
   refreshBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: COLORS.primaryXLight,
     justifyContent: 'center',
     alignItems: 'center',
@@ -1344,8 +1310,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     backgroundColor: COLORS.surfaceElevated,
     borderRadius: 12,
-    marginHorizontal: 16,
-    marginTop: 14,
+    marginHorizontal: 12,
+    marginTop: 12,
     marginBottom: 6,
     padding: 3,
   },
@@ -1353,9 +1319,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-    minWidth: 106,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    minWidth: 96,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
     borderRadius: 9,
   },
   segmentBtnActive: {
@@ -1367,7 +1333,7 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   segmentText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
     color: COLORS.textLight,
   },
