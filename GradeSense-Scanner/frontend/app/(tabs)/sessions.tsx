@@ -19,6 +19,9 @@ import { COLORS, getBackendUrl } from '../../src/config';
 import { useScanStore } from '../../src/store/scanStore';
 import { useAuthStore } from '../../src/store/authStore';
 import { ScanSession } from '../../src/types';
+import { fetchManagedExams } from '../../src/api/manage';
+import { ManagedExam } from '../../src/utils/manageData';
+import { isReviewReadyExam } from '../../src/utils/gradingLifecycle';
 
 // Enable layout animation for Android
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -64,8 +67,10 @@ export default function SessionsScreen() {
   const token = useAuthStore(s => s.sessionToken);
   const { savedSessions, deleteSession, fetchSessions } = useScanStore();
 
-  const [activeTab, setActiveTab] = useState<'drafts' | 'batches'>('drafts');
+  const [activeTab, setActiveTab] = useState<'drafts' | 'review' | 'batches'>('review');
   const [refreshing, setRefreshing] = useState(false);
+  const [reviewExams, setReviewExams] = useState<ManagedExam[]>([]);
+  const [loadingReviewExams, setLoadingReviewExams] = useState(false);
   
   // Batches state
   const [batches, setBatches] = useState<Batch[]>([]);
@@ -75,6 +80,20 @@ export default function SessionsScreen() {
   const [loadingExams, setLoadingExams] = useState<string | null>(null);
 
   const sessions = Array.isArray(savedSessions) ? savedSessions : [];
+
+  const loadReviewExams = useCallback(async () => {
+    if (!token) return;
+    setLoadingReviewExams(true);
+    try {
+      const exams = await fetchManagedExams({ backendUrl: getBackendUrl(), token });
+      setReviewExams(exams.filter(exam => isReviewReadyExam(exam)));
+    } catch (err) {
+      console.error('Error fetching review-ready exams:', err);
+    } finally {
+      setLoadingReviewExams(false);
+      setRefreshing(false);
+    }
+  }, [token]);
 
   const loadBatches = useCallback(async () => {
     if (!token) return;
@@ -99,10 +118,12 @@ export default function SessionsScreen() {
 
   useEffect(() => {
     fetchSessions().catch(() => {});
-    if (activeTab === 'batches') {
+    if (activeTab === 'review') {
+      loadReviewExams();
+    } else if (activeTab === 'batches') {
       loadBatches();
     }
-  }, [activeTab, fetchSessions, loadBatches]);
+  }, [activeTab, fetchSessions, loadBatches, loadReviewExams]);
 
   const loadExamsForBatch = async (batchId: string) => {
     if (!token) return;
@@ -138,6 +159,8 @@ export default function SessionsScreen() {
     setRefreshing(true);
     if (activeTab === 'drafts') {
       try { await fetchSessions(); } catch { /* silent */ } finally { setRefreshing(false); }
+    } else if (activeTab === 'review') {
+      await loadReviewExams();
     } else {
       await loadBatches();
       if (expandedBatchId) {
@@ -291,6 +314,28 @@ export default function SessionsScreen() {
     );
   };
 
+  const renderReviewExamItem = ({ item }: { item: ManagedExam }) => (
+    <TouchableOpacity
+      style={styles.reviewExamCard}
+      onPress={() => router.push({ pathname: '/review-grading' as any, params: { examId: item.id, sessionName: item.name } })}
+      activeOpacity={0.82}
+    >
+      <View style={styles.reviewExamIcon}>
+        <Ionicons name="checkbox-outline" size={21} color={COLORS.success} />
+      </View>
+      <View style={styles.reviewExamBody}>
+        <Text style={styles.reviewExamTitle} numberOfLines={1}>{item.name}</Text>
+        <Text style={styles.reviewExamMeta}>
+          {item.submissionCount} papers · {item.averagePercentage ? `${item.averagePercentage}% avg` : `${item.totalMarks || 0} marks`}
+        </Text>
+      </View>
+      <View style={styles.reviewExamCTA}>
+        <Text style={styles.reviewExamCTAText}>Review</Text>
+        <Ionicons name="chevron-forward" size={13} color="#fff" />
+      </View>
+    </TouchableOpacity>
+  );
+
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
       {/* Header */}
@@ -298,10 +343,11 @@ export default function SessionsScreen() {
         <View>
           <Text style={styles.headerTitle}>Sessions</Text>
           <Text style={styles.headerSub}>
-            {activeTab === 'drafts' 
-              ? `${sessions.length} local draft${sessions.length !== 1 ? 's' : ''}` 
-              : `${batches.length} active class${batches.length !== 1 ? 'es' : ''}`
-            }
+            {activeTab === 'drafts'
+              ? `${sessions.length} local draft${sessions.length !== 1 ? 's' : ''}`
+              : activeTab === 'review'
+                ? `${reviewExams.length} exam${reviewExams.length !== 1 ? 's' : ''} ready`
+                : `${batches.length} active class${batches.length !== 1 ? 'es' : ''}`}
           </Text>
         </View>
         <TouchableOpacity style={styles.newBtn} onPress={() => router.push('/session-setup')} activeOpacity={0.82}>
@@ -325,6 +371,22 @@ export default function SessionsScreen() {
           />
           <Text style={[styles.segmentText, activeTab === 'drafts' && styles.segmentTextActive]}>
             Local Drafts
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.segmentBtn, activeTab === 'review' && styles.segmentBtnActive]}
+          onPress={() => setActiveTab('review')}
+          activeOpacity={0.8}
+        >
+          <Ionicons
+            name={activeTab === 'review' ? 'checkbox' : 'checkbox-outline'}
+            size={16}
+            color={activeTab === 'review' ? '#fff' : COLORS.textLight}
+            style={{ marginRight: 6 }}
+          />
+          <Text style={[styles.segmentText, activeTab === 'review' && styles.segmentTextActive]}>
+            Review
           </Text>
         </TouchableOpacity>
         
@@ -363,6 +425,37 @@ export default function SessionsScreen() {
             data={sessions}
             keyExtractor={item => item.session_id}
             renderItem={renderDraftItem}
+            contentContainerStyle={styles.listPad}
+            showsVerticalScrollIndicator={false}
+            ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
+            refreshControl={
+              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} />
+            }
+          />
+        )
+      ) : activeTab === 'review' ? (
+        loadingReviewExams ? (
+          <View style={styles.loader}>
+            <ActivityIndicator size="large" color={COLORS.primary} />
+            <Text style={styles.loaderText}>Loading review-ready exams...</Text>
+          </View>
+        ) : reviewExams.length === 0 ? (
+          <View style={styles.empty}>
+            <View style={styles.emptyIcon}>
+              <Ionicons name="checkbox-outline" size={52} color={COLORS.textMuted} />
+            </View>
+            <Text style={styles.emptyTitle}>No exams ready yet</Text>
+            <Text style={styles.emptySub}>Graded papers will appear here automatically after AI grading completes.</Text>
+            <TouchableOpacity style={styles.emptyCTA} onPress={() => router.push('/session-setup')} activeOpacity={0.82}>
+              <Ionicons name="scan" size={18} color="#fff" />
+              <Text style={styles.emptyCTAText}>New Scan Session</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <FlatList
+            data={reviewExams}
+            keyExtractor={item => item.id}
+            renderItem={renderReviewExamItem}
             contentContainerStyle={styles.listPad}
             showsVerticalScrollIndicator={false}
             ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
@@ -555,6 +648,57 @@ const styles = StyleSheet.create({
     marginLeft: 8,
   },
   reviewCTAText: { color: COLORS.primary, fontSize: 12, fontWeight: '700' },
+
+  reviewExamCard: {
+    alignItems: 'center',
+    backgroundColor: COLORS.surface,
+    borderColor: COLORS.borderLight,
+    borderRadius: 16,
+    borderWidth: 1,
+    elevation: 2,
+    flexDirection: 'row',
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+  },
+  reviewExamIcon: {
+    alignItems: 'center',
+    backgroundColor: COLORS.successLight,
+    borderRadius: 14,
+    height: 48,
+    justifyContent: 'center',
+    marginRight: 12,
+    width: 48,
+  },
+  reviewExamBody: {
+    flex: 1,
+  },
+  reviewExamTitle: {
+    color: COLORS.text,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  reviewExamMeta: {
+    color: COLORS.textMuted,
+    fontSize: 12,
+    marginTop: 3,
+  },
+  reviewExamCTA: {
+    alignItems: 'center',
+    backgroundColor: COLORS.primary,
+    borderRadius: 999,
+    flexDirection: 'row',
+    gap: 4,
+    paddingHorizontal: 13,
+    paddingVertical: 8,
+  },
+  reviewExamCTAText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '800',
+  },
 
   // Batches list items
   batchCard: {

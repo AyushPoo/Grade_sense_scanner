@@ -11,6 +11,8 @@ export interface ManagedExam {
   resultsPublished: boolean;
   publishedAt: string | null;
   submissionCount: number;
+  gradedSubmissionCount: number;
+  reviewReady: boolean;
   averagePercentage: number;
 }
 
@@ -90,6 +92,8 @@ export function normalizeManagedExams(rows: unknown): ManagedExam[] {
         resultsPublished: readBoolean(item.resultsPublished ?? item.results_published),
         publishedAt: readNullableString(item.publishedAt ?? item.published_at),
         submissionCount: readNumber(item.submissionCount ?? item.submission_count),
+        gradedSubmissionCount: readNumber(item.gradedSubmissionCount ?? item.graded_submission_count),
+        reviewReady: readBoolean(item.reviewReady ?? item.review_ready),
         averagePercentage: rounded(item.averagePercentage ?? item.average_percentage),
       };
     })

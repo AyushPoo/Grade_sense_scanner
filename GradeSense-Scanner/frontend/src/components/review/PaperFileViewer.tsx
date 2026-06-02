@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   Dimensions,
+  Linking,
   ScrollView,
   StyleSheet,
   Text,
@@ -104,8 +105,6 @@ export function PaperFileViewer({
       {compareMode && compareGroup ? (
         <CompareDocumentView
           groups={compareGroups}
-          activeType={compareGroup.type}
-          onSelectType={setCompareType}
           failedImageIds={failedImageIds}
           onImageError={onImageError}
           onRetry={onRetry}
@@ -124,47 +123,60 @@ export function PaperFileViewer({
 
 function CompareDocumentView({
   groups,
-  activeType,
-  onSelectType,
   failedImageIds,
   onImageError,
   onRetry,
 }: {
   groups: DocumentGroup[];
-  activeType: DocumentType;
-  onSelectType: (type: DocumentType) => void;
   failedImageIds: Record<string, boolean>;
   onImageError: (slideId: string) => void;
   onRetry: () => void;
 }) {
-  const activeGroup = groups.find(group => group.type === activeType) || groups[0];
-
   return (
-    <View style={styles.compareContainer}>
-      <View style={styles.compareTabs}>
-        {groups.map(group => (
-          <TouchableOpacity
-            key={group.type}
-            style={[styles.compareTab, activeGroup.type === group.type && styles.activeCompareTab]}
-            onPress={() => onSelectType(group.type)}
-            activeOpacity={0.8}
-          >
-            <Text style={[styles.compareTabText, activeGroup.type === group.type && styles.activeCompareTabText]}>
-              {group.title}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-      <DocumentGroupView
-        group={activeGroup}
-        failedImageIds={failedImageIds}
-        onImageError={onImageError}
-        onRetry={onRetry}
-      />
-    </View>
+    <ScrollView
+      style={styles.documentScroll}
+      contentContainerStyle={styles.compareContent}
+      showsVerticalScrollIndicator={false}
+      nestedScrollEnabled
+    >
+      {groups.map(group => (
+        <View key={group.type} style={styles.compareSection}>
+          <View style={styles.compareSectionHeader}>
+            <Ionicons name={getGroupIcon(group.type)} size={16} color={COLORS.primary} />
+            <Text style={styles.compareSectionTitle}>{group.title}</Text>
+          </View>
+          {group.slides.map((slide, index) => (
+            <View key={slide.id} style={styles.pageFrame}>
+              <Text style={styles.pageLabel}>
+                {group.slides.length > 1 ? `${group.title} · Page ${index + 1}` : group.title}
+              </Text>
+              <PaperPage
+                slide={slide}
+                compact={false}
+                hasError={Boolean(failedImageIds[slide.id])}
+                onImageError={onImageError}
+                onRetry={onRetry}
+              />
+            </View>
+          ))}
+        </View>
+      ))}
+    </ScrollView>
   );
 }
 
+function getGroupIcon(type: DocumentType): React.ComponentProps<typeof Ionicons>['name'] {
+  switch (type) {
+    case 'student':
+      return 'document-text-outline';
+    case 'model':
+      return 'checkmark-done-outline';
+    case 'question':
+      return 'newspaper-outline';
+    default:
+      return 'document-outline';
+  }
+}
 function DocumentGroupView({
   group,
   compact = false,
@@ -217,17 +229,30 @@ function PaperPage({
   onRetry: () => void;
 }) {
   const imageUrl = slide.annotationSignedUrl || slide.signedUrl;
+  const openExternal = () => {
+    if (imageUrl) {
+      Linking.openURL(imageUrl).catch(() => onRetry());
+    }
+  };
 
   if (!imageUrl || hasError) {
     return (
       <View style={[styles.pageError, compact && styles.compactPageError]}>
         <Ionicons name="warning-outline" size={42} color={COLORS.textMuted} />
         <Text style={styles.emptyTitle}>{slide.title} not loaded</Text>
-        <Text style={styles.emptyText}>The signed file link may have expired.</Text>
-        <TouchableOpacity style={styles.retryButton} onPress={onRetry}>
-          <Ionicons name="refresh" size={16} color="#fff" />
-          <Text style={styles.retryText}>Refresh file</Text>
-        </TouchableOpacity>
+        <Text style={styles.emptyText}>The signed file link may have expired or the PDF viewer could not render it.</Text>
+        <View style={styles.recoveryRow}>
+          <TouchableOpacity style={styles.retryButton} onPress={onRetry}>
+            <Ionicons name="refresh" size={16} color="#fff" />
+            <Text style={styles.retryText}>Refresh</Text>
+          </TouchableOpacity>
+          {imageUrl ? (
+            <TouchableOpacity style={styles.openButton} onPress={openExternal}>
+              <Ionicons name="open-outline" size={16} color="#E7E7E7" />
+              <Text style={styles.openButtonText}>Open file</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
       </View>
     );
   }
@@ -235,18 +260,30 @@ function PaperPage({
   const uri = isPdfSlide(slide, imageUrl) ? buildPdfViewerUrl(imageUrl) : buildZoomableImageHtml(imageUrl);
 
   return (
-    <WebView
-      key={`${slide.id}-${imageUrl}`}
-      originWhitelist={['*']}
-      source={isPdfSlide(slide, imageUrl) ? { uri } : { html: uri, baseUrl: '' }}
-      style={[styles.webView, compact && styles.compactWebView]}
-      startInLoadingState
-      nestedScrollEnabled
-      setSupportZoom
-      scalesPageToFit
-      onError={() => onImageError(slide.id)}
-      onHttpError={() => onImageError(slide.id)}
-    />
+    <View>
+      <WebView
+        key={`${slide.id}-${imageUrl}`}
+        originWhitelist={['*']}
+        source={isPdfSlide(slide, imageUrl) ? { uri } : { html: uri, baseUrl: '' }}
+        style={[styles.webView, compact && styles.compactWebView]}
+        startInLoadingState
+        nestedScrollEnabled
+        setSupportZoom
+        scalesPageToFit
+        onError={() => onImageError(slide.id)}
+        onHttpError={() => onImageError(slide.id)}
+      />
+      <View style={styles.pageActions}>
+        <TouchableOpacity style={styles.pageActionButton} onPress={onRetry}>
+          <Ionicons name="refresh" size={14} color="#E7E7E7" />
+          <Text style={styles.pageActionText}>Refresh link</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.pageActionButton} onPress={openExternal}>
+          <Ionicons name="open-outline" size={14} color="#E7E7E7" />
+          <Text style={styles.pageActionText}>Open source</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
   );
 }
 
@@ -360,6 +397,30 @@ const styles = StyleSheet.create({
     padding: 9,
     paddingBottom: 24,
   },
+  compareContent: {
+    gap: 12,
+    padding: 9,
+    paddingBottom: 24,
+  },
+  compareSection: {
+    gap: 9,
+  },
+  compareSectionHeader: {
+    alignItems: 'center',
+    backgroundColor: '#171717',
+    borderColor: '#303030',
+    borderRadius: 999,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 7,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  compareSectionTitle: {
+    color: '#F5F5F5',
+    fontSize: 12,
+    fontWeight: '900',
+  },
   compactDocumentContent: {
     padding: 8,
     paddingBottom: 12,
@@ -470,5 +531,49 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 13,
     fontWeight: '700',
+  },
+  recoveryRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  openButton: {
+    alignItems: 'center',
+    borderColor: '#333',
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+  },
+  openButtonText: {
+    color: '#E7E7E7',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  pageActions: {
+    backgroundColor: '#101010',
+    borderTopColor: '#252525',
+    borderTopWidth: 1,
+    flexDirection: 'row',
+    gap: 8,
+    padding: 8,
+  },
+  pageActionButton: {
+    alignItems: 'center',
+    borderColor: '#333',
+    borderRadius: 999,
+    borderWidth: 1,
+    flex: 1,
+    flexDirection: 'row',
+    gap: 5,
+    justifyContent: 'center',
+    minHeight: 34,
+  },
+  pageActionText: {
+    color: '#E7E7E7',
+    fontSize: 11,
+    fontWeight: '800',
   },
 });

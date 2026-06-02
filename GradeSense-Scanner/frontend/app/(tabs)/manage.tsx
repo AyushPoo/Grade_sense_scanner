@@ -170,7 +170,7 @@ export default function ManageScreen() {
   const [overview, setOverview] = useState<TeacherOverview | null>(null);
   const [performance, setPerformance] = useState<ManagePerformance | null>(null);
   const [managedExams, setManagedExams] = useState<ManagedExam[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
   const [loadingPerformance, setLoadingPerformance] = useState(false);
   const [loadingExams, setLoadingExams] = useState(false);
   const [refreshing, setRefreshing] = useState(false);

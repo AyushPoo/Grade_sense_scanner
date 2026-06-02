@@ -311,8 +311,33 @@ test('paper viewer uses readable compare mode instead of cramped split panes', (
   );
 
   assert.equal(viewerSource.includes('CompareDocumentView'), true);
+  assert.equal(viewerSource.includes('Open source'), true);
+  assert.equal(viewerSource.includes('Refresh link'), true);
   assert.equal(viewerSource.includes('>Split<'), false);
   assert.equal(viewerSource.includes('compactWebView'), true);
+});
+
+test('manage screen renders operational tabs without waiting on analytics loader', () => {
+  const manageSource = fs.readFileSync(path.join(__dirname, '..', 'app/(tabs)/manage.tsx'), 'utf8');
+
+  assert.equal(manageSource.includes("useState(false)"), true);
+  assert.equal(manageSource.includes("useState<'analytics' | 'exams' | 'classroom' | 'brain' | 'reevaluation'>('exams')"), true);
+});
+
+test('sessions screen exposes a dedicated review-ready exams tab', () => {
+  const sessionsSource = fs.readFileSync(path.join(__dirname, '..', 'app/(tabs)/sessions.tsx'), 'utf8');
+
+  assert.equal(sessionsSource.includes("useState<'drafts' | 'review' | 'batches'>('review')"), true);
+  assert.equal(sessionsSource.includes('loadReviewExams'), true);
+  assert.equal(sessionsSource.includes('No exams ready yet'), true);
+});
+
+test('insights overview falls back to managed exams when analytics overview is empty', () => {
+  const insightsHookSource = fs.readFileSync(path.join(__dirname, '..', 'src/hooks/useInsightsData.ts'), 'utf8');
+
+  assert.equal(insightsHookSource.includes('mergeOverviewWithExams'), true);
+  assert.equal(insightsHookSource.includes('buildOverviewFromExams'), true);
+  assert.equal(insightsHookSource.includes('fetchManagedExams'), true);
 });
 
 test('legacy upload subject selector can create subjects on mobile', () => {
