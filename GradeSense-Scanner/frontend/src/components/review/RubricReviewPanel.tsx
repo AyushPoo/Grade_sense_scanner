@@ -1,14 +1,22 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../../config';
 import type { ScoreItem } from '../../types/review';
+import { ReviewDensityControl } from './ReviewDensityControl';
+import {
+  getReviewDensityConfig,
+  ReviewDensity,
+  ReviewDensityConfig,
+} from '../../utils/reviewDensity';
 
 interface RubricReviewPanelProps {
   scores: ScoreItem[];
   activeScoreIndex: number;
   feedbackEnabled: boolean;
+  density: ReviewDensity;
   onSelectScore: (index: number) => void;
+  onDensityChange: (density: ReviewDensity) => void;
   onImproveAI?: () => void;
   isImprovingAI?: boolean;
 }
@@ -17,28 +25,45 @@ export function RubricReviewPanel({
   scores,
   activeScoreIndex,
   feedbackEnabled,
+  density,
   onSelectScore,
+  onDensityChange,
   onImproveAI,
   isImprovingAI = false,
 }: RubricReviewPanelProps) {
   const activeScore = scores[activeScoreIndex];
+  const densityConfig = useMemo(() => getReviewDensityConfig(density), [density]);
+  const densityStyles = useMemo(() => createDensityStyles(densityConfig), [densityConfig]);
 
   return (
     <View style={styles.container}>
-      <View style={styles.questionListPanel}>
-        <Text style={styles.sectionTitle}>QUESTIONS</Text>
+      <View style={[styles.questionListPanel, densityStyles.questionListPanel]}>
+        <View style={styles.questionToolbar}>
+          <Text style={[styles.sectionTitle, densityStyles.sectionTitle]}>QUESTIONS</Text>
+          <ReviewDensityControl value={density} onChange={onDensityChange} />
+        </View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.questionListContent}>
           {scores.map((score, index) => (
             <TouchableOpacity
               key={score.id}
-              style={[styles.questionRow, activeScoreIndex === index && styles.activeQuestionRow]}
+              style={[
+                styles.questionRow,
+                densityStyles.questionRow,
+                activeScoreIndex === index && styles.activeQuestionRow,
+              ]}
               onPress={() => onSelectScore(index)}
               activeOpacity={0.8}
             >
-              <Text style={[styles.questionNumber, activeScoreIndex === index && styles.activeQuestionNumber]}>
+              <Text
+                style={[
+                  styles.questionNumber,
+                  densityStyles.questionNumber,
+                  activeScoreIndex === index && styles.activeQuestionNumber,
+                ]}
+              >
                 Q{score.questionNumber}
               </Text>
-              <Text style={styles.questionMarks}>
+              <Text style={[styles.questionMarks, densityStyles.questionMarks]}>
                 {score.obtainedMarks} / {score.maxMarks}
               </Text>
             </TouchableOpacity>
@@ -48,42 +73,42 @@ export function RubricReviewPanel({
 
       <View style={styles.detailPanel}>
         {activeScore ? (
-          <ScrollView contentContainerStyle={styles.detailContent}>
+          <ScrollView contentContainerStyle={[styles.detailContent, densityStyles.detailContent]}>
             <View style={styles.detailHeader}>
               <View style={styles.detailTitleGroup}>
-                <Text style={styles.sectionTitle}>REVIEWING</Text>
-                <Text style={styles.detailTitle}>Question {activeScore.questionNumber}</Text>
+                <Text style={[styles.sectionTitle, densityStyles.sectionTitle]}>REVIEWING</Text>
+                <Text style={[styles.detailTitle, densityStyles.detailTitle]}>Question {activeScore.questionNumber}</Text>
               </View>
-              <View style={styles.scoreChip}>
-                <Text style={styles.scoreChipValue}>{activeScore.obtainedMarks}</Text>
-                <Text style={styles.scoreChipMax}>/ {activeScore.maxMarks}</Text>
+              <View style={[styles.scoreChip, densityStyles.scoreChip]}>
+                <Text style={[styles.scoreChipValue, densityStyles.scoreChipValue]}>{activeScore.obtainedMarks}</Text>
+                <Text style={[styles.scoreChipMax, densityStyles.scoreChipMax]}>/ {activeScore.maxMarks}</Text>
               </View>
             </View>
 
-            <View style={styles.readingBlock}>
-              <Text style={styles.blockLabel}>Question prompt</Text>
-              <Text style={styles.questionText}>{activeScore.questionText || 'No question text extracted.'}</Text>
+            <View style={[styles.readingBlock, densityStyles.readingBlock]}>
+              <Text style={[styles.blockLabel, densityStyles.blockLabel]}>Question prompt</Text>
+              <Text style={[styles.questionText, densityStyles.bodyText]}>{activeScore.questionText || 'No question text extracted.'}</Text>
             </View>
 
             {activeScore.studentAnswerText ? (
-              <View style={styles.readingBlock}>
-                <Text style={styles.blockLabel}>Student answer</Text>
-                <Text style={styles.studentAnswerText}>{activeScore.studentAnswerText}</Text>
+              <View style={[styles.readingBlock, densityStyles.readingBlock]}>
+                <Text style={[styles.blockLabel, densityStyles.blockLabel]}>Student answer</Text>
+                <Text style={[styles.studentAnswerText, densityStyles.bodyText]}>{activeScore.studentAnswerText}</Text>
               </View>
             ) : null}
 
             {feedbackEnabled && activeScore.aiFeedback ? (
-              <View style={styles.feedbackBox}>
+              <View style={[styles.feedbackBox, densityStyles.feedbackBox]}>
                 <View style={styles.feedbackHeader}>
-                  <Ionicons name="sparkles" size={16} color={COLORS.primary} />
-                  <Text style={styles.feedbackTitle}>AI Evaluation Feedback</Text>
+                  <Ionicons name="sparkles" size={density === 'compact' ? 14 : 16} color={COLORS.primary} />
+                  <Text style={[styles.feedbackTitle, densityStyles.feedbackTitle]}>AI Evaluation Feedback</Text>
                 </View>
-                <Text style={styles.feedbackText}>{activeScore.aiFeedback}</Text>
+                <Text style={[styles.feedbackText, densityStyles.feedbackText]}>{activeScore.aiFeedback}</Text>
               </View>
             ) : feedbackEnabled ? (
-              <View style={styles.feedbackBox}>
-                <Text style={styles.feedbackTitle}>AI Evaluation Feedback</Text>
-                <Text style={styles.feedbackText}>No AI feedback is available for this question.</Text>
+              <View style={[styles.feedbackBox, densityStyles.feedbackBox]}>
+                <Text style={[styles.feedbackTitle, densityStyles.feedbackTitle]}>AI Evaluation Feedback</Text>
+                <Text style={[styles.feedbackText, densityStyles.feedbackText]}>No AI feedback is available for this question.</Text>
               </View>
             ) : null}
 
@@ -103,7 +128,7 @@ export function RubricReviewPanel({
           </ScrollView>
         ) : (
           <View style={styles.emptyDetail}>
-            <Text style={styles.feedbackText}>No rubric items found for this paper.</Text>
+            <Text style={[styles.feedbackText, densityStyles.feedbackText]}>No rubric items found for this paper.</Text>
           </View>
         )}
       </View>
@@ -121,16 +146,16 @@ const styles = StyleSheet.create({
     borderBottomColor: COLORS.borderLight,
     borderBottomWidth: 1,
     flexGrow: 0,
-    paddingHorizontal: 14,
-    paddingTop: 10,
-    paddingBottom: 10,
+  },
+  questionToolbar: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 7,
   },
   sectionTitle: {
     color: COLORS.textMuted,
-    fontSize: 10,
     fontWeight: '700',
-    letterSpacing: 1,
-    marginBottom: 7,
   },
   questionListContent: {
     gap: 7,
@@ -142,12 +167,8 @@ const styles = StyleSheet.create({
     borderColor: COLORS.borderLight,
     borderRadius: 12,
     borderWidth: 1,
-    gap: 10,
     flexDirection: 'row',
     justifyContent: 'space-between',
-    minWidth: 88,
-    paddingHorizontal: 11,
-    paddingVertical: 9,
   },
   activeQuestionRow: {
     backgroundColor: '#FFF7F3',
@@ -155,7 +176,6 @@ const styles = StyleSheet.create({
   },
   questionNumber: {
     color: COLORS.text,
-    fontSize: 13,
     fontWeight: '800',
   },
   activeQuestionNumber: {
@@ -163,7 +183,6 @@ const styles = StyleSheet.create({
   },
   questionMarks: {
     color: COLORS.textLight,
-    fontSize: 11,
     fontWeight: '600',
   },
   detailPanel: {
@@ -171,8 +190,6 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   detailContent: {
-    gap: 10,
-    padding: 12,
     paddingBottom: 132,
   },
   detailHeader: {
@@ -186,7 +203,6 @@ const styles = StyleSheet.create({
   },
   detailTitle: {
     color: COLORS.text,
-    fontSize: 18,
     fontWeight: '800',
   },
   scoreChip: {
@@ -196,50 +212,35 @@ const styles = StyleSheet.create({
     borderRadius: 13,
     borderWidth: 1,
     flexDirection: 'row',
-    paddingHorizontal: 11,
-    paddingVertical: 8,
   },
   scoreChipValue: {
     color: COLORS.text,
-    fontSize: 17,
     fontWeight: '900',
   },
   scoreChipMax: {
     color: COLORS.textLight,
-    fontSize: 11,
     fontWeight: '800',
   },
   readingBlock: {
     backgroundColor: COLORS.surface,
     borderColor: COLORS.border,
-    borderRadius: 13,
     borderWidth: 1,
-    padding: 11,
   },
   blockLabel: {
     color: COLORS.textMuted,
-    fontSize: 10,
     fontWeight: '800',
-    letterSpacing: 0.7,
-    marginBottom: 7,
     textTransform: 'uppercase',
   },
   questionText: {
     color: COLORS.text,
-    fontSize: 13,
-    lineHeight: 19,
   },
   studentAnswerText: {
     color: COLORS.text,
-    fontSize: 13,
-    lineHeight: 19,
   },
   feedbackBox: {
     backgroundColor: '#FFF8F5',
     borderColor: `${COLORS.primary}24`,
-    borderRadius: 13,
     borderWidth: 1,
-    padding: 11,
   },
   feedbackHeader: {
     alignItems: 'center',
@@ -249,13 +250,10 @@ const styles = StyleSheet.create({
   },
   feedbackTitle: {
     color: COLORS.primary,
-    fontSize: 12,
     fontWeight: '800',
   },
   feedbackText: {
     color: COLORS.text,
-    fontSize: 12,
-    lineHeight: 18,
   },
   improveButton: {
     alignItems: 'center',
@@ -284,3 +282,72 @@ const styles = StyleSheet.create({
     padding: 24,
   },
 });
+
+function createDensityStyles(config: ReviewDensityConfig) {
+  return StyleSheet.create({
+    questionListPanel: {
+      paddingBottom: config.sectionPaddingVertical,
+      paddingHorizontal: config.sectionPaddingHorizontal,
+      paddingTop: config.sectionPaddingVertical,
+    },
+    sectionTitle: {
+      fontSize: config.labelFontSize,
+      letterSpacing: config.labelLetterSpacing,
+      marginBottom: 0,
+    },
+    questionRow: {
+      gap: config.chipGap,
+      minWidth: config.chipMinWidth,
+      paddingHorizontal: config.chipPaddingHorizontal,
+      paddingVertical: config.chipPaddingVertical,
+    },
+    questionNumber: {
+      fontSize: config.questionNumberFontSize,
+    },
+    questionMarks: {
+      fontSize: config.questionMarksFontSize,
+    },
+    detailContent: {
+      gap: config.contentGap,
+      padding: config.contentPadding,
+      paddingBottom: 132,
+    },
+    detailTitle: {
+      fontSize: config.titleFontSize,
+    },
+    scoreChip: {
+      paddingHorizontal: config.blockPadding,
+      paddingVertical: Math.max(6, config.blockPadding - 3),
+    },
+    scoreChipValue: {
+      fontSize: config.scoreValueFontSize,
+    },
+    scoreChipMax: {
+      fontSize: config.scoreMaxFontSize,
+    },
+    readingBlock: {
+      borderRadius: config.blockRadius,
+      padding: config.blockPadding,
+    },
+    blockLabel: {
+      fontSize: config.labelFontSize,
+      letterSpacing: config.labelLetterSpacing,
+      marginBottom: Math.max(5, config.contentGap - 3),
+    },
+    bodyText: {
+      fontSize: config.bodyFontSize,
+      lineHeight: config.bodyLineHeight,
+    },
+    feedbackBox: {
+      borderRadius: config.blockRadius,
+      padding: config.blockPadding,
+    },
+    feedbackTitle: {
+      fontSize: config.feedbackTitleFontSize,
+    },
+    feedbackText: {
+      fontSize: config.feedbackTextFontSize,
+      lineHeight: config.feedbackLineHeight,
+    },
+  });
+}

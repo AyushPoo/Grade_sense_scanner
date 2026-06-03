@@ -32,6 +32,7 @@ import { normalizeReviewScores } from '../src/utils/reviewScores';
 import { DEFAULT_REVIEW_SETTINGS, ReviewSettings } from '../src/utils/reviewSettings';
 import { submitQuestionImprovement } from '../src/api/improveAI';
 import { fetchExamReviewSettings } from '../src/api/reviewSettings';
+import { useReviewDensityPreference } from '../src/hooks/useReviewDensityPreference';
 
 export default function ReviewGradingScreen() {
   const router = useRouter();
@@ -43,6 +44,7 @@ export default function ReviewGradingScreen() {
   const [showImproveAIModal, setShowImproveAIModal] = useState(false);
   const [isSubmittingImprovement, setIsSubmittingImprovement] = useState(false);
   const [reviewSettings, setReviewSettings] = useState<ReviewSettings>(DEFAULT_REVIEW_SETTINGS);
+  const { density: reviewDensity, setDensity: setReviewDensity } = useReviewDensityPreference();
 
   const handleReevaluate = () => {
     if (!examId || !token) return;
@@ -608,7 +610,9 @@ export default function ReviewGradingScreen() {
               scores={scores}
               activeScoreIndex={activeScoreIndex}
               feedbackEnabled={reviewSettings.feedbackEnabled}
+              density={reviewDensity}
               onSelectScore={setActiveScoreIndex}
+              onDensityChange={setReviewDensity}
               onImproveAI={() => setShowImproveAIModal(true)}
               isImprovingAI={isSubmittingImprovement}
             />
@@ -619,6 +623,7 @@ export default function ReviewGradingScreen() {
               activeScore={activeScore}
               isSaving={isSaving}
               isLastSubmission={currentSubIndex === submissions.length - 1}
+              density={reviewDensity}
               onScoreChange={handleScoreChange}
               onCommentChange={handleCommentChange}
               onOpenDictation={startVoiceDictation}

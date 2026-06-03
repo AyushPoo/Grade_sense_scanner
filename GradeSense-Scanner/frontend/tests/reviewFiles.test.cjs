@@ -47,6 +47,11 @@ const {
   shouldShowGradingStatus,
 } = loadTsModule('src/utils/gradingLifecycle.ts');
 const { reconcileFetchedScanSessions } = loadTsModule('src/utils/sessionReconciliation.ts');
+const {
+  DEFAULT_REVIEW_DENSITY,
+  REVIEW_DENSITY_OPTIONS,
+  getReviewDensityConfig,
+} = loadTsModule('src/utils/reviewDensity.ts');
 
 function buildSession(overrides = {}) {
   return {
@@ -333,6 +338,29 @@ test('review screen shows source paper files directly and keeps grading controls
   assert.equal(reviewSource.includes('sheetMode'), false);
   assert.equal(reviewSource.includes("activeTab === 'rubric' && activeScore"), true);
   assert.equal(reviewSource.includes('PaperFileViewer'), true);
+});
+
+test('rubric review density defaults compact and reaches review panels', () => {
+  const reviewSource = fs.readFileSync(path.join(__dirname, '..', 'app/review-grading.tsx'), 'utf8');
+  const rubricSource = fs.readFileSync(
+    path.join(__dirname, '..', 'src/components/review/RubricReviewPanel.tsx'),
+    'utf8'
+  );
+  const controlSource = fs.readFileSync(
+    path.join(__dirname, '..', 'src/components/review/ReviewDensityControl.tsx'),
+    'utf8'
+  );
+
+  assert.equal(DEFAULT_REVIEW_DENSITY, 'compact');
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(REVIEW_DENSITY_OPTIONS.map(option => option.label))),
+    ['A-', 'A', 'A+']
+  );
+  assert.equal(getReviewDensityConfig('compact').bodyFontSize < getReviewDensityConfig('large').bodyFontSize, true);
+  assert.equal(reviewSource.includes('useReviewDensityPreference'), true);
+  assert.equal(reviewSource.includes('density={reviewDensity}'), true);
+  assert.equal(rubricSource.includes('ReviewDensityControl'), true);
+  assert.equal(controlSource.includes('accessibilityState={{ selected: isActive }}'), true);
 });
 
 test('paper viewer compares student sheet and model answer in split panes', () => {
