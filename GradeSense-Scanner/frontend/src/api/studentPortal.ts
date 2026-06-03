@@ -1,4 +1,4 @@
-import { getBackendUrl } from '../config';
+import { fetchPortalJson } from './portalApi';
 import {
   StudentDashboardData,
   StudentSubmissionSummary,
@@ -16,6 +16,7 @@ export const studentPortalEndpoints = {
 export interface StudentPortalRequestOptions {
   token: string;
   backendUrl?: string;
+  webappUrl?: string;
 }
 
 export interface StudentExamSummary {
@@ -37,25 +38,12 @@ export interface StudentExamFile {
   signedUrl: string | null;
 }
 
-function authHeaders(token: string) {
+function portalOptions(options: StudentPortalRequestOptions) {
   return {
-    Authorization: `Bearer ${token}`,
-    'Bypass-Tunnel-Reminder': 'true',
+    token: options.token,
+    scannerBaseUrl: options.backendUrl,
+    webappBaseUrl: options.webappUrl,
   };
-}
-
-function endpoint(options: StudentPortalRequestOptions, path: string): string {
-  return `${options.backendUrl ?? getBackendUrl()}${path}`;
-}
-
-async function parsePortalResponse<T>(res: Response, normalizer: (value: unknown) => T): Promise<T> {
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Request failed with status ${res.status}`);
-  }
-
-  const json = await res.json();
-  return normalizer(json.data ?? json);
 }
 
 function normalizeStudentExams(value: unknown): StudentExamSummary[] {
@@ -79,45 +67,55 @@ function normalizeStudentExams(value: unknown): StudentExamSummary[] {
 }
 
 export async function fetchStudentDashboard(options: StudentPortalRequestOptions): Promise<StudentDashboardData> {
-  const res = await fetch(endpoint(options, studentPortalEndpoints.dashboard), {
-    headers: authHeaders(options.token),
+  const data = await fetchPortalJson({
+    ...portalOptions(options),
+    scannerPath: studentPortalEndpoints.dashboard,
+    webappPath: '/api/v1/analytics/student-dashboard',
   });
-  return parsePortalResponse(res, normalizeStudentDashboard);
+  return normalizeStudentDashboard(data);
 }
 
 export async function fetchStudentExams(options: StudentPortalRequestOptions): Promise<StudentExamSummary[]> {
-  const res = await fetch(endpoint(options, studentPortalEndpoints.exams), {
-    headers: authHeaders(options.token),
+  const data = await fetchPortalJson({
+    ...portalOptions(options),
+    scannerPath: studentPortalEndpoints.exams,
+    webappPath: '/api/v1/exams',
   });
-  return parsePortalResponse(res, normalizeStudentExams);
+  return normalizeStudentExams(data);
 }
 
 export async function fetchStudentSubmissions(options: StudentPortalRequestOptions): Promise<StudentSubmissionSummary[]> {
-  const res = await fetch(endpoint(options, studentPortalEndpoints.submissions), {
-    headers: authHeaders(options.token),
+  const data = await fetchPortalJson({
+    ...portalOptions(options),
+    scannerPath: studentPortalEndpoints.submissions,
+    webappPath: '/api/v1/submissions/mine',
   });
-  return parsePortalResponse(res, normalizeStudentSubmissions);
+  return normalizeStudentSubmissions(data);
 }
 
 export async function fetchStudentSubmissionDetail(
   options: StudentPortalRequestOptions,
   submissionId: string
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(endpoint(options, `${studentPortalEndpoints.submissions}/${submissionId}`), {
-    headers: authHeaders(options.token),
+  const data = await fetchPortalJson({
+    ...portalOptions(options),
+    scannerPath: `${studentPortalEndpoints.submissions}/${submissionId}`,
+    webappPath: `/api/v1/submissions/${submissionId}`,
   });
-  return parsePortalResponse(res, value => (value && typeof value === 'object' ? value as Record<string, unknown> : {}));
+  return data && typeof data === 'object' ? data as Record<string, unknown> : {};
 }
 
 export async function fetchStudentExamFiles(
   options: StudentPortalRequestOptions,
   examId: string
 ): Promise<StudentExamFile[]> {
-  const res = await fetch(endpoint(options, `/api/v1/student/exams/${examId}/files`), {
-    headers: authHeaders(options.token),
+  const data = await fetchPortalJson({
+    ...portalOptions(options),
+    scannerPath: `/api/v1/student/exams/${examId}/files`,
+    webappPath: `/api/v1/exams/${examId}/files`,
   });
-  return parsePortalResponse(res, value => Array.isArray(value)
-    ? value.map(row => {
+  return Array.isArray(data)
+    ? data.map(row => {
       const item = row && typeof row === 'object' ? row as Record<string, unknown> : {};
       return {
         id: String(item.id ?? ''),
@@ -128,27 +126,28 @@ export async function fetchStudentExamFiles(
         signedUrl: typeof (item.signedUrl ?? item.signed_url) === 'string' ? String(item.signedUrl ?? item.signed_url) : null,
       };
     }).filter(file => file.id || file.signedUrl)
-    : []);
+    : [];
 }
 
 export async function fetchStudentReEvaluations(options: StudentPortalRequestOptions): Promise<Record<string, unknown>[]> {
-  const res = await fetch(endpoint(options, studentPortalEndpoints.reEvaluations), {
-    headers: authHeaders(options.token),
+  const data = await fetchPortalJson({
+    ...portalOptions(options),
+    scannerPath: studentPortalEndpoints.reEvaluations,
+    webappPath: '/api/v1/re-evaluations',
   });
-  return parsePortalResponse(res, value => (Array.isArray(value) ? value as Record<string, unknown>[] : []));
+  return Array.isArray(data) ? data as Record<string, unknown>[] : [];
 }
 
 export async function createStudentReEvaluation(
   options: StudentPortalRequestOptions,
   payload: Record<string, unknown>
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(endpoint(options, studentPortalEndpoints.reEvaluations), {
+  const data = await fetchPortalJson({
+    ...portalOptions(options),
     method: 'POST',
-    headers: {
-      ...authHeaders(options.token),
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
+    scannerPath: studentPortalEndpoints.reEvaluations,
+    webappPath: '/api/v1/re-evaluations',
+    body: payload,
   });
-  return parsePortalResponse(res, value => (value && typeof value === 'object' ? value as Record<string, unknown> : {}));
+  return data && typeof data === 'object' ? data as Record<string, unknown> : {};
 }

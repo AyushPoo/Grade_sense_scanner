@@ -1,4 +1,4 @@
-import { getBackendUrl } from '../config';
+import { fetchPortalJson } from './portalApi';
 import {
   AdminProductFeedback,
   AdminTeacher,
@@ -18,34 +18,24 @@ export const adminPortalEndpoints = {
 export interface AdminPortalRequestOptions {
   token: string;
   backendUrl?: string;
+  webappUrl?: string;
 }
 
-function authHeaders(token: string) {
+function portalOptions(options: AdminPortalRequestOptions) {
   return {
-    Authorization: `Bearer ${token}`,
-    'Bypass-Tunnel-Reminder': 'true',
+    token: options.token,
+    scannerBaseUrl: options.backendUrl,
+    webappBaseUrl: options.webappUrl,
   };
 }
 
-function endpoint(options: AdminPortalRequestOptions, path: string): string {
-  return `${options.backendUrl ?? getBackendUrl()}${path}`;
-}
-
-async function parsePortalResponse<T>(res: Response, normalizer: (value: unknown) => T): Promise<T> {
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Request failed with status ${res.status}`);
-  }
-
-  const json = await res.json();
-  return normalizer(json.data ?? json);
-}
-
 export async function fetchAdminTeachers(options: AdminPortalRequestOptions): Promise<AdminTeacher[]> {
-  const res = await fetch(endpoint(options, adminPortalEndpoints.teachers), {
-    headers: authHeaders(options.token),
+  const data = await fetchPortalJson({
+    ...portalOptions(options),
+    scannerPath: adminPortalEndpoints.teachers,
+    webappPath: '/api/v1/admin/users',
   });
-  return parsePortalResponse(res, normalizeAdminTeachers);
+  return normalizeAdminTeachers(data);
 }
 
 export async function updateAdminTeacherLimit(
@@ -53,55 +43,55 @@ export async function updateAdminTeacherLimit(
   userId: string,
   paperLimit: number
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(endpoint(options, `${adminPortalEndpoints.teachers}/${userId}`), {
+  const data = await fetchPortalJson({
+    ...portalOptions(options),
     method: 'PATCH',
-    headers: {
-      ...authHeaders(options.token),
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ paperLimit }),
+    scannerPath: `${adminPortalEndpoints.teachers}/${userId}`,
+    webappPath: `/api/v1/admin/users/${userId}`,
+    body: { paperLimit },
   });
-  return parsePortalResponse(res, value => (value && typeof value === 'object' ? value as Record<string, unknown> : {}));
+  return data && typeof data === 'object' ? data as Record<string, unknown> : {};
 }
 
 export async function fetchTeacherInvites(options: AdminPortalRequestOptions): Promise<TeacherInvite[]> {
-  const res = await fetch(endpoint(options, adminPortalEndpoints.teacherInvites), {
-    headers: authHeaders(options.token),
+  const data = await fetchPortalJson({
+    ...portalOptions(options),
+    scannerPath: adminPortalEndpoints.teacherInvites,
+    webappPath: '/api/v1/admin/teacher-invites',
   });
-  return parsePortalResponse(res, normalizeTeacherInvites);
+  return normalizeTeacherInvites(data);
 }
 
 export async function inviteTeachers(
   options: AdminPortalRequestOptions,
   payload: { emails: string[]; paperLimit?: number }
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(endpoint(options, adminPortalEndpoints.teacherInvites), {
+  const data = await fetchPortalJson({
+    ...portalOptions(options),
     method: 'POST',
-    headers: {
-      ...authHeaders(options.token),
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
+    scannerPath: adminPortalEndpoints.teacherInvites,
+    webappPath: '/api/v1/admin/teacher-invites',
+    body: payload,
   });
-  return parsePortalResponse(res, value => (value && typeof value === 'object' ? value as Record<string, unknown> : {}));
+  return data && typeof data === 'object' ? data as Record<string, unknown> : {};
 }
 
 export async function cancelTeacherInvite(options: AdminPortalRequestOptions, inviteId: string): Promise<void> {
-  const res = await fetch(endpoint(options, `${adminPortalEndpoints.teacherInvites}/${inviteId}`), {
+  await fetchPortalJson({
+    ...portalOptions(options),
     method: 'DELETE',
-    headers: authHeaders(options.token),
+    scannerPath: `${adminPortalEndpoints.teacherInvites}/${inviteId}`,
+    webappPath: `/api/v1/admin/teacher-invites/${inviteId}`,
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Request failed with status ${res.status}`);
-  }
 }
 
 export async function fetchAdminFeedback(options: AdminPortalRequestOptions): Promise<AdminProductFeedback[]> {
-  const res = await fetch(endpoint(options, adminPortalEndpoints.feedback), {
-    headers: authHeaders(options.token),
+  const data = await fetchPortalJson({
+    ...portalOptions(options),
+    scannerPath: adminPortalEndpoints.feedback,
+    webappPath: '/api/v1/feedback',
   });
-  return parsePortalResponse(res, normalizeAdminProductFeedback);
+  return normalizeAdminProductFeedback(data);
 }
 
 export async function resolveAdminFeedback(
@@ -109,20 +99,21 @@ export async function resolveAdminFeedback(
   feedbackId: string,
   status: string
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(endpoint(options, `${adminPortalEndpoints.feedback}/${feedbackId}/resolve`), {
+  const data = await fetchPortalJson({
+    ...portalOptions(options),
     method: 'PATCH',
-    headers: {
-      ...authHeaders(options.token),
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ status }),
+    scannerPath: `${adminPortalEndpoints.feedback}/${feedbackId}/resolve`,
+    webappPath: `/api/v1/feedback/${feedbackId}/resolve`,
+    body: { status },
   });
-  return parsePortalResponse(res, value => (value && typeof value === 'object' ? value as Record<string, unknown> : {}));
+  return data && typeof data === 'object' ? data as Record<string, unknown> : {};
 }
 
 export async function fetchAdminAuditLogs(options: AdminPortalRequestOptions): Promise<Record<string, unknown>[]> {
-  const res = await fetch(endpoint(options, adminPortalEndpoints.auditLogs), {
-    headers: authHeaders(options.token),
+  const data = await fetchPortalJson({
+    ...portalOptions(options),
+    scannerPath: adminPortalEndpoints.auditLogs,
+    webappPath: '/api/v1/admin/audit-logs',
   });
-  return parsePortalResponse(res, value => (Array.isArray(value) ? value as Record<string, unknown>[] : []));
+  return Array.isArray(data) ? data as Record<string, unknown>[] : [];
 }

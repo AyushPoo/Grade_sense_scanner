@@ -35,6 +35,7 @@ function loadTsModule(relativePath, moduleCache = new Map()) {
   };
   const context = vm.createContext({
     exports: module.exports,
+    fetch: global.fetch,
     module,
     process: { env: {} },
     require: localRequire,
@@ -105,6 +106,46 @@ test('portal API endpoint maps stay behind the scanner backend gateway', () => {
   assert.equal(studentPortalEndpoints.submissions, '/api/v1/student/submissions');
   assert.equal(adminPortalEndpoints.teachers, '/api/v1/admin/teachers');
   assert.equal(adminPortalEndpoints.feedback, '/api/v1/admin/feedback');
+});
+
+test('portal fetch falls back to webapp API when scanner gateway is missing the route', async () => {
+  const requestedUrls = [];
+  const originalFetch = global.fetch;
+
+  global.fetch = async (url) => {
+    requestedUrls.push(String(url));
+    if (requestedUrls.length === 1) {
+      return {
+        ok: false,
+        status: 404,
+        text: async () => '{"detail":"Not Found"}',
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      text: async () => '{"data":[{"id":"usr_1","role":"teacher"}]}',
+    };
+  };
+
+  try {
+    const { fetchPortalJson } = loadTsModule('src/api/portalApi.ts');
+    const result = await fetchPortalJson({
+      token: 'token_123',
+      scannerPath: '/api/v1/admin/teachers',
+      webappPath: '/api/v1/admin/users',
+      scannerBaseUrl: 'https://scanner.test',
+      webappBaseUrl: 'http://webapp.test',
+    });
+
+    assert.equal(JSON.stringify(result), JSON.stringify([{ id: 'usr_1', role: 'teacher' }]));
+    assert.deepEqual(requestedUrls, [
+      'https://scanner.test/api/v1/admin/teachers',
+      'http://webapp.test/api/v1/admin/users',
+    ]);
+  } finally {
+    global.fetch = originalFetch;
+  }
 });
 
 test('scanner accessory link points teachers to the configured paper mount', () => {
