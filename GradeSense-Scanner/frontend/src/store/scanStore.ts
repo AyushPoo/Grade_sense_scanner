@@ -4,6 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ScanSession, ScanPhase, ScannedPage, ScanSessionSettings, Batch, Subject } from '../types';
 import * as FileSystem from 'expo-file-system';
 import { getBackendUrl } from '../config';
+import { reconcileFetchedScanSessions } from '../utils/sessionReconciliation';
 
 // Simple UUID generator
 export const generateUUID = () => {
@@ -942,79 +943,15 @@ export const useScanStore = create<ScanState>()(
           });
 
           console.log(`[TRACE] fetchSessions: success, received ${normalizedSessions.length} sessions at ${Date.now()}`);
-          // TASK 3A: Merge sessions instead of overwriting to preserve local status, and filter deleted sessions
+          // Merge remote scanner state with local-only drafts while keeping the server
+          // authoritative for already-synced cloud sessions.
           set(state => {
-            const currentSaved = state.savedSessions || [];
-            const deletedIds = state.deletedSessionIds || [];
-
-            // Filter out backend sessions that have been deleted locally
-            const activeFetched = normalizedSessions.filter(
-              (fetched: ScanSession) => !deletedIds.includes(fetched.session_id)
-            );
-
-            // Clean up deletedSessionIds: if an ID is in deletedSessionIds but NOT in the fetched backend sessions,
-            // it means the backend has successfully processed the deletion (or never had it), so we can remove it.
-            const rawFetchedIds = normalizedSessions.map((s: ScanSession) => s.session_id);
-            const remainingDeletedIds = deletedIds.filter(id => rawFetchedIds.includes(id));
-
-            // Merge active fetched sessions with local sessions. Start with local sessions to preserve local-only sessions.
-            const merged = [...currentSaved];
-
-            activeFetched.forEach((fetched: ScanSession) => {
-              const localIdx = merged.findIndex(s => s.session_id === fetched.session_id);
-              if (localIdx > -1) {
-                const local = merged[localIdx];
-                // Compare page count to check if local has unsynced scans
-                const localPages = (local.question_paper?.pages?.length || 0) + 
-                                   (local.model_answer?.pages?.length || 0) + 
-                                   (local.students?.reduce((sum, st) => sum + (st.pages?.length || 0), 0) || 0);
-                const fetchedPages = (fetched.question_paper?.pages?.length || 0) + 
-                                     (fetched.model_answer?.pages?.length || 0) + 
-                                     (fetched.students?.reduce((sum, st) => sum + (st.pages?.length || 0), 0) || 0);
-
-                const serverTerminalStatuses = ['uploaded', 'grading', 'graded', 'sync_failed', 'failed'];
-                const localAuthoritativeStatuses = ['uploading', 'syncing', 'ready'];
-
-                if (serverTerminalStatuses.includes(fetched.status)) {
-                  merged[localIdx] = {
-                    ...local,
-                    ...fetched,
-                    stats: recomputeStats(localPages >= fetchedPages ? local : fetched),
-                  };
-                  return;
-                }
-                
-                // If local has more pages (offline scanning completed but not fully synced) or is in an authoritative status, keep local version
-                if (localPages > fetchedPages || localAuthoritativeStatuses.includes(local.status)) {
-                  merged[localIdx] = {
-                    ...fetched,
-                    ...local,
-                    // Always prefer the server exam_id if the local one is missing.
-                    // This ensures that after a cold start (AsyncStorage cleared), the
-                    // exam_id written to MongoDB by the server is surfaced correctly.
-                    exam_id: local.exam_id || fetched.exam_id,
-                    stats: recomputeStats(local)
-                  };
-                } else {
-                  // Otherwise, update with fetched version
-                  merged[localIdx] = fetched;
-                }
-              } else {
-                // Not in local saved sessions, add it
-                merged.push(fetched);
-              }
+            return reconcileFetchedScanSessions({
+              currentSaved: state.savedSessions || [],
+              fetchedSessions: normalizedSessions,
+              deletedSessionIds: state.deletedSessionIds || [],
+              recomputeStats,
             });
-
-            // Filter out any sessions that might be in deletedIds just in case they were not filtered above
-            const finalSessions = merged.filter(s => !deletedIds.includes(s.session_id));
-
-            // Sort sessions by created_at descending
-            finalSessions.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-
-            return { 
-              savedSessions: finalSessions,
-              deletedSessionIds: remainingDeletedIds
-            };
           });
         } catch (error) {
           console.error(`[TRACE] fetchSessions: FAILED at ${Date.now()} with error:`, error);

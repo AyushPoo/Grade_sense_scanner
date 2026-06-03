@@ -31,6 +31,7 @@ from review_settings_service import (
 from improve_ai_service import ImproveAIServiceError, save_question_improvement
 from grading_lifecycle_service import (
     build_grading_jobs,
+    deleted_or_missing_webapp_exam_ids,
     derive_scan_session_reconciliation,
     is_successful_blueprint_job,
     student_answer_text_select_expression,
@@ -2097,7 +2098,7 @@ async def reconcile_scan_sessions_with_webapp(user_id: str, sessions: list[dict]
     candidates = [
         session
         for session in sessions
-        if session.get("exam_id") and session.get("status") in {"syncing", "grading", "uploaded"}
+        if session.get("exam_id")
     ]
     if not webapp_db_url or not candidates:
         return sessions
@@ -2106,6 +2107,39 @@ async def reconcile_scan_sessions_with_webapp(user_id: str, sessions: list[dict]
     conn = None
     try:
         conn = await asyncpg.connect(webapp_db_url)
+        exam_rows = await conn.fetch(
+            '''
+            SELECT id, status
+            FROM exams
+            WHERE id = ANY($1::text[])
+              AND teacher_id = $2
+            ''',
+            exam_ids,
+            user_id,
+        )
+        removed_exam_ids = deleted_or_missing_webapp_exam_ids(
+            exam_ids,
+            [dict(row) for row in exam_rows],
+        )
+        if removed_exam_ids:
+            await db.scan_sessions.delete_many({
+                "user_id": user_id,
+                "exam_id": {"$in": list(removed_exam_ids)},
+            })
+            sessions = [
+                session
+                for session in sessions
+                if str(session.get("exam_id") or "") not in removed_exam_ids
+            ]
+            candidates = [
+                session
+                for session in candidates
+                if str(session.get("exam_id") or "") not in removed_exam_ids
+            ]
+            exam_ids = [str(session["exam_id"]) for session in candidates]
+            if not candidates:
+                return sessions
+
         job_rows = await conn.fetch(
             '''
             SELECT id, type, status, exam_id, progress, total_items, processed_items,

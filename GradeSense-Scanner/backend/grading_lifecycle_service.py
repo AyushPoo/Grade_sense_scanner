@@ -7,6 +7,7 @@ ACTIVE_JOB_STATUSES = {"queued", "processing", "running", "in_progress"}
 COMPLETED_JOB_STATUS = "completed"
 FAILED_JOB_STATUS = "failed"
 SYNCING_SESSION_STATUSES = {"syncing", "grading", "uploaded"}
+DELETED_EXAM_STATUS = "deleted"
 
 
 def normalize_job(row: dict[str, Any]) -> dict[str, Any]:
@@ -200,6 +201,24 @@ def student_answer_text_select_expression(columns: Iterable[str]) -> str:
     if not selected:
         return "NULL"
     return f"COALESCE({', '.join(selected)})"
+
+
+def deleted_or_missing_webapp_exam_ids(
+    requested_exam_ids: Iterable[str],
+    exam_rows: Iterable[dict[str, Any]],
+) -> set[str]:
+    requested = {str(exam_id) for exam_id in requested_exam_ids if exam_id}
+    rows_by_id = {
+        str(row.get("id")): str(row.get("status") or "").lower()
+        for row in exam_rows
+        if row.get("id")
+    }
+
+    return {
+        exam_id
+        for exam_id in requested
+        if exam_id not in rows_by_id or rows_by_id[exam_id] == DELETED_EXAM_STATUS
+    }
 
 
 def _job_sort_key(job: dict[str, Any]) -> tuple[int, str]:

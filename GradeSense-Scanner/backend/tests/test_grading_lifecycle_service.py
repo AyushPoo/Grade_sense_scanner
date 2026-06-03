@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from grading_lifecycle_service import (
     build_grading_jobs,
+    deleted_or_missing_webapp_exam_ids,
     derive_scan_session_reconciliation,
     validate_scan_session_ready_for_sync,
     is_review_ready_exam,
@@ -80,6 +81,17 @@ class GradingLifecycleServiceTest(unittest.TestCase):
             "COALESCE(sc.extracted_answer_text)",
         )
         self.assertEqual(student_answer_text_select_expression(["id"]), "NULL")
+
+    def test_deleted_or_missing_webapp_exam_ids_treats_webapp_as_authoritative(self):
+        deleted_ids = deleted_or_missing_webapp_exam_ids(
+            ["exam_live", "exam_deleted", "exam_missing"],
+            [
+                {"id": "exam_live", "status": "draft"},
+                {"id": "exam_deleted", "status": "deleted"},
+            ],
+        )
+
+        self.assertEqual(deleted_ids, {"exam_deleted", "exam_missing"})
 
     def test_successful_blueprint_job_requires_real_processed_output(self):
         self.assertFalse(is_successful_blueprint_job({

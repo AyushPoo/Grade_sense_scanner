@@ -8,8 +8,15 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { Image } from 'expo-image';
 import { WebView } from 'react-native-webview';
 import { Ionicons } from '@expo/vector-icons';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 import { COLORS } from '../../config';
 import type { ReviewFileSlide } from '../../types/review';
 
@@ -273,7 +280,21 @@ function PaperPage({
   }
 
   const isPdf = isPdfSlide(slide, imageUrl);
-  const uri = isPdf ? buildPdfViewerUrl(imageUrl) : buildZoomableImageHtml(imageUrl);
+
+  if (!isPdf) {
+    return (
+      <View>
+        <ZoomableImagePage
+          uri={imageUrl}
+          compact={compact}
+          onImageError={() => onImageError(slide.id)}
+        />
+        <PageRecoveryActions compact={compact} onRetry={onRetry} onOpenExternal={openExternal} />
+      </View>
+    );
+  }
+
+  const uri = buildPdfViewerUrl(imageUrl);
 
   return (
     <View>
@@ -289,16 +310,97 @@ function PaperPage({
         onError={() => onImageError(slide.id)}
         onHttpError={() => onImageError(slide.id)}
       />
-      <View style={[styles.pageActions, compact && styles.compactPageActions]}>
-        <TouchableOpacity style={styles.pageActionButton} onPress={onRetry}>
-          <Ionicons name="refresh" size={13} color="#E7E7E7" />
-          <Text style={styles.pageActionText}>Refresh link</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.pageActionButton} onPress={openExternal}>
-          <Ionicons name="open-outline" size={13} color="#E7E7E7" />
-          <Text style={styles.pageActionText}>Open source</Text>
-        </TouchableOpacity>
+      <PageRecoveryActions compact={compact} onRetry={onRetry} onOpenExternal={openExternal} />
+    </View>
+  );
+}
+
+function ZoomableImagePage({
+  uri,
+  compact,
+  onImageError,
+}: {
+  uri: string;
+  compact: boolean;
+  onImageError: () => void;
+}) {
+  const scale = useSharedValue(1);
+  const savedScale = useSharedValue(1);
+  const translateX = useSharedValue(0);
+  const translateY = useSharedValue(0);
+  const savedTranslateX = useSharedValue(0);
+  const savedTranslateY = useSharedValue(0);
+
+  const pinch = Gesture.Pinch()
+    .onUpdate(event => {
+      scale.value = Math.min(Math.max(savedScale.value * event.scale, 1), 6);
+    })
+    .onEnd(() => {
+      savedScale.value = scale.value;
+      if (scale.value <= 1.02) {
+        scale.value = withTiming(1);
+        savedScale.value = 1;
+        translateX.value = withTiming(0);
+        translateY.value = withTiming(0);
+        savedTranslateX.value = 0;
+        savedTranslateY.value = 0;
+      }
+    });
+
+  const pan = Gesture.Pan()
+    .onUpdate(event => {
+      if (scale.value <= 1.02) return;
+      translateX.value = savedTranslateX.value + event.translationX;
+      translateY.value = savedTranslateY.value + event.translationY;
+    })
+    .onEnd(() => {
+      savedTranslateX.value = translateX.value;
+      savedTranslateY.value = translateY.value;
+    });
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: translateX.value },
+      { translateY: translateY.value },
+      { scale: scale.value },
+    ],
+  }));
+
+  return (
+    <GestureDetector gesture={Gesture.Simultaneous(pinch, pan)}>
+      <View style={[styles.imageViewport, compact && styles.compactImageViewport]}>
+        <Animated.View style={[styles.zoomLayer, animatedStyle]}>
+          <Image
+            source={{ uri }}
+            style={styles.nativeImage}
+            contentFit="contain"
+            onError={onImageError}
+          />
+        </Animated.View>
       </View>
+    </GestureDetector>
+  );
+}
+
+function PageRecoveryActions({
+  compact,
+  onRetry,
+  onOpenExternal,
+}: {
+  compact: boolean;
+  onRetry: () => void;
+  onOpenExternal: () => void;
+}) {
+  return (
+    <View style={[styles.pageActions, compact && styles.compactPageActions]}>
+      <TouchableOpacity style={styles.pageActionButton} onPress={onRetry}>
+        <Ionicons name="refresh" size={13} color="#E7E7E7" />
+        <Text style={styles.pageActionText}>Refresh link</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.pageActionButton} onPress={onOpenExternal}>
+        <Ionicons name="open-outline" size={13} color="#E7E7E7" />
+        <Text style={styles.pageActionText}>Open source</Text>
+      </TouchableOpacity>
     </View>
   );
 }
@@ -345,26 +447,6 @@ function buildPdfViewerUrl(url: string): string {
     return url;
   }
   return `https://docs.google.com/gview?embedded=1&url=${encodeURIComponent(url)}`;
-}
-
-function buildZoomableImageHtml(url: string): string {
-  const escapedUrl = url.replace(/"/g, '&quot;');
-  return `
-    <!doctype html>
-    <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=8, user-scalable=yes" />
-        <style>
-          html, body { margin: 0; padding: 0; background: #111; min-height: 100%; }
-          body { display: flex; justify-content: center; align-items: flex-start; }
-          img { display: block; width: 100%; height: auto; object-fit: contain; }
-        </style>
-      </head>
-      <body>
-        <img src="${escapedUrl}" />
-      </body>
-    </html>
-  `;
 }
 
 const styles = StyleSheet.create({
@@ -443,6 +525,25 @@ const styles = StyleSheet.create({
   },
   compactWebView: {
     height: COMPARE_PANE_MIN_HEIGHT,
+  },
+  imageViewport: {
+    alignItems: 'center',
+    backgroundColor: '#111',
+    height: SINGLE_DOCUMENT_HEIGHT,
+    justifyContent: 'center',
+    overflow: 'hidden',
+    width: '100%',
+  },
+  compactImageViewport: {
+    height: COMPARE_PANE_MIN_HEIGHT,
+  },
+  zoomLayer: {
+    height: '100%',
+    width: '100%',
+  },
+  nativeImage: {
+    height: '100%',
+    width: '100%',
   },
   splitCompareContainer: {
     flex: 1,

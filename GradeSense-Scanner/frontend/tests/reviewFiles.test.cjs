@@ -46,6 +46,40 @@ const {
   isReviewReadyExam,
   shouldShowGradingStatus,
 } = loadTsModule('src/utils/gradingLifecycle.ts');
+const { reconcileFetchedScanSessions } = loadTsModule('src/utils/sessionReconciliation.ts');
+
+function buildSession(overrides = {}) {
+  return {
+    session_id: 'session_1',
+    session_name: 'Exam',
+    batch_id: 'batch_1',
+    batch_name: 'Class 10-A',
+    created_at: '2026-06-01T00:00:00.000Z',
+    status: 'ready',
+    upload_progress: 0,
+    settings: {
+      auto_capture: true,
+      barcode_detection: false,
+      blur_detection: false,
+      flash_mode: 'off',
+      scan_question_paper: true,
+      scan_model_answer: true,
+      page_mode: 'single',
+    },
+    question_paper: { page_count: 0, pages: [] },
+    model_answer: { page_count: 0, pages: [] },
+    students: [],
+    stats: {
+      total_students: 0,
+      total_pages: 0,
+      total_size_bytes: 0,
+      blurry_pages: 0,
+      scanning_duration_seconds: 0,
+      avg_time_per_student_seconds: 0,
+    },
+    ...overrides,
+  };
+}
 
 test('buildReviewFileSlides orders document types without mutating signed urls', () => {
   const slides = buildReviewFileSlides(
@@ -313,6 +347,27 @@ test('paper viewer compares student sheet and model answer in split panes', () =
   assert.equal(viewerSource.includes('Open source'), true);
   assert.equal(viewerSource.includes('Refresh link'), true);
   assert.equal(viewerSource.includes('compactWebView'), true);
+  assert.equal(viewerSource.includes('ZoomableImagePage'), true);
+  assert.equal(viewerSource.includes('Gesture.Pinch()'), true);
+  assert.equal(viewerSource.includes('buildZoomableImageHtml'), false);
+});
+
+test('session reconciliation drops stale local copies of server-deleted synced sessions', () => {
+  const syncedLocal = buildSession({ session_id: 'synced_local', exam_id: 'exam_deleted', status: 'graded' });
+  const draftLocal = buildSession({ session_id: 'draft_local', exam_id: undefined, status: 'ready' });
+  const fetched = buildSession({ session_id: 'server_session', exam_id: 'exam_live', status: 'graded' });
+
+  const result = reconcileFetchedScanSessions({
+    currentSaved: [syncedLocal, draftLocal],
+    fetchedSessions: [fetched],
+    deletedSessionIds: [],
+    recomputeStats: session => session.stats,
+  });
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(result.savedSessions.map(session => session.session_id).sort())),
+    ['draft_local', 'server_session']
+  );
 });
 
 test('manage screen renders operational tabs without waiting on analytics loader', () => {
