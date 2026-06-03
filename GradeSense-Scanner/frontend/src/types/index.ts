@@ -33,6 +33,9 @@ export interface ScannedPage {
   ui_id: string; // Deterministic ID for UI reconciliation
   page_number: number;
   file_path: string;
+  source_type?: 'camera' | 'pdf' | 'image';
+  content_type?: string;
+  original_name?: string;
   original_file_path?: string; // pristine colored crop
   raw_file_path?: string; // absolute raw camera image (uncropped)
   crop_quad?: {

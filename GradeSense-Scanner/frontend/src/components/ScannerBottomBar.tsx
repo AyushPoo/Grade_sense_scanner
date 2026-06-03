@@ -18,6 +18,7 @@ interface ScannerBottomBarProps {
   stabilityProgress: number;
   onTogglePause: () => void;
   onManualCapture: () => void;
+  onPickPdf: () => void;
   onNextStudent: () => void;
   onUndo: () => void;
   onFinishPhase: () => void;
@@ -34,6 +35,7 @@ const ScannerBottomBarBase: React.FC<ScannerBottomBarProps> = ({
   stabilityProgress,
   onTogglePause,
   onManualCapture,
+  onPickPdf,
   onNextStudent,
   onUndo,
   onFinishPhase,
@@ -99,12 +101,19 @@ const ScannerBottomBarBase: React.FC<ScannerBottomBarProps> = ({
       {/* Secondary Row: UNDO LAST PAGE | FINISH SESSION */}
       <View style={styles.secondaryRow}>
         {currentPhase !== 'students' ? (
-          <TouchableOpacity style={styles.donePhaseBtn} onPress={onFinishPhase}>
-            <Text style={styles.donePhaseBtnText}>
-              FINISH {currentPhase === 'question_paper' ? 'QP' : 'MODEL'}
-            </Text>
-            <Ionicons name="arrow-forward" size={16} color="#fff" />
-          </TouchableOpacity>
+          <View style={styles.documentActionsRow}>
+            <TouchableOpacity style={styles.pdfBtn} onPress={onPickPdf}>
+              <Ionicons name="document-attach" size={16} color="#fff" />
+              <Text style={styles.pdfBtnText}>PDF</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.donePhaseBtn} onPress={onFinishPhase}>
+              <Text style={styles.donePhaseBtnText}>
+                FINISH {currentPhase === 'question_paper' ? 'QP' : 'MODEL'}
+              </Text>
+              <Ionicons name="arrow-forward" size={16} color="#fff" />
+            </TouchableOpacity>
+          </View>
         ) : (
           <View style={styles.studentActionsRow}>
             <TouchableOpacity
@@ -114,6 +123,11 @@ const ScannerBottomBarBase: React.FC<ScannerBottomBarProps> = ({
             >
               <Ionicons name="arrow-undo" size={16} color="rgba(255,255,255,0.6)" />
               <Text style={styles.undoStudentBtnText}>Undo Last Page</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.pdfStudentBtn} onPress={onPickPdf}>
+              <Ionicons name="document-attach" size={15} color="#fff" />
+              <Text style={styles.pdfBtnText}>PDF</Text>
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.finishSessionBtn} onPress={onFinishSession}>
@@ -186,6 +200,35 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     paddingBottom: 4,
+  },
+  documentActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  pdfBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    paddingHorizontal: 15,
+    paddingVertical: 11,
+    borderRadius: 24,
+    gap: 7,
+  },
+  pdfStudentBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 22,
+    gap: 6,
+  },
+  pdfBtnText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 0.6,
   },
   donePhaseBtn: {
     flexDirection: 'row',

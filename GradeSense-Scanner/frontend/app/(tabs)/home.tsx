@@ -88,6 +88,7 @@ function GradingProgressCard({ session, job, onPress, onRetry, isRetrying }: any
   const isSyncFailed = session.status === 'sync_failed' || session.status === 'failed';
   const isGradingFailed = isFailedGradingJob(job);
   const isComplete = isCompletedGradingJob(job);
+  const isAwaitingFirstReview = job?.status === 'awaiting_first_review';
 
   useEffect(() => {
     if (!isComplete) {
@@ -155,6 +156,27 @@ function GradingProgressCard({ session, job, onPress, onRetry, isRetrying }: any
     );
   }
 
+  if (isAwaitingFirstReview) {
+    return (
+      <TouchableOpacity style={[gradingStyles.card, gradingStyles.pilotReviewCard]} onPress={onPress} activeOpacity={0.88}>
+        <View style={gradingStyles.completeTop}>
+          <View style={gradingStyles.pilotReviewIconBadge}>
+            <Ionicons name="reader" size={25} color={COLORS.primary} />
+          </View>
+          <View style={{ flex: 1, marginLeft: 14 }}>
+            <Text style={gradingStyles.sessionTitle} numberOfLines={1}>{session.session_name}</Text>
+            <Text style={[gradingStyles.statusText, { color: COLORS.primary }]}>First paper ready for review</Text>
+          </View>
+        </View>
+        <Text style={gradingStyles.completeDetail}>Review the first graded paper. The remaining papers will continue after approval.</Text>
+        <View style={gradingStyles.reviewCTA}>
+          <Text style={gradingStyles.reviewCTAText}>Review First Paper</Text>
+          <Ionicons name="arrow-forward" size={15} color="#fff" />
+        </View>
+      </TouchableOpacity>
+    );
+  }
+
   const statusLabel = job ? "AI grading in progress…" : "Syncing papers to webapp…";
 
   return (
@@ -196,6 +218,10 @@ const gradingStyles = StyleSheet.create({
     borderColor: COLORS.success,
     shadowColor: COLORS.success,
   },
+  pilotReviewCard: {
+    borderColor: COLORS.primary,
+    shadowColor: COLORS.primary,
+  },
   failedCard: {
     borderColor: COLORS.error,
     shadowColor: COLORS.error,
@@ -217,6 +243,14 @@ const gradingStyles = StyleSheet.create({
     backgroundColor: COLORS.successLight,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  pilotReviewIconBadge: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: 'rgba(255,107,53,0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   failedIconBadge: {
     backgroundColor: COLORS.errorLight,

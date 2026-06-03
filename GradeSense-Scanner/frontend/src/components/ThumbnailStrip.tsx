@@ -42,6 +42,7 @@ const ThumbnailItem = React.memo(({ page, onPagePress }: { page: ScannedPage; on
     </TouchableOpacity>
   );
 });
+ThumbnailItem.displayName = 'ThumbnailItem';
 
 // ── PHASE 4 FIX: React.memo wrapper — ThumbnailStrip will not re-render when ScannerScreen
 // re-renders for unrelated reasons. Re-renders only when pages array or callbacks change.

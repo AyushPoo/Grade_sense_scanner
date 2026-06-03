@@ -20,6 +20,7 @@ import { applyFilter, FilterMode } from '../src/utils/cvProcessor';
 import { File, Paths } from 'expo-file-system';
 import { ZoomModal } from '../src/components/ZoomModal';
 import * as ImageManipulator from 'expo-image-manipulator';
+import { isPdfScannedPage } from '../src/utils/scannedPageAssets';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -119,6 +120,7 @@ export default function PagePreviewScreen() {
   const handleApplyFilter = async (filter: FilterMode) => {
     const currentPage = getPages()[currentIndex];
     if (!currentPage || isApplyingFilter) return;
+    if (isPdfScannedPage(currentPage)) return;
     if (currentPage.filter_mode === filter) return;
 
     // Use original if available, else current (though without original, non-destructive is hard)
@@ -179,6 +181,7 @@ export default function PagePreviewScreen() {
   const handleRotate = async () => {
     const currentPage = getPages()[currentIndex];
     if (!currentPage || isRotating || isApplyingFilter) return;
+    if (isPdfScannedPage(currentPage)) return;
 
     setIsRotating(true);
     try {
@@ -268,9 +271,18 @@ export default function PagePreviewScreen() {
     }
   }).current;
 
-  const renderPage = ({ item, index }: { item: ScannedPage; index: number }) => (
-    <View style={styles.pageContainer}>
-      {item.file_path ? (
+  const renderPage = ({ item, index }: { item: ScannedPage; index: number }) => {
+    const isPdf = isPdfScannedPage(item);
+
+    return (
+      <View style={styles.pageContainer}>
+        {item.file_path && isPdf ? (
+          <View style={styles.pdfPreview}>
+            <Ionicons name="document-text" size={72} color={COLORS.primary} />
+            <Text style={styles.pdfPreviewTitle}>{item.original_name || `Page ${item.page_number}.pdf`}</Text>
+            <Text style={styles.pdfPreviewBody}>PDF document selected for this paper.</Text>
+          </View>
+        ) : item.file_path ? (
         <TouchableOpacity
           activeOpacity={0.9}
           onPress={() => {
@@ -303,14 +315,15 @@ export default function PagePreviewScreen() {
             </View>
           )}
         </TouchableOpacity>
-      ) : (
+        ) : (
         <View style={styles.noImage}>
           <Ionicons name="image-outline" size={64} color={COLORS.textMuted} />
           <Text style={styles.noImageText}>No preview available</Text>
         </View>
-      )}
-    </View>
-  );
+        )}
+      </View>
+    );
+  };
 
   if (pages.length === 0) {
     return (
@@ -330,6 +343,7 @@ export default function PagePreviewScreen() {
   }
 
   const currentPage = pages[currentIndex];
+  const currentPageIsPdf = currentPage ? isPdfScannedPage(currentPage) : false;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -396,17 +410,17 @@ export default function PagePreviewScreen() {
         <View style={styles.infoRow}>
           <View style={styles.infoItem}>
             <Ionicons
-              name={currentPage?.is_blurry ? 'warning' : 'checkmark-circle'}
+              name={currentPageIsPdf ? 'document-text' : currentPage?.is_blurry ? 'warning' : 'checkmark-circle'}
               size={18}
-              color={currentPage?.is_blurry ? COLORS.warning : COLORS.success}
+              color={currentPageIsPdf ? COLORS.primary : currentPage?.is_blurry ? COLORS.warning : COLORS.success}
             />
             <Text style={styles.infoText}>
-              {currentPage?.is_blurry ? 'Blurry' : 'Sharp'}
+              {currentPageIsPdf ? 'PDF' : currentPage?.is_blurry ? 'Blurry' : 'Sharp'}
             </Text>
           </View>
         </View>
 
-        {/* Filter Palette */}
+        {!currentPageIsPdf && (
         <View style={styles.filterPalette}>
           <FlatList
             data={FILTERS}
@@ -435,6 +449,7 @@ export default function PagePreviewScreen() {
             }}
           />
         </View>
+        )}
 
         <View style={styles.actions}>
           <TouchableOpacity 
@@ -449,7 +464,7 @@ export default function PagePreviewScreen() {
           <TouchableOpacity 
             style={styles.actionButton} 
             onPress={handleRotate}
-            disabled={isApplyingFilter || isRotating}
+            disabled={currentPageIsPdf || isApplyingFilter || isRotating}
           >
             <Ionicons name="sync-outline" size={20} color={COLORS.text} />
             <Text style={styles.actionText}>Rotate</Text>
@@ -537,6 +552,29 @@ const styles = StyleSheet.create({
   image: {
     width: SCREEN_WIDTH,
     height: SCREEN_HEIGHT * 0.6,
+  },
+  pdfPreview: {
+    width: SCREEN_WIDTH - 48,
+    minHeight: SCREEN_HEIGHT * 0.42,
+    borderRadius: 18,
+    backgroundColor: COLORS.background,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  pdfPreviewTitle: {
+    color: COLORS.text,
+    fontSize: 18,
+    fontWeight: '800',
+    textAlign: 'center',
+    marginTop: 14,
+  },
+  pdfPreviewBody: {
+    color: COLORS.textLight,
+    fontSize: 13,
+    lineHeight: 19,
+    textAlign: 'center',
+    marginTop: 8,
   },
   loadingOverlay: {
     ...StyleSheet.absoluteFillObject,

@@ -8,10 +8,12 @@ import {
     Modal,
     FlatList,
     Pressable,
+    Alert,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as DocumentPicker from 'expo-document-picker';
 import { detectDocumentInFrame, convertToGrayscale, FilterMode, applyFilter, resetScannerState } from '../src/utils/cvProcessor';
 import { normalizeCapturedDocument } from '../src/utils/documentNormalizer';
 import { generateUUID, useScanStore } from '../src/store/scanStore';
@@ -31,6 +33,7 @@ import { ScannerBottomBar } from '../src/components/ScannerBottomBar';
 import { detectBlur, BlurDetectionResult } from '../src/utils/blurDetection';
 import { Ionicons } from '@expo/vector-icons';
 import { useMotionStability } from '../src/hooks/useMotionStability';
+import { createImportedPdfPage, isPdfScannedPage } from '../src/utils/scannedPageAssets';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const CAPTURE_COOLDOWN_MS = 2500;
@@ -487,6 +490,49 @@ export default function ScannerScreen() {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }, [silentNextStudent]);
 
+    const handlePickPdf = useCallback(async () => {
+        try {
+            setIsPaused(true);
+            isPausedRef.current = true;
+            resetScannerState();
+
+            const result = await DocumentPicker.getDocumentAsync({
+                type: 'application/pdf',
+                multiple: currentPhase === 'students',
+                copyToCacheDirectory: true,
+            });
+
+            if (result.canceled || !result.assets?.length) {
+                return;
+            }
+
+            const selectedAssets = currentPhase === 'students'
+                ? result.assets
+                : result.assets.slice(0, 1);
+
+            if (currentPhase !== 'students' && result.assets.length > 1) {
+                Alert.alert('One PDF added', 'This step accepts one document. The first selected PDF was added.');
+            }
+
+            for (let index = 0; index < selectedAssets.length; index += 1) {
+                const store = useScanStore.getState();
+                if (currentPhase === 'students') {
+                    const activeStudent = store.currentSession?.students[store.currentStudentIndex];
+                    const activeStudentHasPages = Boolean(activeStudent?.pages?.length);
+                    if (index > 0 || activeStudentHasPages) {
+                        store.silentNextStudent();
+                    }
+                }
+                useScanStore.getState().addPage(createImportedPdfPage(selectedAssets[index], generateUUID));
+            }
+
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Please choose a valid PDF and try again.';
+            Alert.alert('Could not add PDF', message);
+        }
+    }, [currentPhase]);
+
     const handleFinishPhase = useCallback(() => {
         const session = useScanStore.getState().currentSession;
         if (!session) return;
@@ -655,11 +701,17 @@ export default function ScannerScreen() {
                         contentContainerStyle={{ paddingHorizontal: 8, gap: 6, alignItems: 'center' }}
                         renderItem={({ item }) => (
                             <View style={styles.thumbItem}>
-                                <Image
-                                    source={{ uri: item.file_path }}
-                                    style={styles.thumbImage}
-                                    contentFit="cover"
-                                />
+                                {isPdfScannedPage(item) ? (
+                                    <View style={[styles.thumbImage, styles.pdfThumb]}>
+                                        <Ionicons name="document-text" size={22} color="#fff" />
+                                    </View>
+                                ) : (
+                                    <Image
+                                        source={{ uri: item.file_path }}
+                                        style={styles.thumbImage}
+                                        contentFit="cover"
+                                    />
+                                )}
                                 {item.is_blurry && <View style={styles.blurDot} />}
                             </View>
                         )}
@@ -677,6 +729,7 @@ export default function ScannerScreen() {
                 stabilityProgress={stabilityProgress}
                 onTogglePause={handleTogglePause}
                 onManualCapture={handleManualCapture}
+                onPickPdf={handlePickPdf}
                 onNextStudent={handleNextStudent}
                 onUndo={undoLastPage}
                 onFinishPhase={handleFinishPhase}
@@ -743,5 +796,6 @@ const styles = StyleSheet.create({
     thumbStrip: { height: 72, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'center' },
     thumbItem: { width: 52, height: 60, borderRadius: 6, overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
     thumbImage: { width: '100%', height: '100%' },
+    pdfThumb: { alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(235,87,34,0.38)' },
     blurDot: { position: 'absolute', top: 4, right: 4, width: 8, height: 8, borderRadius: 4, backgroundColor: '#E24B4A' },
 });

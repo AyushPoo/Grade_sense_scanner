@@ -41,7 +41,7 @@ class StorageService:
         session_dir.mkdir(exist_ok=True, parents=True)
         return session_dir
 
-    def save_file(self, session_id: str, filename: str, file_obj) -> str:
+    def save_file(self, session_id: str, filename: str, file_obj, content_type: str = "image/jpeg") -> str:
         """Saves a file and returns the local path/URL identifier"""
         session_dir = self.get_session_dir(session_id)
         file_path = session_dir / filename
@@ -108,7 +108,7 @@ class GcsStorageService:
     def get_session_dir(self, session_id: str) -> str:
         return f"{session_id}/"
 
-    def save_file(self, session_id: str, filename: str, file_obj) -> str:
+    def save_file(self, session_id: str, filename: str, file_obj, content_type: str = "image/jpeg") -> str:
         """Saves a file to GCS and returns the api endpoint URL identifier"""
         blob_path = f"{session_id}/{filename}"
         blob = self.bucket.blob(blob_path)
@@ -119,7 +119,7 @@ class GcsStorageService:
         except Exception:
             pass
             
-        blob.upload_from_file(file_obj, content_type="image/jpeg")
+        blob.upload_from_file(file_obj, content_type=content_type)
         logger.info(f"Saved file to GCS: gs://{self.bucket_name}/{blob_path}")
         return f"/api/files/{session_id}/{filename}"
 

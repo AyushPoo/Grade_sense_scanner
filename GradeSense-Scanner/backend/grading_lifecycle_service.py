@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
@@ -17,7 +18,7 @@ def normalize_job(row: dict[str, Any]) -> dict[str, Any]:
     if progress is None and total_items > 0:
         progress = processed_items / total_items
 
-    return {
+    normalized = {
         "id": str(row.get("id") or ""),
         "type": row.get("type") or "grade_submissions",
         "status": row.get("status") or "queued",
@@ -26,7 +27,22 @@ def normalize_job(row: dict[str, Any]) -> dict[str, Any]:
         "totalItems": total_items,
         "error": row.get("error"),
         "createdAt": row.get("created_at") or row.get("createdAt"),
+        "payloadJson": row.get("payload_json") or row.get("payloadJson"),
     }
+
+    if is_completed_pilot_first_job_waiting_for_review(normalized):
+        payload = _coerce_payload(normalized.get("payloadJson"))
+        held_count = len(payload.get("heldSubmissionIds") or [])
+        total_with_held = normalized["processedItems"] + held_count
+        normalized["status"] = "awaiting_first_review"
+        normalized["totalItems"] = total_with_held
+        normalized["progress"] = (
+            normalized["processedItems"] / total_with_held
+            if total_with_held
+            else 0.0
+        )
+
+    return normalized
 
 
 def build_grading_jobs(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -134,6 +150,23 @@ def derive_scan_session_reconciliation(
             and grading_job["totalItems"] > 0
             and grading_job["processedItems"] >= grading_job["totalItems"]
         ):
+            if is_completed_pilot_first_job_waiting_for_review(grading_job):
+                payload = _coerce_payload(grading_job.get("payloadJson"))
+                held_count = len(payload.get("heldSubmissionIds") or [])
+                processed_items = grading_job["processedItems"]
+                total_items = processed_items + held_count
+                progress = processed_items / total_items if total_items else 0.0
+                return {
+                    "status": "grading",
+                    "grading_job_id": grading_job["id"],
+                    "grading_job_type": grading_job["type"],
+                    "grading_status": "awaiting_first_review",
+                    "grading_progress": progress,
+                    "grading_processed_items": processed_items,
+                    "grading_total_items": total_items,
+                    "last_sync_error": None,
+                }
+
             return {
                 "status": "graded",
                 "grading_job_id": grading_job["id"],
@@ -219,6 +252,88 @@ def deleted_or_missing_webapp_exam_ids(
         for exam_id in requested
         if exam_id not in rows_by_id or rows_by_id[exam_id] == DELETED_EXAM_STATUS
     }
+
+
+def pilot_review_first_enabled(settings: dict[str, Any] | None) -> bool:
+    if not isinstance(settings, dict):
+        return False
+    return bool(settings.get("pilot_review_first", settings.get("pilotReviewFirst", False)))
+
+
+def build_grading_submission_queue(
+    submission_ids: list[str],
+    *,
+    pilot_review_first: bool,
+) -> dict[str, Any]:
+    if not submission_ids:
+        return {
+            "queued_submission_ids": [],
+            "held_submission_ids": [],
+            "queue_first_only": False,
+        }
+
+    if not pilot_review_first:
+        return {
+            "queued_submission_ids": submission_ids,
+            "held_submission_ids": [],
+            "queue_first_only": False,
+        }
+
+    return {
+        "queued_submission_ids": submission_ids[:1],
+        "held_submission_ids": submission_ids[1:],
+        "queue_first_only": True,
+    }
+
+
+def _coerce_payload(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def find_pilot_review_continuation(
+    grading_jobs: Iterable[dict[str, Any]],
+    reviewed_submission_id: str,
+) -> dict[str, Any] | None:
+    jobs = list(grading_jobs)
+    existing_continuation_sources = {
+        str(payload.get("pilotSourceJobId"))
+        for payload in (_coerce_payload(job.get("payload_json") or job.get("payloadJson")) for job in jobs)
+        if payload.get("pilotSourceJobId")
+    }
+
+    for job in jobs:
+        job_id = str(job.get("id") or "")
+        payload = _coerce_payload(job.get("payload_json") or job.get("payloadJson"))
+        queued_ids = [str(item) for item in payload.get("submissionIds") or []]
+        held_ids = [str(item) for item in payload.get("heldSubmissionIds") or []]
+
+        if not job_id or job_id in existing_continuation_sources:
+            continue
+        if not payload.get("queueFirstOnly") or reviewed_submission_id not in queued_ids or not held_ids:
+            continue
+
+        return {
+            "source_job_id": job_id,
+            "held_submission_ids": held_ids,
+            "teacher_id": payload.get("teacherId"),
+        }
+
+    return None
+
+
+def is_completed_pilot_first_job_waiting_for_review(job: dict[str, Any]) -> bool:
+    if job.get("status") != COMPLETED_JOB_STATUS:
+        return False
+    payload = _coerce_payload(job.get("payload_json") or job.get("payloadJson"))
+    return bool(payload.get("queueFirstOnly") and payload.get("heldSubmissionIds"))
 
 
 def _job_sort_key(job: dict[str, Any]) -> tuple[int, str]:

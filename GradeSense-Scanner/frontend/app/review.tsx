@@ -23,6 +23,7 @@ import { File, Paths } from 'expo-file-system';
 import { CropOverlay } from '../src/components/CropOverlay';
 import { normalizeCapturedDocument } from '../src/utils/documentNormalizer';
 import * as ImageManipulator from 'expo-image-manipulator';
+import { isPdfScannedPage } from '../src/utils/scannedPageAssets';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -53,16 +54,26 @@ const PageThumb = memo(({
 }) => {
   const quality = qualityScore(page.sharpness_score ?? 0, page.is_blurry ?? false);
   const qc      = QUALITY_COLORS[quality];
+  const isPdf = isPdfScannedPage(page);
 
   return (
     <View style={styles.thumbContainer}>
       <TouchableOpacity onPress={() => onPreview(student, pageIndex)} activeOpacity={0.8}>
-        <Image
-          source={{ uri: page.file_path }}
-          style={styles.thumbImage}
-          contentFit="cover"
-          cachePolicy="none"
-        />
+        {isPdf ? (
+          <View style={[styles.thumbImage, styles.pdfThumb]}>
+            <Ionicons name="document-text" size={30} color={COLORS.primary} />
+            <Text style={styles.pdfThumbText} numberOfLines={2}>
+              {page.original_name || 'PDF'}
+            </Text>
+          </View>
+        ) : (
+          <Image
+            source={{ uri: page.file_path }}
+            style={styles.thumbImage}
+            contentFit="cover"
+            cachePolicy="none"
+          />
+        )}
 
         {/* Page number badge */}
         <View style={styles.pageNumBadge}>
@@ -70,8 +81,8 @@ const PageThumb = memo(({
         </View>
 
         {/* Quality badge */}
-        <View style={[styles.qualityBadge, { backgroundColor: qc.bg }]}>
-          <Text style={[styles.qualityText, { color: qc.text }]}>{qc.label}</Text>
+        <View style={[styles.qualityBadge, { backgroundColor: isPdf ? COLORS.primary : qc.bg }]}>
+          <Text style={[styles.qualityText, { color: '#fff' }]}>{isPdf ? 'PDF' : qc.label}</Text>
         </View>
       </TouchableOpacity>
 
@@ -81,7 +92,11 @@ const PageThumb = memo(({
           <Ionicons name="camera-outline" size={14} color={COLORS.primary} />
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.thumbActionBtn} onPress={() => onCrop(student, page, pageIndex)}>
+        <TouchableOpacity
+          style={[styles.thumbActionBtn, isPdf && styles.thumbActionDisabled]}
+          onPress={() => onCrop(student, page, pageIndex)}
+          disabled={isPdf}
+        >
           <Ionicons name="crop-outline" size={14} color={COLORS.primary} />
         </TouchableOpacity>
 
@@ -97,6 +112,7 @@ const PageThumb = memo(({
     </View>
   );
 });
+PageThumb.displayName = 'PageThumb';
 
 // ── Student card ──────────────────────────────────────────────────────────────
 const StudentCard = memo(({
@@ -214,6 +230,7 @@ const StudentCard = memo(({
     </View>
   );
 });
+StudentCard.displayName = 'StudentCard';
 
 // ── QP & MA collapsible card ──────────────────────────────────────────────────
 const QPMASection = memo(({
@@ -324,6 +341,7 @@ const QPMASection = memo(({
     </View>
   );
 });
+QPMASection.displayName = 'QPMASection';
 
 // ── Main ReviewScreen ─────────────────────────────────────────────────────────
 export default function ReviewScreen() {
@@ -455,6 +473,7 @@ export default function ReviewScreen() {
       // Loop students and pages
       for (const student of session.students) {
         for (const page of student.pages) {
+          if (isPdfScannedPage(page)) continue;
           if (page.filter_mode === filter) continue;
           const sourceUri = page.original_file_path || page.file_path;
           
@@ -838,12 +857,15 @@ const styles = StyleSheet.create({
 
   thumbContainer:   { width: THUMB_W, alignItems: 'center' },
   thumbImage:       { width: THUMB_W, height: THUMB_H, borderRadius: 6 },
+  pdfThumb:         { alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: '#FFF4EF', borderWidth: 1, borderColor: '#FFD8C8', padding: 6 },
+  pdfThumbText:     { color: COLORS.text, fontSize: 10, fontWeight: '700', textAlign: 'center' },
   pageNumBadge:     { position: 'absolute', top: 4, left: 4, backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1 },
   pageNumText:      { color: '#fff', fontSize: 10, fontWeight: '600' },
   qualityBadge:     { position: 'absolute', bottom: 4, left: 4, right: 4, borderRadius: 4, paddingVertical: 2, alignItems: 'center' },
   qualityText:      { fontSize: 10, fontWeight: '700' },
   thumbActions:     { flexDirection: 'row', justifyContent: 'space-between', width: THUMB_W, marginTop: 4 },
   thumbActionBtn:   { flexDirection: 'row', alignItems: 'center', gap: 2, padding: 4 },
+  thumbActionDisabled: { opacity: 0.25 },
   thumbActionLabel: { fontSize: 11, color: COLORS.primary },
 
   footer:           { padding: 16, borderTopWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border },

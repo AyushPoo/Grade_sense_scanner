@@ -31,9 +31,12 @@ from review_settings_service import (
 from improve_ai_service import ImproveAIServiceError, save_question_improvement
 from grading_lifecycle_service import (
     build_grading_jobs,
+    build_grading_submission_queue,
     deleted_or_missing_webapp_exam_ids,
     derive_scan_session_reconciliation,
+    find_pilot_review_continuation,
     is_successful_blueprint_job,
+    pilot_review_first_enabled,
     student_answer_text_select_expression,
     validate_scan_session_ready_for_sync,
 )
@@ -106,6 +109,24 @@ def get_gcs_signed_url(gcs_key: str, expiration_minutes: int = 60) -> Optional[s
     except Exception as e:
         logger.error(f"Error generating GCS signed URL for {gcs_key}: {e}")
     return None
+
+
+def sanitize_uploaded_filename(name: Optional[str], fallback: str) -> str:
+    source = name or fallback
+    safe = "".join(c for c in source if c.isalnum() or c in (" ", "_", "-", ".")).strip()
+    return safe.replace(" ", "_") or fallback
+
+
+def infer_upload_content_type(upload_file: UploadFile) -> str:
+    content_type = (upload_file.content_type or "").lower()
+    filename = (upload_file.filename or "").lower()
+    if content_type == "application/pdf" or filename.endswith(".pdf"):
+        return "application/pdf"
+    return "image/jpeg"
+
+
+def content_type_extension(content_type: str) -> str:
+    return ".pdf" if content_type == "application/pdf" else ".jpg"
 
 def generate_drizzle_id(prefix: str) -> str:
     import string
@@ -182,6 +203,9 @@ class PageMetadata(BaseModel):
     sharpness_score: float
     captured_at: str
     file_url: Optional[str] = None
+    source_type: Optional[str] = None
+    content_type: Optional[str] = None
+    original_name: Optional[str] = None
 
 class QuestionPaperInfo(BaseModel):
     page_count: int = 0
@@ -1238,21 +1262,26 @@ async def upload_file(
     """
     logger.info(f"Upload: session={session_id}, phase={phase}, page={page_number}, mode={mode}")
     user = await get_current_user(authorization)
+    content_type = infer_upload_content_type(file)
+    extension = content_type_extension(content_type)
     
     # Generate deterministic filename
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     suffix = f"s{student_index}_" if student_index is not None else ""
     # Safe filename without special characters
-    filename = f"{phase}_{suffix}p{page_number}_{timestamp}_{uuid.uuid4().hex[:6]}.jpg"
+    uploaded_name = sanitize_uploaded_filename(file.filename, f"{phase}_{suffix}p{page_number}{extension}")
+    filename = f"{phase}_{suffix}p{page_number}_{timestamp}_{uuid.uuid4().hex[:6]}{extension}"
     
     # Save to storage abstraction
-    file_url = storage.save_file(session_id, filename, file.file)
+    file_url = storage.save_file(session_id, filename, file.file, content_type=content_type)
     
     # Update stats if needed (placeholder for future metrics)
     return {
         "status": "success",
         "file_url": file_url,
-        "filename": filename
+        "filename": filename,
+        "content_type": content_type,
+        "original_name": uploaded_name,
     }
 
 
@@ -1277,7 +1306,7 @@ async def get_file(session_id: str, filename: str):
         
         return FileResponse(
             file_path, 
-            media_type="image/jpeg",
+            media_type="application/pdf" if filename.lower().endswith(".pdf") else "image/jpeg",
             headers={"Cache-Control": "public, max-age=3600"}
         )
 
@@ -1503,6 +1532,13 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                 return local_temp_path
             return None
 
+    def is_pdf_page(p_metadata: dict) -> bool:
+        source = " ".join(
+            str(p_metadata.get(key) or "")
+            for key in ("content_type", "original_name", "file_url", "file_path")
+        ).lower()
+        return "application/pdf" in source or ".pdf" in source
+
     # Helper to compile page metadata into a single PDF
     async def compile_pages_to_pdf(pages_metadata: list, output_path: Path, compile_temp_dir: str) -> bool:
         images = []
@@ -1538,6 +1574,28 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
             return True
         return False
 
+    async def resolve_document_pdf(pages_metadata: list, output_path: Path, compile_temp_dir: str) -> bool:
+        sorted_pages = sorted(pages_metadata, key=lambda x: x.get("page_number", 0))
+        pdf_pages = [page for page in sorted_pages if is_pdf_page(page)]
+
+        if len(sorted_pages) == 1 and pdf_pages:
+            local_pdf_path = await download_file_locally(pdf_pages[0], compile_temp_dir)
+            if local_pdf_path and local_pdf_path.exists():
+                loop = asyncio.get_event_loop()
+                if local_pdf_path.resolve() != output_path.resolve():
+                    await loop.run_in_executor(None, shutil.copy, local_pdf_path, output_path)
+                return True
+            return False
+
+        if pdf_pages:
+            logger.error(
+                "Mixed image/PDF or multiple-PDF document imports are not supported for a single document. "
+                "Use one PDF per QP/model/student or scan image pages."
+            )
+            return False
+
+        return await compile_pages_to_pdf(sorted_pages, output_path, compile_temp_dir)
+
     if webapp_db_url:
         try:
             logger.info("Starting direct Neon DB and GCS background sync...")
@@ -1553,7 +1611,7 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                 if qp_pages:
                     qp_pdf_path = temp_dir_path / "question_paper.pdf"
                     logger.info(f"Compiling QP PDF with {len(qp_pages)} pages...")
-                    if await compile_pages_to_pdf(qp_pages, qp_pdf_path, compile_temp_dir):
+                    if await resolve_document_pdf(qp_pages, qp_pdf_path, compile_temp_dir):
                         qp_size = qp_pdf_path.stat().st_size
                         qp_rand = generate_drizzle_id("")
                         qp_gcs_key = f"exams/{exam_id}/question_paper/file_{qp_rand}_question_paper.pdf"
@@ -1589,7 +1647,7 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                 if ma_pages:
                     ma_pdf_path = temp_dir_path / "model_answer.pdf"
                     logger.info(f"Compiling Model Answer PDF with {len(ma_pages)} pages...")
-                    if await compile_pages_to_pdf(ma_pages, ma_pdf_path, compile_temp_dir):
+                    if await resolve_document_pdf(ma_pages, ma_pdf_path, compile_temp_dir):
                         ma_size = ma_pdf_path.stat().st_size
                         ma_rand = generate_drizzle_id("")
                         ma_gcs_key = f"exams/{exam_id}/model_answer/file_{ma_rand}_model_answer.pdf"
@@ -1680,7 +1738,7 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                         st_pdf_path = temp_dir_path / pdf_name
 
                         logger.info(f"Compiling Student {clean_label} PDF with {len(st_pages)} pages...")
-                        if not await compile_pages_to_pdf(st_pages, st_pdf_path, compile_temp_dir):
+                        if not await resolve_document_pdf(st_pages, st_pdf_path, compile_temp_dir):
                             logger.error(f"Unable to compile student submission PDF for {clean_label}")
                             continue
 
@@ -1846,7 +1904,13 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                 if session_submission_ids:
                     active_job_id = generate_drizzle_id("job_")
                     logger.info(f"Enqueuing grading job {active_job_id} in Neon...")
-                    queued_submission_ids = session_submission_ids
+                    grading_queue = build_grading_submission_queue(
+                        session_submission_ids,
+                        pilot_review_first=pilot_review_first_enabled(session.get("settings")),
+                    )
+                    queued_submission_ids = grading_queue["queued_submission_ids"]
+                    held_submission_ids = grading_queue["held_submission_ids"]
+                    queue_first_only = grading_queue["queue_first_only"]
                     conn = await asyncpg.connect(webapp_db_url)
                     await conn.execute(
                         '''
@@ -1869,10 +1933,11 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                         0,
                         json.dumps({
                             "submissionIds": queued_submission_ids,
+                            "heldSubmissionIds": held_submission_ids,
                             "teacherId": user_id,
                             "flow": "batch_grading",
                             "source": "mobile_scanner",
-                            "queueFirstOnly": False,
+                            "queueFirstOnly": queue_first_only,
                         }),
                         "{}",
                         datetime.utcnow().isoformat() + 'Z',
@@ -2743,6 +2808,111 @@ async def improve_question_grading(
             await conn.close()
 
 
+async def enqueue_pilot_review_continuation(submission_id: str, authorization: Optional[str]) -> None:
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if not webapp_db_url:
+        return
+
+    user = await get_current_user(authorization)
+    conn = None
+    try:
+        conn = await asyncpg.connect(webapp_db_url)
+        submission_row = await conn.fetchrow(
+            '''
+            SELECT s.exam_id, e.teacher_id
+            FROM submissions s
+            INNER JOIN exams e ON e.id = s.exam_id
+            WHERE s.id = $1
+            ''',
+            submission_id,
+        )
+        if not submission_row:
+            return
+
+        exam_id = str(submission_row["exam_id"])
+        teacher_id = str(submission_row["teacher_id"] or user.user_id)
+        if teacher_id != user.user_id:
+            logger.warning(f"Skipping pilot review continuation for unauthorized teacher {user.user_id}")
+            return
+
+        job_rows = await conn.fetch(
+            '''
+            SELECT id, payload_json
+            FROM grading_jobs
+            WHERE exam_id = $1
+              AND teacher_id = $2
+              AND type IN ('grade_submissions', 'bulk_grade')
+            ORDER BY created_at DESC
+            ''',
+            exam_id,
+            teacher_id,
+        )
+        continuation = find_pilot_review_continuation(
+            [dict(row) for row in job_rows],
+            submission_id,
+        )
+        if not continuation:
+            return
+
+        held_submission_ids = continuation["held_submission_ids"]
+        if not held_submission_ids:
+            return
+
+        job_id = generate_drizzle_id("job_")
+        now = datetime.utcnow().isoformat() + 'Z'
+        await conn.execute(
+            '''
+            INSERT INTO grading_jobs (
+                id, type, status, exam_id, teacher_id,
+                progress, total_items, processed_items, success_count, failure_count,
+                attempts, payload_json, result_json, created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            ''',
+            job_id,
+            "grade_submissions",
+            "queued",
+            exam_id,
+            teacher_id,
+            0.0,
+            len(held_submission_ids),
+            0,
+            0,
+            0,
+            0,
+            json.dumps({
+                "submissionIds": held_submission_ids,
+                "heldSubmissionIds": [],
+                "teacherId": teacher_id,
+                "flow": "batch_grading",
+                "source": "mobile_pilot_review_remaining",
+                "queueFirstOnly": False,
+                "pilotSourceJobId": continuation["source_job_id"],
+            }),
+            "{}",
+            now,
+            now,
+        )
+        await db.scan_sessions.update_one(
+            {"exam_id": exam_id, "user_id": teacher_id},
+            {"$set": {
+                "status": "grading",
+                "grading_job_id": job_id,
+                "grading_job_type": "grade_submissions",
+                "grading_status": "queued",
+                "grading_progress": 0.0,
+                "grading_processed_items": 0,
+                "grading_total_items": len(held_submission_ids),
+                "updated_at": datetime.now(timezone.utc),
+            }}
+        )
+        logger.info(f"Queued pilot review continuation job {job_id} for {len(held_submission_ids)} held submissions.")
+    except Exception as exc:
+        logger.error(f"Failed to queue pilot review continuation after {submission_id}: {exc}")
+    finally:
+        if conn:
+            await conn.close()
+
+
 @api_router.post("/v1/submissions/{submission_id}/review")
 async def post_submission_review_proxy(submission_id: str, data: dict, authorization: Optional[str] = Header(None)):
     """Save review grades (proxied to webapp or mock save)"""
@@ -2759,6 +2929,7 @@ async def post_submission_review_proxy(submission_id: str, data: dict, authoriza
                     timeout=30.0
                 )
                 if response.status_code in [200, 201]:
+                    await enqueue_pilot_review_continuation(submission_id, authorization)
                     return response.json()
                 logger.warn(f"Proxy review save returned status {response.status_code}: {response.text}")
         except Exception as e:
@@ -3586,7 +3757,7 @@ async def get_exam_jobs_proxy(exam_id: str, authorization: Optional[str] = Heade
             conn = await asyncpg.connect(webapp_db_url)
             rows = await conn.fetch(
                 '''
-                SELECT j.id, j.type, j.status, j.progress, j.processed_items, j.total_items, j.updated_at
+                SELECT j.id, j.type, j.status, j.progress, j.processed_items, j.total_items, j.payload_json, j.updated_at
                 FROM grading_jobs j
                 WHERE j.exam_id = $1
                 ORDER BY j.created_at DESC

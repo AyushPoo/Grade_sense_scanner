@@ -1,5 +1,6 @@
 import type { ReviewFileItem, ReviewFileSlide } from '../types/review';
 import type { ScannedPage, ScanSession, ScannedStudent } from '../types';
+import { isPdfScannedPage } from './scannedPageAssets';
 
 interface ActiveStudentIdentity {
   studentName?: string | null;
@@ -126,7 +127,8 @@ function buildFilesFromPages(
       id: `${idPrefix}-${page.id || page.ui_id || page.page_number}`,
       kind,
       fileType: kind,
-      originalName: `${kind}_page_${page.page_number}`,
+      originalName: page.original_name || `${kind}_page_${page.page_number}`,
+      contentType: isPdfScannedPage(page) ? 'application/pdf' : page.content_type,
       signedUrl: page.file_path,
       annotationSignedUrl: null,
     }));

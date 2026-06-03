@@ -104,7 +104,7 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
 
             if (isOffScreen || (ENABLE_MANUAL_CROP_VALIDATION && (!isConvexQuad(rawQ) || !hasConsistentWinding(rawQ)))) {
                 console.warn("[CropOverlay] initialQuad is invalid or off-screen. Falling back to default pad.");
-                useFallback();
+                applyFallback();
             } else {
                 // Clamp to screen edges
                 const clampX = (val: number) => Math.max(0, Math.min(val, finalWidth));
@@ -120,10 +120,10 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
                 pointsRef.current = q;
             }
         } else {
-            useFallback();
+            applyFallback();
         }
 
-        function useFallback() {
+        function applyFallback() {
             const padX = finalWidth * 0.08;
             const padY = finalHeight * 0.08;
             const q = {

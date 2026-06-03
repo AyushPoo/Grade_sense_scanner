@@ -7,8 +7,12 @@ const test = require('node:test');
 const ts = require('typescript');
 const vm = require('node:vm');
 
-function loadTsModule(relativePath) {
+function loadTsModule(relativePath, moduleCache = new Map()) {
   const filename = path.join(__dirname, '..', relativePath);
+  if (moduleCache.has(filename)) {
+    return moduleCache.get(filename).exports;
+  }
+
   const source = fs.readFileSync(filename, 'utf8');
   const transpiled = ts.transpileModule(source, {
     compilerOptions: {
@@ -19,10 +23,20 @@ function loadTsModule(relativePath) {
   }).outputText;
 
   const module = { exports: {} };
+  moduleCache.set(filename, module);
+  const localRequire = (specifier) => {
+    if (specifier.startsWith('.')) {
+      const resolved = path.join(path.dirname(relativePath), specifier);
+      const normalized = resolved.replace(/\\/g, '/');
+      const tsRelative = normalized.endsWith('.ts') ? normalized : `${normalized}.ts`;
+      return loadTsModule(tsRelative, moduleCache);
+    }
+    return require(specifier);
+  };
   const context = vm.createContext({
     exports: module.exports,
     module,
-    require,
+    require: localRequire,
   });
   vm.runInContext(transpiled, context, { filename });
   return module.exports;
@@ -52,6 +66,10 @@ const {
   REVIEW_DENSITY_OPTIONS,
   getReviewDensityConfig,
 } = loadTsModule('src/utils/reviewDensity.ts');
+const {
+  createImportedPdfPage,
+  isPdfScannedPage,
+} = loadTsModule('src/utils/scannedPageAssets.ts');
 
 function buildSession(overrides = {}) {
   return {
@@ -175,6 +193,66 @@ test('buildLocalReviewFiles maps local session question, model, and active stude
       { id: 'local-student-student_page_1', kind: 'answer_sheet', signedUrl: 'file:///student-1.jpg' },
     ]
   );
+});
+
+test('buildLocalReviewFiles preserves local PDF page metadata for paper viewers', () => {
+  const files = buildLocalReviewFiles(
+    buildSession({
+      model_answer: {
+        page_count: 1,
+        pages: [
+          {
+            id: 'model_pdf',
+            file_path: 'file:///model.pdf',
+            page_number: 1,
+            content_type: 'application/pdf',
+            original_name: 'model-answer.pdf',
+          },
+        ],
+      },
+      students: [
+        {
+          id: 'student_1',
+          label: 'Student #1',
+          page_count: 1,
+          pages: [
+            {
+              id: 'student_pdf',
+              file_path: 'file:///student.pdf',
+              page_number: 1,
+              source_type: 'pdf',
+              original_name: 'student-answer.pdf',
+            },
+          ],
+        },
+      ],
+    }),
+    null
+  );
+
+  const byKind = Object.fromEntries(files.map(file => [file.kind, file]));
+  assert.equal(byKind.model_answer.contentType, 'application/pdf');
+  assert.equal(byKind.model_answer.originalName, 'model-answer.pdf');
+  assert.equal(byKind.answer_sheet.contentType, 'application/pdf');
+  assert.equal(byKind.answer_sheet.originalName, 'student-answer.pdf');
+});
+
+test('createImportedPdfPage marks selected documents as PDF pages', () => {
+  const page = createImportedPdfPage(
+    {
+      uri: 'file:///cache/student.pdf',
+      name: 'student.pdf',
+      mimeType: 'application/pdf',
+      size: 1234,
+    },
+    () => 'page_id',
+  );
+
+  assert.equal(page.id, 'page_id');
+  assert.equal(page.source_type, 'pdf');
+  assert.equal(page.content_type, 'application/pdf');
+  assert.equal(page.file_size, 1234);
+  assert.equal(isPdfScannedPage(page), true);
 });
 
 test('normalizeReviewScores preserves extracted student answer text from existing API fields', () => {
@@ -301,6 +379,18 @@ test('grading lifecycle ignores completed jobs in home progress section', () => 
   assert.equal(isCompletedGradingJob(completedJob), true);
   assert.equal(shouldShowGradingStatus({ status: 'grading' }, completedJob), false);
   assert.equal(shouldShowGradingStatus({ status: 'syncing' }, null), true);
+});
+
+test('grading lifecycle treats first-paper review pause as active, not complete', () => {
+  const job = {
+    type: 'grade_submissions',
+    status: 'awaiting_first_review',
+    processedItems: 1,
+    totalItems: 3,
+  };
+
+  assert.equal(isCompletedGradingJob(job), false);
+  assert.equal(shouldShowGradingStatus({ status: 'grading' }, job), true);
 });
 
 test('grading lifecycle surfaces failed real grading jobs', () => {

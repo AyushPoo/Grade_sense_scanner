@@ -3,6 +3,13 @@ import { useScanStore } from '../store/scanStore';
 import { useAuthStore } from '../store/authStore';
 import * as FileSystem from 'expo-file-system/legacy';
 import { getBackendUrl } from '../config';
+import { isPdfScannedPage } from '../utils/scannedPageAssets';
+
+interface UploadedPageFile {
+  fileUrl: string;
+  contentType: string;
+  originalName?: string;
+}
 
 async function uploadPageFile(
   sessionId: string,
@@ -10,7 +17,7 @@ async function uploadPageFile(
   phase: ScanPhase,
   studentIndex?: number,
   retries = 3
-): Promise<string> {
+): Promise<UploadedPageFile> {
   const token = useAuthStore.getState().sessionToken;
   const backendUrl = getBackendUrl();
   
@@ -20,7 +27,12 @@ async function uploadPageFile(
   let lastError;
   for (let i = 0; i < retries; i++) {
     try {
-      const uploadUri = page.file_path.startsWith('file://') ? page.file_path : `file://${page.file_path}`;
+      const uploadUri = page.file_path.startsWith('file://') || page.file_path.startsWith('content://')
+        ? page.file_path
+        : `file://${page.file_path}`;
+      const isPdf = isPdfScannedPage(page);
+      const contentType = isPdf ? 'application/pdf' : 'image/jpeg';
+      const fileName = page.original_name || `page_${page.page_number}.${isPdf ? 'pdf' : 'jpg'}`;
       
       // Use getInfoAsync — works reliably across all Expo SDK versions
       const fileInfo = await FileSystem.getInfoAsync(uploadUri);
@@ -34,8 +46,8 @@ async function uploadPageFile(
       const formData = new FormData();
       formData.append('file', {
         uri: uploadUri,
-        name: `page_${page.page_number}.jpg`,
-        type: 'image/jpeg',
+        name: fileName,
+        type: contentType,
       } as any);
 
       formData.append('page_number', page.page_number.toString());
@@ -55,7 +67,11 @@ async function uploadPageFile(
 
       if (response.ok) {
         const data = await response.json();
-        return data.file_url;
+        return {
+          fileUrl: data.file_url,
+          contentType: data.content_type || contentType,
+          originalName: data.original_name || page.original_name || fileName,
+        };
       }
       
       const errorText = await response.text();
@@ -67,7 +83,7 @@ async function uploadPageFile(
     }
   }
 
-  throw lastError || new Error(`Failed to upload image file after ${retries} retries`);
+  throw lastError || new Error(`Failed to upload file after ${retries} retries`);
 }
 
 export async function uploadSessionToWebApp(
@@ -148,8 +164,13 @@ export async function uploadSessionToWebApp(
       const updatedPages = [];
       for (const page of qpPages) {
         stepProgress(`Uploading QP Page ${page.page_number}`);
-        const fileUrl = await uploadPageFile(currentSessionId, page, 'question_paper');
-        updatedPages.push({ ...page, file_url: fileUrl });
+        const uploaded = await uploadPageFile(currentSessionId, page, 'question_paper');
+        updatedPages.push({
+          ...page,
+          file_url: uploaded.fileUrl,
+          content_type: uploaded.contentType,
+          original_name: uploaded.originalName,
+        });
       }
       
       stepProgress('Syncing QP Metadata');
@@ -169,8 +190,13 @@ export async function uploadSessionToWebApp(
       const updatedPages = [];
       for (const page of maPages) {
         stepProgress(`Uploading Model Page ${page.page_number}`);
-        const fileUrl = await uploadPageFile(currentSessionId, page, 'model_answer');
-        updatedPages.push({ ...page, file_url: fileUrl });
+        const uploaded = await uploadPageFile(currentSessionId, page, 'model_answer');
+        updatedPages.push({
+          ...page,
+          file_url: uploaded.fileUrl,
+          content_type: uploaded.contentType,
+          original_name: uploaded.originalName,
+        });
       }
       
       stepProgress('Syncing Model Metadata');
@@ -192,8 +218,13 @@ export async function uploadSessionToWebApp(
         const updatedPages = [];
         for (const page of student.pages) {
           stepProgress(`Student ${i + 1}: Page ${page.page_number}`);
-          const fileUrl = await uploadPageFile(currentSessionId, page, 'students', i);
-          updatedPages.push({ ...page, file_url: fileUrl });
+          const uploaded = await uploadPageFile(currentSessionId, page, 'students', i);
+          updatedPages.push({
+            ...page,
+            file_url: uploaded.fileUrl,
+            content_type: uploaded.contentType,
+            original_name: uploaded.originalName,
+          });
         }
         
         stepProgress(`Syncing Student ${i + 1} Metadata`);

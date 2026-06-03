@@ -22,6 +22,7 @@ const GRADING_JOB_TYPES = new Set(['bulk_grade', 'grade_submissions']);
 const ACTIVE_SESSION_STATUSES = new Set(['syncing', 'grading']);
 const FAILED_SESSION_STATUSES = new Set(['sync_failed', 'failed']);
 const FAILED_JOB_STATUSES = new Set(['failed', 'cancelled']);
+const PILOT_REVIEW_JOB_STATUS = 'awaiting_first_review';
 
 export function normalizeJobProgress(job: MaybeJob | null | undefined) {
   const processed = Number(job?.processed ?? job?.processedItems ?? 0);
@@ -45,6 +46,9 @@ export function isFailedGradingJob(job: MaybeJob | null | undefined): boolean {
 
 export function isCompletedGradingJob(job: MaybeJob | null | undefined): boolean {
   if (!isActualGradingJob(job)) {
+    return false;
+  }
+  if (job?.status === PILOT_REVIEW_JOB_STATUS) {
     return false;
   }
   const progress = normalizeJobProgress(job);
