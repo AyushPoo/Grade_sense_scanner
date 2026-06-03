@@ -5,6 +5,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useAuthStore } from '../src/store/authStore';
 import { useScanStore } from '../src/store/scanStore';
+import { roleHomeRoute, shouldRedirectRoleGroup } from '../src/utils/roleRouting';
 
 export default function RootLayout() {
   const segments = useSegments();
@@ -14,6 +15,7 @@ export default function RootLayout() {
   // Combine hydration states from both stores
   const authHasHydrated = useAuthStore(state => state.hasHydrated);
   const isAuthenticated = useAuthStore(state => state.isAuthenticated);
+  const user = useAuthStore(state => state.user);
   const scanHasHydrated = useScanStore(state => state.hasHydrated);
   const fetchSessions = useScanStore(state => state.fetchSessions);
   const performPostHydrationCleanup = useScanStore(state => state.performPostHydrationCleanup);
@@ -65,15 +67,17 @@ export default function RootLayout() {
           router.replace('/(auth)/login');
         }
       } else {
-        if (inAuthGroup || isAtRoot) {
-          console.log(`[TRACE] RootLayout: Redirecting to home at ${Date.now()}`);
-          router.replace('/(tabs)/home');
+        const destination = roleHomeRoute(user?.role);
+        const currentGroup = currentSegments[0];
+        if (inAuthGroup || isAtRoot || shouldRedirectRoleGroup(user?.role, currentGroup)) {
+          console.log(`[TRACE] RootLayout: Redirecting to ${destination} at ${Date.now()}`);
+          router.replace(destination as any);
         }
       }
     }, 50);
 
     return () => clearTimeout(timeout);
-  }, [isAppReady, isAuthenticated]);
+  }, [isAppReady, isAuthenticated, user?.role]);
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
@@ -83,6 +87,8 @@ export default function RootLayout() {
           <Stack.Screen name="index" />
           <Stack.Screen name="(auth)" />
           <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="(student)" />
+          <Stack.Screen name="(admin)" />
           <Stack.Screen name="scanner" options={{ presentation: 'fullScreenModal' }} />
           <Stack.Screen name="session-setup" options={{ presentation: 'card' }} />
           <Stack.Screen name="review" options={{ presentation: 'card' }} />
@@ -93,6 +99,5 @@ export default function RootLayout() {
     </GestureHandlerRootView>
   );
 }
-
 
 

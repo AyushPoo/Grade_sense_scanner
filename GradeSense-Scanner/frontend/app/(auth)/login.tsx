@@ -18,6 +18,7 @@ import * as Google from 'expo-auth-session/providers/google';
 import { useRouter } from 'expo-router';
 import { COLORS, getBackendUrl } from '../../src/config';
 import { useAuthStore } from '../../src/store/authStore';
+import { roleHomeRoute } from '../../src/utils/roleRouting';
 
 // Required for OAuth flows in Expo
 WebBrowser.maybeCompleteAuthSession();
@@ -81,7 +82,7 @@ export default function LoginScreen() {
       }
       const data = await backendRes.json();
       setUser(data.user); setSessionToken(data.session_token); setIsAuthenticated(true);
-      router.replace('/(tabs)/home');
+      router.replace(roleHomeRoute(data.user?.role) as any);
     } catch (err: any) {
       setError(err.message || 'Google sign-in could not complete. Please use email/password instead.');
     } finally { setIsLoading(false); }
@@ -100,7 +101,7 @@ export default function LoginScreen() {
       }
       const data = await res.json();
       setUser(data.user); setSessionToken(data.session_token); setIsAuthenticated(true);
-      router.replace('/(tabs)/home');
+      router.replace(roleHomeRoute(data.user?.role) as any);
     } catch (err: any) {
       setError(err.message || 'Failed to complete Google sign-in.');
     } finally { setIsLoading(false); }
@@ -121,7 +122,7 @@ export default function LoginScreen() {
       }
       const data = await res.json();
       setUser(data.user); setSessionToken(data.session_token); setIsAuthenticated(true);
-      router.replace('/(tabs)/home');
+      router.replace(roleHomeRoute(data.user?.role) as any);
     } catch (err: any) {
       setError(err.message || 'Failed to authenticate. Please check your credentials.');
     } finally { setIsLoading(false); }

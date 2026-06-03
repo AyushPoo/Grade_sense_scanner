@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Header, BackgroundTasks
+from fastapi import FastAPI, APIRouter, HTTPException, Header, BackgroundTasks, Request
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -60,6 +60,7 @@ from manage_analytics_service import (
 from runtime_readiness_service import build_readiness_report
 from upload_flow_service import merge_upload_flow_state
 from sync_cleanup_service import delete_stale_upload_flows_for_teacher, delete_upload_flows_for_exams
+from webapp_proxy_service import WebappProxyConfigError, build_proxy_headers, build_webapp_url
 import jwt as pyjwt
 import asyncpg
 
@@ -409,6 +410,62 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
     
     return User(**user_doc)
 
+
+async def proxy_webapp_json(
+    webapp_path: str,
+    authorization: Optional[str],
+    method: str = "GET",
+    request: Optional[Request] = None,
+    json_body: Optional[dict] = None,
+) -> dict:
+    """Forward a validated mobile request to the role-aware webapp API."""
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authorization header required")
+
+    await get_current_user(authorization)
+
+    try:
+        url = build_webapp_url(os.environ.get("WEBAPP_URL"), webapp_path)
+    except WebappProxyConfigError as exc:
+        logger.error(f"Webapp proxy is not configured: {exc}")
+        raise HTTPException(status_code=500, detail="Webapp proxy is not configured") from exc
+    except ValueError as exc:
+        logger.error(f"Unsafe webapp proxy path rejected: {webapp_path}")
+        raise HTTPException(status_code=500, detail="Invalid webapp proxy path") from exc
+
+    params = dict(request.query_params) if request else None
+    headers = build_proxy_headers(authorization)
+
+    try:
+        async with httpx.AsyncClient() as client_http:
+            response = await client_http.request(
+                method=method,
+                url=url,
+                headers=headers,
+                params=params,
+                json=json_body,
+                timeout=30.0,
+            )
+    except httpx.RequestError as exc:
+        logger.error(f"Webapp proxy request failed for {method} {webapp_path}: {exc}")
+        raise HTTPException(status_code=502, detail="Webapp service unavailable") from exc
+
+    if response.status_code >= 400:
+        detail = response.text or f"Webapp returned status {response.status_code}"
+        try:
+            body = response.json()
+            detail = body.get("message") or body.get("error", {}).get("message") or detail
+        except Exception:
+            pass
+        raise HTTPException(status_code=response.status_code, detail=detail)
+
+    if not response.content:
+        return {"success": True}
+
+    try:
+        return response.json()
+    except ValueError:
+        return {"data": response.text}
 
 
 # ==================== AUTH ROUTES ====================
@@ -4046,6 +4103,144 @@ async def backdoor_reset(authorization: Optional[str] = Header(None)):
     await db.students.delete_many({"batch_id": {"$in": ["bat_4fgazfn34Vc9F6", "bat_physics11"]}})
     await db.subjects.delete_many({"org_id": user.org_id})
     return {"success": True, "message": "Database reset completed successfully."}
+
+
+# ==================== STUDENT PORTAL WEBAPP PROXY ====================
+
+@api_router.get("/v1/student/dashboard")
+async def student_dashboard_proxy(request: Request, authorization: Optional[str] = Header(None)):
+    return await proxy_webapp_json("/api/v1/analytics/student-dashboard", authorization, request=request)
+
+
+@api_router.get("/v1/student/exams")
+async def student_exams_proxy(request: Request, authorization: Optional[str] = Header(None)):
+    return await proxy_webapp_json("/api/v1/exams", authorization, request=request)
+
+
+@api_router.get("/v1/student/submissions")
+async def student_submissions_proxy(request: Request, authorization: Optional[str] = Header(None)):
+    return await proxy_webapp_json("/api/v1/submissions/mine", authorization, request=request)
+
+
+@api_router.get("/v1/student/submissions/{submission_id}")
+async def student_submission_detail_proxy(
+    submission_id: str,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    return await proxy_webapp_json(f"/api/v1/submissions/{submission_id}", authorization, request=request)
+
+
+@api_router.get("/v1/student/exams/{exam_id}/files")
+async def student_exam_files_proxy(
+    exam_id: str,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    return await proxy_webapp_json(f"/api/v1/exams/{exam_id}/files", authorization, request=request)
+
+
+@api_router.get("/v1/student/re-evaluations")
+async def student_re_evaluations_proxy(request: Request, authorization: Optional[str] = Header(None)):
+    return await proxy_webapp_json("/api/v1/re-evaluations", authorization, request=request)
+
+
+@api_router.post("/v1/student/re-evaluations")
+async def create_student_re_evaluation_proxy(
+    data: dict,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    return await proxy_webapp_json(
+        "/api/v1/re-evaluations",
+        authorization,
+        method="POST",
+        request=request,
+        json_body=data,
+    )
+
+
+# ==================== ADMIN PORTAL WEBAPP PROXY ====================
+
+@api_router.get("/v1/admin/teachers")
+async def admin_teachers_proxy(request: Request, authorization: Optional[str] = Header(None)):
+    return await proxy_webapp_json("/api/v1/admin/users", authorization, request=request)
+
+
+@api_router.patch("/v1/admin/teachers/{user_id}")
+async def update_admin_teacher_proxy(
+    user_id: str,
+    data: dict,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    return await proxy_webapp_json(
+        f"/api/v1/admin/users/{user_id}",
+        authorization,
+        method="PATCH",
+        request=request,
+        json_body=data,
+    )
+
+
+@api_router.get("/v1/admin/teacher-invites")
+async def admin_teacher_invites_proxy(request: Request, authorization: Optional[str] = Header(None)):
+    return await proxy_webapp_json("/api/v1/admin/teacher-invites", authorization, request=request)
+
+
+@api_router.post("/v1/admin/teacher-invites")
+async def create_admin_teacher_invite_proxy(
+    data: dict,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    return await proxy_webapp_json(
+        "/api/v1/admin/teacher-invites",
+        authorization,
+        method="POST",
+        request=request,
+        json_body=data,
+    )
+
+
+@api_router.delete("/v1/admin/teacher-invites/{invite_id}")
+async def delete_admin_teacher_invite_proxy(
+    invite_id: str,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    return await proxy_webapp_json(
+        f"/api/v1/admin/teacher-invites/{invite_id}",
+        authorization,
+        method="DELETE",
+        request=request,
+    )
+
+
+@api_router.get("/v1/admin/feedback")
+async def admin_feedback_proxy(request: Request, authorization: Optional[str] = Header(None)):
+    return await proxy_webapp_json("/api/v1/feedback", authorization, request=request)
+
+
+@api_router.patch("/v1/admin/feedback/{feedback_id}/resolve")
+async def resolve_admin_feedback_proxy(
+    feedback_id: str,
+    data: dict,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    return await proxy_webapp_json(
+        f"/api/v1/feedback/{feedback_id}/resolve",
+        authorization,
+        method="PATCH",
+        request=request,
+        json_body=data,
+    )
+
+
+@api_router.get("/v1/admin/audit-logs")
+async def admin_audit_logs_proxy(request: Request, authorization: Optional[str] = Header(None)):
+    return await proxy_webapp_json("/api/v1/admin/audit-logs", authorization, request=request)
 
 
 # ==================== HEALTH CHECK ====================

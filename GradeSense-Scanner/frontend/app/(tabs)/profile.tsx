@@ -9,12 +9,14 @@ import {
   Modal,
   TextInput,
   Alert,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { COLORS } from '../../src/config';
+import { PAPER_SCAN_MOUNT_LINK } from '../../src/constants/scannerAccessories';
 import { useAuthStore } from '../../src/store/authStore';
 import { useScanStore } from '../../src/store/scanStore';
 
@@ -146,6 +148,14 @@ export default function ProfileScreen() {
     ]);
   };
 
+  const openPaperMountLink = async () => {
+    try {
+      await Linking.openURL(PAPER_SCAN_MOUNT_LINK.url);
+    } catch {
+      Alert.alert('Could not open link', 'Please try again after checking your browser settings.');
+    }
+  };
+
   const initials = (user?.name ?? 'T').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
 
   return (
@@ -263,6 +273,15 @@ export default function ProfileScreen() {
               iconBg={COLORS.successLight}
               iconColor={COLORS.success}
               onPress={() => Alert.alert('Help', 'Contact our support team at support@gradesense.io')}
+            />
+            <SettingRow
+              icon="phone-portrait-outline"
+              label={PAPER_SCAN_MOUNT_LINK.label}
+              sublabel={PAPER_SCAN_MOUNT_LINK.description}
+              iconBg={COLORS.primaryXLight}
+              iconColor={COLORS.primary}
+              onPress={openPaperMountLink}
+              rightElement={<Ionicons name="open-outline" size={16} color={COLORS.textMuted} />}
             />
             <SettingRow
               icon="information-circle-outline"
