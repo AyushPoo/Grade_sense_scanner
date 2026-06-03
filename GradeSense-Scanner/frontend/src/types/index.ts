@@ -96,7 +96,7 @@ export interface ScanSession {
   user_id?: string;
   exam_id?: string;
   created_at: string;
-  status: 'scanning' | 'ready' | 'uploading' | 'syncing' | 'grading' | 'graded' | 'uploaded' | 'failed' | 'sync_failed';
+  status: 'scanning' | 'ready' | 'uploading' | 'syncing' | 'grading' | 'graded' | 'uploaded' | 'completed' | 'failed' | 'sync_failed';
   upload_progress: number;
   last_sync_error?: string | null;
   settings: ScanSessionSettings;

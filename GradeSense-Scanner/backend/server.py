@@ -59,6 +59,7 @@ from manage_analytics_service import (
 )
 from runtime_readiness_service import build_readiness_report
 from upload_flow_service import merge_upload_flow_state
+from sync_cleanup_service import delete_stale_upload_flows_for_teacher, delete_upload_flows_for_exams
 import jwt as pyjwt
 import asyncpg
 
@@ -2187,6 +2188,7 @@ async def reconcile_scan_sessions_with_webapp(user_id: str, sessions: list[dict]
             [dict(row) for row in exam_rows],
         )
         if removed_exam_ids:
+            await delete_upload_flows_for_exams(conn, user_id, removed_exam_ids)
             await db.scan_sessions.delete_many({
                 "user_id": user_id,
                 "exam_id": {"$in": list(removed_exam_ids)},
@@ -3146,19 +3148,22 @@ async def soft_delete_webapp_exam(exam_id: str, teacher_id: str) -> bool:
     conn = None
     try:
         conn = await asyncpg.connect(webapp_db_url)
-        row = await conn.fetchrow(
-            '''
-            UPDATE exams
-            SET status = 'deleted', updated_at = $3
-            WHERE id = $1
-              AND teacher_id = $2
-              AND COALESCE(status, '') <> 'deleted'
-            RETURNING id
-            ''',
-            exam_id,
-            teacher_id,
-            utc_now_text()
-        )
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                '''
+                UPDATE exams
+                SET status = 'deleted', updated_at = $3
+                WHERE id = $1
+                  AND teacher_id = $2
+                  AND COALESCE(status, '') <> 'deleted'
+                RETURNING id
+                ''',
+                exam_id,
+                teacher_id,
+                utc_now_text()
+            )
+            if row:
+                await delete_upload_flows_for_exams(conn, teacher_id, [exam_id])
         return bool(row)
     finally:
         if conn:
@@ -3174,6 +3179,7 @@ async def list_exams_v1(authorization: Optional[str] = Header(None)):
     if webapp_db_url:
         try:
             conn = await asyncpg.connect(webapp_db_url)
+            await delete_stale_upload_flows_for_teacher(conn, user.user_id)
             rows = await conn.fetch(
                 '''
                 SELECT e.id, e.name, e.batch_id, e.subject_id, e.total_marks, e.exam_date, e.status,
@@ -3371,6 +3377,7 @@ async def archive_exam_v1(exam_id: str, authorization: Optional[str] = Header(No
         deleted = await soft_delete_webapp_exam(exam_id, user.user_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="Exam not found")
+        await db.scan_sessions.delete_many({"exam_id": exam_id, "user_id": user.user_id})
         return {"success": True, "id": exam_id}
     except HTTPException:
         raise

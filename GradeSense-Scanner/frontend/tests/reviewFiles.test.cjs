@@ -488,6 +488,23 @@ test('session reconciliation drops stale local copies of server-deleted synced s
   );
 });
 
+test('session reconciliation treats completed linked sessions as server-owned', () => {
+  const completedLocal = buildSession({
+    session_id: 'completed_local',
+    exam_id: 'exam_deleted',
+    status: 'completed',
+  });
+
+  const result = reconcileFetchedScanSessions({
+    currentSaved: [completedLocal],
+    fetchedSessions: [],
+    deletedSessionIds: [],
+    recomputeStats: session => session.stats,
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(result.savedSessions)), []);
+});
+
 test('manage screen renders operational tabs without waiting on analytics loader', () => {
   const manageSource = fs.readFileSync(path.join(__dirname, '..', 'app/(tabs)/manage.tsx'), 'utf8');
 
@@ -496,6 +513,14 @@ test('manage screen renders operational tabs without waiting on analytics loader
   assert.equal(manageSource.includes('style={styles.segmentScroll}'), false);
   assert.equal(manageSource.includes('contentContainerStyle={styles.segmentContainer}'), false);
   assert.equal(manageSource.includes('minWidth: 0'), true);
+});
+
+test('manage exam delete refreshes scanner sessions so home cannot keep stale exams', () => {
+  const manageSource = fs.readFileSync(path.join(__dirname, '..', 'app/(tabs)/manage.tsx'), 'utf8');
+
+  assert.equal(manageSource.includes('const { savedSessions, fetchSessions } = useScanStore();'), true);
+  assert.equal(manageSource.includes('await archiveManagedExam'), true);
+  assert.equal(manageSource.includes('await fetchSessions();'), true);
 });
 
 test('sessions screen exposes a dedicated review-ready exams tab', () => {

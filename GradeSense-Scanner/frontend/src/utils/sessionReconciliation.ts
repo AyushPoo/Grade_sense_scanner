@@ -16,6 +16,7 @@ interface ReconcileSessionsResult {
 
 const SERVER_TERMINAL_STATUSES = new Set<ScanSession['status']>([
   'uploaded',
+  'completed',
   'grading',
   'graded',
   'sync_failed',

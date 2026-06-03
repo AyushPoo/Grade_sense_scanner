@@ -164,7 +164,7 @@ const examStyles = StyleSheet.create({
 export default function ManageScreen() {
   const router = useRouter();
   const token = useAuthStore(s => s.sessionToken);
-  const { savedSessions } = useScanStore();
+  const { savedSessions, fetchSessions } = useScanStore();
 
   const [activeTab, setActiveTab] = useState<'analytics' | 'exams' | 'classroom' | 'brain' | 'reevaluation'>('exams');
   const [overview, setOverview] = useState<TeacherOverview | null>(null);
@@ -469,6 +469,9 @@ export default function ManageScreen() {
             try {
               await archiveManagedExam({ backendUrl: getBackendUrl(), token, examId: exam.id });
               setManagedExams(prev => prev.filter(item => item.id !== exam.id));
+              await fetchSessions();
+              fetchOverview();
+              fetchPerformanceInsights();
             } catch (err: any) {
               Alert.alert('Failed', err.message || 'Could not delete exam.');
             } finally {
