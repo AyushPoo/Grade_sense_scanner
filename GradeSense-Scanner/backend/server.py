@@ -57,6 +57,7 @@ from manage_analytics_service import (
     build_weak_student_ranking,
     normalize_exam_update_payload,
 )
+from batch_sync_service import fetch_active_batches, fetch_batch_exams, fetch_batch_roster, split_students_by_strength
 from runtime_readiness_service import build_readiness_report
 from upload_flow_service import merge_upload_flow_state
 from sync_cleanup_service import delete_stale_upload_flows_for_teacher, delete_upload_flows_for_exams
@@ -844,6 +845,33 @@ async def logout(authorization: Optional[str] = Header(None)):
 async def get_batches(authorization: Optional[str] = Header(None)):
     """Get all batches for the organization (proxied to webapp)"""
     user = await get_current_user(authorization)
+    token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
+
+    if token != "sess_mock_token_12345":
+        webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+        if webapp_db_url:
+            conn = None
+            try:
+                conn = await asyncpg.connect(webapp_db_url)
+                batches = await fetch_active_batches(conn, user.user_id)
+                active_ids = [batch["batch_id"] for batch in batches]
+                await db.batches.delete_many({
+                    "$or": [{"org_id": user.org_id}, {"user_id": user.user_id}],
+                    "batch_id": {"$nin": active_ids},
+                })
+                for batch in batches:
+                    await db.batches.update_one(
+                        {"batch_id": batch["batch_id"]},
+                        {"$set": {**batch, "org_id": user.org_id, "user_id": user.user_id}},
+                        upsert=True,
+                    )
+                return {"batches": batches}
+            except Exception as e:
+                logger.error(f"Error querying Neon for batches: {e}")
+                raise HTTPException(status_code=503, detail="Batch sync is unavailable. Please retry.")
+            finally:
+                if conn:
+                    await conn.close()
     
     # 1. Fetch batches from webapp
     webapp_url = os.environ.get("WEBAPP_URL")
@@ -851,7 +879,6 @@ async def get_batches(authorization: Optional[str] = Header(None)):
         batches = await db.batches.find({"org_id": user.org_id}, {"_id": 0}).to_list(100)
         return {"batches": batches}
     
-    token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
     if token == "sess_mock_token_12345":
         batches = await db.batches.find({"org_id": user.org_id}, {"_id": 0}).to_list(100)
         if not batches:
@@ -945,6 +972,38 @@ async def create_batch(data: dict, authorization: Optional[str] = Header(None)):
 async def delete_batch(batch_id: str, authorization: Optional[str] = Header(None)):
     """Delete a batch on the webapp"""
     user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if webapp_db_url:
+        conn = None
+        try:
+            conn = await asyncpg.connect(webapp_db_url)
+            row = await conn.fetchrow(
+                '''
+                UPDATE batches
+                SET status = 'deleted', updated_at = $3
+                WHERE id = $1
+                  AND teacher_id = $2
+                  AND COALESCE(status, '') <> 'deleted'
+                RETURNING id
+                ''',
+                batch_id,
+                user.user_id,
+                utc_now_text(),
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="Batch not found")
+            await db.batches.delete_many({"batch_id": batch_id})
+            await db.students.delete_many({"batch_id": batch_id})
+            return {"success": True, "id": batch_id}
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error deleting batch in Neon: {e}")
+            raise HTTPException(status_code=500, detail="Failed to delete batch")
+        finally:
+            if conn:
+                await conn.close()
+
     webapp_url = os.environ.get("WEBAPP_URL")
     
     if not webapp_url:
@@ -960,6 +1019,8 @@ async def delete_batch(batch_id: str, authorization: Optional[str] = Header(None
                 timeout=15.0
             )
             if response.status_code in [200, 204]:
+                await db.batches.delete_many({"batch_id": batch_id})
+                await db.students.delete_many({"batch_id": batch_id})
                 return {"success": True}
             raise HTTPException(status_code=response.status_code, detail=response.text)
     except Exception as e:
@@ -990,6 +1051,10 @@ async def archive_batch(batch_id: str, authorization: Optional[str] = Header(Non
             )
             if not row:
                 raise HTTPException(status_code=404, detail="Batch not found")
+            await db.batches.update_one(
+                {"batch_id": batch_id},
+                {"$set": {"status": "archived", "org_id": user.org_id, "user_id": user.user_id}},
+            )
             return {"success": True, "id": batch_id}
         except HTTPException:
             raise
@@ -1098,6 +1163,42 @@ async def regrade_exam(exam_id: str, authorization: Optional[str] = Header(None)
 async def get_batch_students(batch_id: str, authorization: Optional[str] = Header(None)):
     """Get students in a batch (proxied to webapp)"""
     user = await get_current_user(authorization)
+    token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
+
+    if token != "sess_mock_token_12345":
+        webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+        if webapp_db_url:
+            conn = None
+            try:
+                conn = await asyncpg.connect(webapp_db_url)
+                students = await fetch_batch_roster(conn, user.user_id, batch_id)
+                student_ids = [student["student_id"] for student in students]
+                await db.students.delete_many({
+                    "batch_id": batch_id,
+                    "student_id": {"$nin": student_ids},
+                })
+                for student in students:
+                    await db.students.update_one(
+                        {"batch_id": batch_id, "student_id": student["student_id"]},
+                        {"$set": student},
+                        upsert=True,
+                    )
+                await db.batches.update_one(
+                    {"batch_id": batch_id},
+                    {"$set": {"student_count": len(students), "studentCount": len(students)}},
+                )
+                strong_students, weak_students = split_students_by_strength(students)
+                return {
+                    "students": students,
+                    "strongStudents": strong_students,
+                    "weakStudents": weak_students,
+                }
+            except Exception as e:
+                logger.error(f"Error querying Neon for batch roster: {e}")
+                raise HTTPException(status_code=503, detail="Roster sync is unavailable. Please retry.")
+            finally:
+                if conn:
+                    await conn.close()
     
     # 1. Fetch students from webapp
     webapp_url = os.environ.get("WEBAPP_URL")
@@ -1105,7 +1206,6 @@ async def get_batch_students(batch_id: str, authorization: Optional[str] = Heade
         students = await db.students.find({"batch_id": batch_id}, {"_id": 0}).to_list(1000)
         return {"students": students}
         
-    token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
     if token == "sess_mock_token_12345":
         students = await db.students.find({"batch_id": batch_id}, {"_id": 0}).to_list(1000)
         if not students:
@@ -3048,9 +3148,11 @@ async def get_analytics_overview_proxy(authorization: Optional[str] = Header(Non
                        COUNT(CASE WHEN s.status IN ('ai_graded', 'graded', 'reviewed', 'published') THEN 1 END) AS reviewed_count,
                        AVG(s.percentage) AS average_percentage
                 FROM exams e
+                LEFT JOIN batches b ON b.id = e.batch_id
                 LEFT JOIN submissions s ON s.exam_id = e.id
                 WHERE e.teacher_id = $1
                   AND COALESCE(e.status, '') <> 'deleted'
+                  AND COALESCE(b.status, 'active') NOT IN ('archived', 'deleted')
                 ''',
                 user.user_id
             )
@@ -3058,8 +3160,10 @@ async def get_analytics_overview_proxy(authorization: Optional[str] = Header(Non
                 '''
                 SELECT e.id, e.name, e.exam_date, e.total_marks, e.status
                 FROM exams e
+                LEFT JOIN batches b ON b.id = e.batch_id
                 WHERE e.teacher_id = $1
                   AND COALESCE(e.status, '') <> 'deleted'
+                  AND COALESCE(b.status, 'active') NOT IN ('archived', 'deleted')
                 ORDER BY e.created_at DESC
                 LIMIT 10
                 ''',
@@ -3130,10 +3234,12 @@ async def get_analytics_performance(authorization: Optional[str] = Header(None))
                    COUNT(DISTINCT e.id) AS exams_count,
                    AVG(s.percentage) AS average_percentage
             FROM exams e
+            LEFT JOIN batches b ON b.id = e.batch_id
             LEFT JOIN subjects subj ON subj.id = e.subject_id
             LEFT JOIN submissions s ON s.exam_id = e.id
             WHERE e.teacher_id = $1
               AND COALESCE(e.status, '') <> 'deleted'
+              AND COALESCE(b.status, 'active') NOT IN ('archived', 'deleted')
             GROUP BY COALESCE(subj.name, 'Unassigned')
             ORDER BY subject_name ASC
             ''',
@@ -3145,8 +3251,10 @@ async def get_analytics_performance(authorization: Optional[str] = Header(None))
                    s.total_score, s.total_marks
             FROM submissions s
             JOIN exams e ON e.id = s.exam_id
+            LEFT JOIN batches b ON b.id = e.batch_id
             WHERE e.teacher_id = $1
               AND COALESCE(e.status, '') <> 'deleted'
+              AND COALESCE(b.status, 'active') NOT IN ('archived', 'deleted')
             ORDER BY s.percentage DESC NULLS LAST
             LIMIT 10
             ''',
@@ -3158,8 +3266,10 @@ async def get_analytics_performance(authorization: Optional[str] = Header(None))
                    s.total_score, s.total_marks
             FROM submissions s
             JOIN exams e ON e.id = s.exam_id
+            LEFT JOIN batches b ON b.id = e.batch_id
             WHERE e.teacher_id = $1
               AND COALESCE(e.status, '') <> 'deleted'
+              AND COALESCE(b.status, 'active') NOT IN ('archived', 'deleted')
             ORDER BY s.percentage ASC NULLS LAST
             LIMIT 10
             ''',
@@ -3175,9 +3285,11 @@ async def get_analytics_performance(authorization: Optional[str] = Header(None))
             FROM question_scores qs
             JOIN submissions s ON s.id = qs.submission_id
             JOIN exams e ON e.id = s.exam_id
+            LEFT JOIN batches b ON b.id = e.batch_id
             LEFT JOIN question_items qi ON qi.id = qs.question_id
             WHERE e.teacher_id = $1
               AND COALESCE(e.status, '') <> 'deleted'
+              AND COALESCE(b.status, 'active') NOT IN ('archived', 'deleted')
             GROUP BY qs.question_number, COALESCE(qi.question_text, '')
             HAVING COUNT(qs.id) > 0
             ''',
@@ -3216,6 +3328,7 @@ async def fetch_managed_exam(conn, exam_id: str, teacher_id: str):
         WHERE e.id = $1
           AND e.teacher_id = $2
           AND COALESCE(e.status, '') <> 'deleted'
+          AND COALESCE(b.status, 'active') NOT IN ('archived', 'deleted')
         GROUP BY e.id, e.name, e.batch_id, e.subject_id, e.total_marks, e.exam_date, e.status,
                  b.name, subj.name,
                  e.grading_mode, e.grading_instructions, e.feedback_enabled,
@@ -3285,6 +3398,7 @@ async def list_exams_v1(authorization: Optional[str] = Header(None)):
                 LEFT JOIN submissions s ON s.exam_id = e.id
                 WHERE e.teacher_id = $1
                   AND COALESCE(e.status, '') <> 'deleted'
+                  AND COALESCE(b.status, 'active') NOT IN ('archived', 'deleted')
                 GROUP BY e.id, e.name, e.batch_id, e.subject_id, e.total_marks, e.exam_date, e.status,
                          b.name, subj.name,
                          e.grading_mode, e.grading_instructions, e.feedback_enabled,
@@ -4010,8 +4124,24 @@ async def regrade_exam_v1(exam_id: str, authorization: Optional[str] = Header(No
 @api_router.get("/batches/{batch_id}/exams")
 async def get_batch_exams(batch_id: str, authorization: Optional[str] = Header(None)):
     """Get exams in a batch (proxied to webapp or fallback)"""
+    user = await get_current_user(authorization)
     webapp_url = os.environ.get("WEBAPP_URL")
     token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
+
+    if token != "sess_mock_token_12345":
+        webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+        if webapp_db_url:
+            conn = None
+            try:
+                conn = await asyncpg.connect(webapp_db_url)
+                exams = await fetch_batch_exams(conn, user.user_id, batch_id)
+                return {"exams": exams}
+            except Exception as e:
+                logger.error(f"Error querying Neon for batch exams: {e}")
+                raise HTTPException(status_code=503, detail="Batch exam sync is unavailable. Please retry.")
+            finally:
+                if conn:
+                    await conn.close()
     
     if webapp_url and token != "sess_mock_token_12345":
         try:
