@@ -17,7 +17,7 @@ import base64
 import json
 from io import BytesIO
 from fastapi import File, UploadFile, Form
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 import shutil
 from storage_service import StorageService, get_storage_service
 from sync_preflight_service import SyncPreflightError, assert_webapp_sync_ready
@@ -58,6 +58,7 @@ from manage_analytics_service import (
     normalize_exam_update_payload,
 )
 from batch_sync_service import fetch_active_batches, fetch_batch_exams, fetch_batch_roster, split_students_by_strength
+from review_file_url_service import build_gcs_proxy_url
 from runtime_readiness_service import build_readiness_report
 from upload_flow_service import merge_upload_flow_state
 from sync_cleanup_service import delete_stale_upload_flows_for_teacher, delete_upload_flows_for_exams
@@ -112,6 +113,18 @@ def get_gcs_signed_url(gcs_key: str, expiration_minutes: int = 60) -> Optional[s
     except Exception as e:
         logger.error(f"Error generating GCS signed URL for {gcs_key}: {e}")
     return None
+
+
+def public_request_base_url(request: Request) -> str:
+    configured_url = (
+        os.environ.get("BACKEND_PUBLIC_URL")
+        or os.environ.get("PUBLIC_BACKEND_URL")
+        or os.environ.get("APP_BASE_URL")
+        or ""
+    ).strip()
+    if configured_url and "localhost" not in configured_url and "127.0.0.1" not in configured_url:
+        return configured_url
+    return str(request.base_url)
 
 
 def sanitize_uploaded_filename(name: Optional[str], fallback: str) -> str:
@@ -1502,6 +1515,28 @@ async def get_file(session_id: str, filename: str):
         )
 
 
+@api_router.api_route("/files-gcs/{gcs_key:path}", methods=["GET", "HEAD"])
+async def get_gcs_file(gcs_key: str):
+    """Serve webapp GCS files through a stable backend URL with fresh signed redirects."""
+    if not gcs_key or ".." in gcs_key.split("/"):
+        raise HTTPException(status_code=400, detail="Invalid file path")
+
+    provider = os.environ.get("STORAGE_PROVIDER", "local").lower()
+    if provider != "gcs" or not hasattr(storage, "bucket"):
+        raise HTTPException(status_code=503, detail="GCS file storage is not configured")
+
+    signed_url = get_gcs_signed_url(gcs_key, expiration_minutes=120)
+    if not signed_url:
+        logger.error(f"GCS proxy could not sign file: {gcs_key}")
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return RedirectResponse(
+        url=signed_url,
+        status_code=307,
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
 @api_router.post("/scan-sessions/{session_id}/upload-model")
 async def upload_model_answer(session_id: str, data: UploadModelRequest, authorization: Optional[str] = Header(None)):
     """Upload model answer metadata"""
@@ -2718,7 +2753,7 @@ async def get_exam_submissions_proxy(exam_id: str, authorization: Optional[str] 
 
 
 @api_router.get("/v1/submissions/{submission_id}")
-async def get_submission_detail_proxy(submission_id: str, authorization: Optional[str] = Header(None)):
+async def get_submission_detail_proxy(submission_id: str, request: Request, authorization: Optional[str] = Header(None)):
     """Get submission details - reads directly from Neon PostgreSQL (always reachable from Render)"""
     user = await get_current_user(authorization)
     webapp_db_url = os.environ.get("WEBAPP_DB_URL")
@@ -2802,18 +2837,14 @@ async def get_submission_detail_proxy(submission_id: str, authorization: Optiona
                 await conn.close()
 
                 files = []
+                file_base_url = public_request_base_url(request)
+                cache_seed = uuid.uuid4().hex
                 for f in file_rows:
                     gcs_key = f["gcs_key"]
                     ann_key = f["annotation_gcs_key"]
                     
-                    signed_url = get_gcs_signed_url(gcs_key) if gcs_key else None
-                    ann_signed_url = get_gcs_signed_url(ann_key) if ann_key else None
-                    
-                    # Fallback URL format if GCS signed URL generation fails
-                    if not signed_url and gcs_key:
-                        signed_url = f"/api/files/{gcs_key}"
-                    if not ann_signed_url and ann_key:
-                        ann_signed_url = f"/api/files/{ann_key}"
+                    signed_url = build_gcs_proxy_url(file_base_url, gcs_key, cache_key=f"{f['id']}-{cache_seed}")
+                    ann_signed_url = build_gcs_proxy_url(file_base_url, ann_key, cache_key=f"{f['id']}-ann-{cache_seed}")
                         
                     files.append({
                         "id": str(f["id"]),
@@ -2826,9 +2857,7 @@ async def get_submission_detail_proxy(submission_id: str, authorization: Optiona
                     })
                 for f in exam_file_rows:
                     gcs_key = f["gcs_key"]
-                    signed_url = get_gcs_signed_url(gcs_key) if gcs_key else None
-                    if not signed_url and gcs_key:
-                        signed_url = f"/api/files/{gcs_key}"
+                    signed_url = build_gcs_proxy_url(file_base_url, gcs_key, cache_key=f"{f['id']}-{cache_seed}")
                     files.append({
                         "id": str(f["id"]),
                         "kind": f["kind"],
