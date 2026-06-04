@@ -34,6 +34,12 @@ import { submitQuestionImprovement } from '../src/api/improveAI';
 import { fetchExamReviewSettings } from '../src/api/reviewSettings';
 import { useReviewDensityPreference } from '../src/hooks/useReviewDensityPreference';
 
+interface SubmissionReviewDetail {
+  files: ReviewFileItem[];
+  scores: ScoreItem[];
+  teacherFeedback: string;
+}
+
 export default function ReviewGradingScreen() {
   const router = useRouter();
   const { examId, sessionName } = useLocalSearchParams<{ examId: string; sessionName?: string }>();
@@ -99,6 +105,9 @@ export default function ReviewGradingScreen() {
   const [activeScoreIndex, setActiveScoreIndex] = useState(0);
   const [activeFileIndex, setActiveFileIndex] = useState(0);
   const [failedImageIds, setFailedImageIds] = useState<Record<string, boolean>>({});
+  const detailCacheRef = useRef<Map<string, SubmissionReviewDetail>>(new Map());
+  const detailRequestRef = useRef<Map<string, Promise<SubmissionReviewDetail>>>(new Map());
+  const detailSequenceRef = useRef(0);
 
   // Voice dictation state
   const [showDictationModal, setShowDictationModal] = useState(false);
@@ -343,35 +352,89 @@ export default function ReviewGradingScreen() {
     fetchSubmissionsList();
   }, [examId, token, webappUrl]);
 
-  const fetchActiveSubmissionDetail = useCallback(async () => {
-    if (!activeSubId || !token || !webappUrl) return;
+  const fetchSubmissionDetail = useCallback(async (submissionId: string, force = false): Promise<SubmissionReviewDetail> => {
+    if (!token || !webappUrl) {
+      throw new Error('Missing review credentials.');
+    }
 
-    try {
-      setIsLoadingDetail(true);
-      const res = await fetch(`${webappUrl}/api/v1/submissions/${activeSubId}`, {
+    if (force) {
+      detailCacheRef.current.delete(submissionId);
+      detailRequestRef.current.delete(submissionId);
+    }
+
+    const cached = detailCacheRef.current.get(submissionId);
+    if (cached) {
+      return cached;
+    }
+
+    const pending = detailRequestRef.current.get(submissionId);
+    if (pending) {
+      return pending;
+    }
+
+    const request = fetch(`${webappUrl}/api/v1/submissions/${submissionId}`, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Bypass-Tunnel-Reminder': 'true',
         },
-      });
+      })
+        .then(async res => {
       if (!res.ok) {
         throw new Error(`Status ${res.status}`);
       }
       const json = await res.json();
       const data = json.data || {};
-      setFiles(data.files || []);
-      setScores(normalizeReviewScores(data.scores || []));
-      setTeacherFeedback(data.submission?.teacherFeedback || '');
-      if ((data.scores || []).length > 0) {
-        setActiveScoreIndex(0);
-      }
+          const detail: SubmissionReviewDetail = {
+            files: data.files || [],
+            scores: normalizeReviewScores(data.scores || []),
+            teacherFeedback: data.submission?.teacherFeedback || '',
+          };
+          detailCacheRef.current.set(submissionId, detail);
+          return detail;
+        })
+        .finally(() => {
+          detailRequestRef.current.delete(submissionId);
+        });
+
+    detailRequestRef.current.set(submissionId, request);
+    return request;
+  }, [token, webappUrl]);
+
+  const applySubmissionDetail = useCallback((detail: SubmissionReviewDetail) => {
+    setFiles(detail.files);
+    setScores(detail.scores);
+    setTeacherFeedback(detail.teacherFeedback);
+    if (detail.scores.length > 0) {
+      setActiveScoreIndex(0);
+    }
+  }, []);
+
+  const fetchActiveSubmissionDetail = useCallback(async (force = false) => {
+    if (!activeSubId) return;
+
+    const sequence = ++detailSequenceRef.current;
+    const cached = !force ? detailCacheRef.current.get(activeSubId) : null;
+    if (cached) {
+      applySubmissionDetail(cached);
+      setIsLoadingDetail(false);
+      return;
+    }
+
+    try {
+      setIsLoadingDetail(true);
+      const detail = await fetchSubmissionDetail(activeSubId, force);
+      if (sequence !== detailSequenceRef.current) return;
+      applySubmissionDetail(detail);
     } catch (err: any) {
+      if (sequence !== detailSequenceRef.current) return;
       console.error('Failed to fetch submission detail:', err);
       Alert.alert('Error', `Failed to load details: ${err.message}`);
     } finally {
-      setIsLoadingDetail(false);
+      if (sequence === detailSequenceRef.current) {
+        setIsLoadingDetail(false);
+      }
     }
-  }, [activeSubId, token, webappUrl]);
+  }, [activeSubId, applySubmissionDetail, fetchSubmissionDetail]);
 
   // Fetch active submission detail when currentSubIndex changes
   useEffect(() => {
@@ -380,6 +443,14 @@ export default function ReviewGradingScreen() {
     setFailedImageIds({});
     fetchActiveSubmissionDetail();
   }, [fetchActiveSubmissionDetail, submissions.length]);
+
+  useEffect(() => {
+    const nextSubmission = submissions[currentSubIndex + 1];
+    if (!nextSubmission?.id || detailCacheRef.current.has(nextSubmission.id)) {
+      return;
+    }
+    fetchSubmissionDetail(nextSubmission.id).catch(() => {});
+  }, [currentSubIndex, fetchSubmissionDetail, submissions]);
 
   useEffect(() => {
     if (!fileSlides.length) return;
@@ -404,7 +475,7 @@ export default function ReviewGradingScreen() {
 
   const handleRetryPaperFiles = useCallback(async () => {
     setFailedImageIds({});
-    await fetchActiveSubmissionDetail();
+    await fetchActiveSubmissionDetail(true);
   }, [fetchActiveSubmissionDetail]);
 
   const handleScoreChange = (scoreId: string, obtained: number) => {
@@ -463,6 +534,11 @@ export default function ReviewGradingScreen() {
         status: 'reviewed',
       };
       setSubmissions(updatedList);
+      detailCacheRef.current.set(activeSub.id, {
+        files,
+        scores,
+        teacherFeedback,
+      });
 
       if (currentSubIndex < submissions.length - 1) {
         setCurrentSubIndex(prev => prev + 1);

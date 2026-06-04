@@ -14,10 +14,33 @@ interface QuestionResult {
   score: number;
   maxMarks: number;
   feedback: string | null;
+  feedbackSource: 'teacher' | 'ai' | null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? value as Record<string, unknown> : {};
+}
+
+function asNonEmptyString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function readQuestionFeedback(item: Record<string, unknown>): Pick<QuestionResult, 'feedback' | 'feedbackSource'> {
+  const teacherFeedback = asNonEmptyString(
+    item.teacherCorrection
+      ?? item.teacher_correction
+      ?? item.teacherFeedback
+      ?? item.teacher_feedback
+  );
+
+  if (teacherFeedback) {
+    return { feedback: teacherFeedback, feedbackSource: 'teacher' };
+  }
+
+  const aiFeedback = asNonEmptyString(item.feedback ?? item.aiFeedback ?? item.ai_feedback);
+  return aiFeedback
+    ? { feedback: aiFeedback, feedbackSource: 'ai' }
+    : { feedback: null, feedbackSource: null };
 }
 
 function normalizeQuestions(detail: Record<string, unknown>): QuestionResult[] {
@@ -30,15 +53,14 @@ function normalizeQuestions(detail: Record<string, unknown>): QuestionResult[] {
         : [];
   return rows.map((row, index) => {
     const item = asRecord(row);
+    const feedback = readQuestionFeedback(item);
     return {
       id: String(item.id ?? item.questionId ?? index),
       label: String(item.questionNumber ?? item.question_number ?? `Q${index + 1}`),
       questionText: String(item.questionText ?? item.question_text ?? item.prompt ?? ''),
       score: Number(item.score ?? item.obtainedMarks ?? item.obtained_marks ?? item.awardedMarks ?? item.awarded_marks ?? 0),
       maxMarks: Number(item.maxMarks ?? item.max_marks ?? 0),
-      feedback: typeof (item.feedback ?? item.aiFeedback ?? item.ai_feedback) === 'string'
-        ? String(item.feedback ?? item.aiFeedback ?? item.ai_feedback)
-        : null,
+      ...feedback,
     };
   });
 }
@@ -126,8 +148,17 @@ export default function StudentResultDetailScreen() {
               {question.questionText ? <Text style={styles.prompt}>{question.questionText}</Text> : null}
               {question.feedback ? (
                 <View style={styles.feedbackBox}>
-                  <Ionicons name="sparkles-outline" size={15} color={COLORS.primary} />
-                  <Text style={styles.feedback}>{question.feedback}</Text>
+                  <Ionicons
+                    name={question.feedbackSource === 'teacher' ? 'chatbubble-ellipses-outline' : 'sparkles-outline'}
+                    size={15}
+                    color={COLORS.primary}
+                  />
+                  <View style={styles.feedbackContent}>
+                    <Text style={styles.feedbackLabel}>
+                      {question.feedbackSource === 'teacher' ? 'Teacher feedback' : 'AI feedback'}
+                    </Text>
+                    <Text style={styles.feedback}>{question.feedback}</Text>
+                  </View>
                 </View>
               ) : null}
             </PortalCard>
@@ -151,5 +182,7 @@ const styles = StyleSheet.create({
   questionScore: { fontSize: 16, fontWeight: '900', color: COLORS.primary },
   prompt: { fontSize: 14, color: COLORS.text, lineHeight: 20 },
   feedbackBox: { flexDirection: 'row', gap: 8, padding: 12, borderRadius: 12, backgroundColor: COLORS.primaryXLight },
+  feedbackContent: { flex: 1, gap: 4 },
+  feedbackLabel: { fontSize: 11, color: COLORS.primary, fontWeight: '900', textTransform: 'uppercase' },
   feedback: { flex: 1, fontSize: 13, color: COLORS.textLight, lineHeight: 19 },
 });

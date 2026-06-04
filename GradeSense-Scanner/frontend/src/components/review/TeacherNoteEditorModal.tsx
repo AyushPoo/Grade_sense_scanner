@@ -44,12 +44,14 @@ export function TeacherNoteEditorModal({
     <Modal
       animationType="slide"
       transparent
+      statusBarTranslucent
       visible={visible}
       onRequestClose={onClose}
     >
       <View style={styles.backdrop}>
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={0}
           style={styles.keyboardRoot}
         >
           <View style={styles.sheet}>
@@ -103,6 +105,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   keyboardRoot: {
+    flex: 1,
     justifyContent: 'flex-end',
   },
   sheet: {
@@ -155,6 +158,7 @@ const styles = StyleSheet.create({
     width: 44,
   },
   body: {
+    flexGrow: 1,
     padding: 18,
   },
   input: {
@@ -165,7 +169,7 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     fontSize: 16,
     lineHeight: 23,
-    minHeight: 180,
+    minHeight: 160,
     paddingHorizontal: 16,
     paddingVertical: 14,
   },

@@ -37,24 +37,27 @@ export function useInsightsData({ token }: UseInsightsDataParams) {
     const timeout = setTimeout(() => controller.abort(), 15000);
 
     try {
-      const res = await fetch(`${backendUrl}/api/v1/analytics/overview`, {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: controller.signal,
-      });
-      if (!res.ok) {
-        throw new Error(`Status ${res.status}`);
-      }
-      const json = await res.json();
-      const apiOverview = normalizeOverview(json.data);
-      const exams = await fetchManagedExams({ backendUrl, token });
-      setOverview(mergeOverviewWithExams(apiOverview, exams));
-      setIsOffline(false);
-    } catch {
-      try {
-        const exams = await fetchManagedExams({ backendUrl, token });
-        setOverview(buildOverviewFromExams(exams));
+      const [apiOverview, exams] = await Promise.all([
+        fetch(`${backendUrl}/api/v1/analytics/overview`, {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: controller.signal,
+        })
+          .then(async res => {
+            if (!res.ok) throw new Error(`Status ${res.status}`);
+            const json = await res.json();
+            return normalizeOverview(json.data);
+          })
+          .catch(() => null),
+        fetchManagedExams({ backendUrl, token }).catch(() => null),
+      ]);
+
+      if (exams) {
+        setOverview(mergeOverviewWithExams(apiOverview, exams));
         setIsOffline(false);
-      } catch {
+      } else if (apiOverview) {
+        setOverview(apiOverview);
+        setIsOffline(false);
+      } else {
         setIsOffline(true);
       }
     } finally {
@@ -81,7 +84,8 @@ export function useInsightsData({ token }: UseInsightsDataParams) {
   }, [backendUrl, token]);
 
   const refresh = useCallback(async (silent = false) => {
-    if (!silent) {
+    const hasUsableData = Boolean(overview || performance || brainRules.length);
+    if (!silent && !hasUsableData) {
       setIsLoading(true);
     }
     setIsRefreshing(true);
@@ -91,7 +95,7 @@ export function useInsightsData({ token }: UseInsightsDataParams) {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, [loadBrainRules, loadOverview, loadPerformance]);
+  }, [brainRules.length, loadBrainRules, loadOverview, loadPerformance, overview, performance]);
 
   const saveBrainRule = useCallback(async (rule: string) => {
     if (!token || !rule.trim()) return false;

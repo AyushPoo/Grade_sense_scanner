@@ -118,12 +118,15 @@ export default function SessionsScreen() {
 
   useEffect(() => {
     fetchSessions().catch(() => {});
-    if (activeTab === 'review') {
+  }, [fetchSessions]);
+
+  useEffect(() => {
+    if (activeTab === 'review' && reviewExams.length === 0) {
       loadReviewExams();
-    } else if (activeTab === 'batches') {
+    } else if (activeTab === 'batches' && batches.length === 0) {
       loadBatches();
     }
-  }, [activeTab, fetchSessions, loadBatches, loadReviewExams]);
+  }, [activeTab, batches.length, loadBatches, loadReviewExams, reviewExams.length]);
 
   const loadExamsForBatch = async (batchId: string) => {
     if (!token) return;
@@ -434,7 +437,7 @@ export default function SessionsScreen() {
           />
         )
       ) : activeTab === 'review' ? (
-        loadingReviewExams ? (
+        loadingReviewExams && reviewExams.length === 0 ? (
           <View style={styles.loader}>
             <ActivityIndicator size="large" color={COLORS.primary} />
             <Text style={styles.loaderText}>Loading review-ready exams...</Text>
@@ -465,7 +468,7 @@ export default function SessionsScreen() {
           />
         )
       ) : (
-        loadingBatches ? (
+        loadingBatches && batches.length === 0 ? (
           <View style={styles.loader}>
             <ActivityIndicator size="large" color={COLORS.primary} />
             <Text style={styles.loaderText}>Loading class batches...</Text>

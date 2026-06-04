@@ -421,6 +421,59 @@ test('grading control opens teacher notes in a dedicated editor modal', () => {
   assert.equal(panelSource.includes('KeyboardAvoidingView'), false);
 });
 
+test('teacher note editor stays above the Android keyboard', () => {
+  const modalSource = fs.readFileSync(
+    path.join(__dirname, '..', 'src/components/review/TeacherNoteEditorModal.tsx'),
+    'utf8'
+  );
+
+  assert.equal(modalSource.includes('statusBarTranslucent'), true);
+  assert.equal(modalSource.includes('keyboardVerticalOffset={0}'), true);
+  assert.equal(modalSource.includes('keyboardRoot: {\n    flex: 1,'), true);
+});
+
+test('student result feedback prefers teacher corrections before AI comments', () => {
+  const studentResultSource = fs.readFileSync(
+    path.join(__dirname, '..', 'app/(student)/result-detail.tsx'),
+    'utf8'
+  );
+
+  assert.equal(studentResultSource.includes('function readQuestionFeedback'), true);
+  assert.equal(studentResultSource.indexOf('item.teacherCorrection') < studentResultSource.indexOf('item.feedback ?? item.aiFeedback'), true);
+  assert.equal(studentResultSource.includes("feedbackSource === 'teacher' ? 'Teacher feedback' : 'AI feedback'"), true);
+});
+
+test('review grading caches active submission details and prefetches the next paper', () => {
+  const reviewSource = fs.readFileSync(path.join(__dirname, '..', 'app/review-grading.tsx'), 'utf8');
+
+  assert.equal(reviewSource.includes('detailCacheRef'), true);
+  assert.equal(reviewSource.includes('detailRequestRef'), true);
+  assert.equal(reviewSource.includes('fetchSubmissionDetail(nextSubmission.id)'), true);
+  assert.equal(reviewSource.includes('fetchActiveSubmissionDetail(true)'), true);
+});
+
+test('home grading polling batches active job requests', () => {
+  const homeSource = fs.readFileSync(path.join(__dirname, '..', 'app/(tabs)/home.tsx'), 'utf8');
+
+  assert.equal(homeSource.includes('pollingSessions'), true);
+  assert.equal(homeSource.includes('Promise.all('), true);
+  assert.equal(homeSource.includes('setGradingProgress(prev => {'), true);
+});
+
+test('sessions tab keeps cached review and batch content visible while refreshing', () => {
+  const sessionsSource = fs.readFileSync(path.join(__dirname, '..', 'app/(tabs)/sessions.tsx'), 'utf8');
+
+  assert.equal(sessionsSource.includes("loadingReviewExams && reviewExams.length === 0"), true);
+  assert.equal(sessionsSource.includes("loadingBatches && batches.length === 0"), true);
+});
+
+test('insights overview fetches analytics and exam fallback in parallel', () => {
+  const insightsHookSource = fs.readFileSync(path.join(__dirname, '..', 'src/hooks/useInsightsData.ts'), 'utf8');
+
+  assert.equal(insightsHookSource.includes('const [apiOverview, exams] = await Promise.all'), true);
+  assert.equal(insightsHookSource.includes('hasUsableData'), true);
+});
+
 test('review screen shows source paper files directly and keeps grading controls on rubric tab', () => {
   const reviewSource = fs.readFileSync(path.join(__dirname, '..', 'app/review-grading.tsx'), 'utf8');
 

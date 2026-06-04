@@ -429,6 +429,10 @@ export default function HomeScreen() {
     () => (Array.isArray(savedSessions) ? savedSessions : []),
     [savedSessions]
   );
+  const pollingSessions = useMemo(
+    () => sessions.filter(s => ['syncing', 'grading', 'uploaded'].includes(s.status) && s.exam_id),
+    [sessions]
+  );
 
   const fetchExams = useCallback(async () => {
     const token = useAuthStore.getState().sessionToken;
@@ -466,41 +470,58 @@ export default function HomeScreen() {
     const webappUrl = getBackendUrl();
     if (!token || !webappUrl) return;
 
+    if (pollingSessions.length === 0) return;
+
     const pollJobs = async () => {
-      const pending = sessions.filter(s => ['syncing', 'grading', 'uploaded'].includes(s.status) && s.exam_id);
-      for (const s of pending) {
-        if (!s.exam_id) continue;
-        try {
-          const res = await fetch(`${webappUrl}/api/v1/exams/${s.exam_id}/jobs`, {
-            headers: { 'Authorization': `Bearer ${token}`, 'Bypass-Tunnel-Reminder': 'true' }
-          });
-          if (res.ok && active) {
+      const updates = await Promise.all(
+        pollingSessions.map(async session => {
+          try {
+            const res = await fetch(`${webappUrl}/api/v1/exams/${session.exam_id}/jobs`, {
+              headers: { 'Authorization': `Bearer ${token}`, 'Bypass-Tunnel-Reminder': 'true' }
+            });
+            if (!res.ok) return null;
             const json = await res.json();
             const jobs = json.data || [];
             const gradingJobs = jobs.filter((j: any) => isActualGradingJob(j));
             const job = gradingJobs.find((j: any) => j.status !== 'completed') || gradingJobs[0];
-            if (job) {
-              setGradingProgress(prev => ({
-                ...prev,
-                [s.session_id]: {
-                  progress: job.progress,
-                  processed: job.processedItems || 0,
-                  total: job.totalItems || 0,
-                  status: job.status,
-                  type: job.type,
-                  error: job.error || null,
-                }
-              }));
-            }
+            if (!job) return null;
+            return {
+              sessionId: session.session_id,
+              progress: {
+                progress: job.progress,
+                processed: job.processedItems || 0,
+                total: job.totalItems || 0,
+                status: job.status,
+                type: job.type,
+                error: job.error || null,
+              },
+            };
+          } catch {
+            return null;
           }
-        } catch { /* silent */ }
-      }
+        })
+      );
+
+      if (!active) return;
+      const validUpdates = updates.filter(Boolean) as {
+        sessionId: string;
+        progress: { progress: number; processed: number; total: number; status: string; type?: string; error?: string | null };
+      }[];
+      if (!validUpdates.length) return;
+
+      setGradingProgress(prev => {
+        const next = { ...prev };
+        validUpdates.forEach(update => {
+          next[update.sessionId] = update.progress;
+        });
+        return next;
+      });
     };
 
     pollJobs();
     const interval = setInterval(pollJobs, 5000);
     return () => { active = false; clearInterval(interval); };
-  }, [sessions]);
+  }, [pollingSessions]);
 
   const todaySessions = sessions.filter(s => s.created_at && new Date(s.created_at).toDateString() === new Date().toDateString()).length;
   const pendingUploads = sessions.filter(s => s.status === 'ready' || s.status === 'failed').length;
