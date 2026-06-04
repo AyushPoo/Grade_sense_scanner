@@ -468,6 +468,39 @@ async def proxy_webapp_json(
         return {"data": response.text}
 
 
+PORTAL_PROXY_ROUTES = (
+    ("GET", "/api/v1/student/dashboard"),
+    ("GET", "/api/v1/student/exams"),
+    ("GET", "/api/v1/student/submissions"),
+    ("GET", "/api/v1/student/submissions/{submission_id}"),
+    ("GET", "/api/v1/student/exams/{exam_id}/files"),
+    ("GET", "/api/v1/student/re-evaluations"),
+    ("POST", "/api/v1/student/re-evaluations"),
+    ("GET", "/api/v1/admin/teachers"),
+    ("PATCH", "/api/v1/admin/teachers/{user_id}"),
+    ("GET", "/api/v1/admin/teacher-invites"),
+    ("POST", "/api/v1/admin/teacher-invites"),
+    ("DELETE", "/api/v1/admin/teacher-invites/{invite_id}"),
+    ("GET", "/api/v1/admin/feedback"),
+    ("PATCH", "/api/v1/admin/feedback/{feedback_id}/resolve"),
+    ("GET", "/api/v1/admin/audit-logs"),
+)
+
+
+def get_missing_portal_proxy_routes() -> list[str]:
+    """Return required mobile portal proxy routes not registered on the API router."""
+    registered = {
+        (method, route.path)
+        for route in api_router.routes
+        for method in getattr(route, "methods", set())
+    }
+    return [
+        f"{path} [{method}]"
+        for method, path in PORTAL_PROXY_ROUTES
+        if (method, path) not in registered
+    ]
+
+
 # ==================== AUTH ROUTES ====================
 
 class LoginRequest(BaseModel):
@@ -4262,7 +4295,15 @@ async def health_check():
 @api_router.get("/v1/system/readiness")
 async def system_readiness():
     """Return safe deployment readiness metadata without exposing secret values."""
-    return {"data": build_readiness_report(os.environ)}
+    readiness = build_readiness_report(os.environ)
+    missing_portal_routes = get_missing_portal_proxy_routes()
+    readiness["checks"]["portalProxy"] = {
+        "routesRegistered": not missing_portal_routes,
+        "missingRoutes": missing_portal_routes,
+    }
+    if missing_portal_routes:
+        readiness["status"] = "degraded"
+    return {"data": readiness}
 
 
 # Include the router
