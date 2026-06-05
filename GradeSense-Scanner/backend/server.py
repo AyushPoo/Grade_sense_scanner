@@ -17,7 +17,7 @@ import base64
 import json
 from io import BytesIO
 from fastapi import File, UploadFile, Form
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response
 import shutil
 from storage_service import StorageService, get_storage_service
 from sync_preflight_service import SyncPreflightError, assert_webapp_sync_ready
@@ -58,7 +58,16 @@ from manage_analytics_service import (
     normalize_exam_update_payload,
 )
 from batch_sync_service import fetch_active_batches, fetch_batch_exams, fetch_batch_roster, split_students_by_strength
+from gcs_file_response_service import (
+    InvalidGCSKeyError,
+    InvalidRangeHeaderError,
+    build_file_headers,
+    infer_content_type,
+    parse_range_header,
+    sanitize_gcs_key,
+)
 from review_file_url_service import build_gcs_proxy_url
+from review_identity_service import normalize_review_student_identity
 from runtime_readiness_service import build_readiness_report
 from upload_flow_service import merge_upload_flow_state
 from sync_cleanup_service import delete_stale_upload_flows_for_teacher, delete_upload_flows_for_exams
@@ -1516,25 +1525,67 @@ async def get_file(session_id: str, filename: str):
 
 
 @api_router.api_route("/files-gcs/{gcs_key:path}", methods=["GET", "HEAD"])
-async def get_gcs_file(gcs_key: str):
-    """Serve webapp GCS files through a stable backend URL with fresh signed redirects."""
-    if not gcs_key or ".." in gcs_key.split("/"):
-        raise HTTPException(status_code=400, detail="Invalid file path")
+async def get_gcs_file(gcs_key: str, request: Request):
+    """Serve webapp GCS files through a stable backend URL.
+
+    Mobile PDF viewers are sensitive to expiring redirects and range support. Streaming the
+    GCS object through this endpoint gives the app a durable URL while still keeping storage
+    private behind the backend.
+    """
+    try:
+        safe_key = sanitize_gcs_key(gcs_key)
+    except InvalidGCSKeyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     provider = os.environ.get("STORAGE_PROVIDER", "local").lower()
     if provider != "gcs" or not hasattr(storage, "bucket"):
         raise HTTPException(status_code=503, detail="GCS file storage is not configured")
 
-    signed_url = get_gcs_signed_url(gcs_key, expiration_minutes=120)
-    if not signed_url:
-        logger.error(f"GCS proxy could not sign file: {gcs_key}")
+    blob = storage.bucket.blob(safe_key)
+    try:
+        blob.reload()
+    except Exception as exc:
+        logger.error(f"GCS proxy could not load file metadata for {safe_key}: {exc}")
         raise HTTPException(status_code=404, detail="File not found")
 
-    return RedirectResponse(
-        url=signed_url,
-        status_code=307,
-        headers={"Cache-Control": "no-store, max-age=0"},
+    size = int(blob.size or 0)
+    content_type = infer_content_type(Path(safe_key).name, blob.content_type)
+    try:
+        byte_range = parse_range_header(request.headers.get("range"), size)
+    except (InvalidRangeHeaderError, ValueError) as exc:
+        return Response(
+            status_code=416,
+            headers={"Content-Range": f"bytes */{size}", "Accept-Ranges": "bytes"},
+            content=str(exc),
+        )
+
+    headers = build_file_headers(
+        filename=Path(safe_key).name,
+        content_type=content_type,
+        content_length=size,
+        byte_range=byte_range,
     )
+
+    if request.method == "HEAD":
+        return Response(status_code=206 if byte_range else 200, headers=headers)
+
+    try:
+        if byte_range:
+            content = blob.download_as_bytes(start=byte_range.start, end=byte_range.end)
+            return Response(content=content, status_code=206, headers=headers, media_type=content_type)
+
+        content = blob.download_as_bytes()
+        return Response(content=content, status_code=200, headers=headers, media_type=content_type)
+    except Exception as exc:
+        logger.error(f"GCS proxy could not stream file {safe_key}: {exc}")
+        signed_url = get_gcs_signed_url(safe_key, expiration_minutes=30)
+        if signed_url:
+            return RedirectResponse(
+                url=signed_url,
+                status_code=307,
+                headers={"Cache-Control": "no-store, max-age=0"},
+            )
+        raise HTTPException(status_code=404, detail="File not found")
 
 
 @api_router.post("/scan-sessions/{session_id}/upload-model")
@@ -2705,26 +2756,59 @@ async def get_exam_submissions_proxy(exam_id: str, authorization: Optional[str] 
             conn = await asyncpg.connect(webapp_db_url)
             rows = await conn.fetch(
                 '''
-                SELECT s.id, s.student_name, s.student_roll_number, s.total_score, e.total_marks, s.status
+                SELECT s.id,
+                       s.student_id,
+                       s.student_name,
+                       s.student_roll_number,
+                       s.total_score,
+                       e.total_marks,
+                       s.status,
+                       roster.name AS roster_student_name,
+                       roster.roll_number AS roster_student_roll_number,
+                       ROW_NUMBER() OVER (
+                         ORDER BY s.student_roll_number ASC NULLS LAST,
+                                  s.created_at ASC NULLS LAST,
+                                  s.id ASC
+                       ) AS display_ordinal
                 FROM submissions s
                 JOIN exams e ON e.id = s.exam_id
+                LEFT JOIN LATERAL (
+                    SELECT u.id, u.name, u.roll_number
+                    FROM users u
+                    LEFT JOIN batch_students bs
+                      ON bs.student_id = u.id
+                     AND bs.batch_id = e.batch_id
+                    WHERE (s.student_id IS NOT NULL AND u.id = s.student_id)
+                       OR (
+                         s.student_id IS NULL
+                         AND NULLIF(s.student_roll_number, '') IS NOT NULL
+                         AND bs.batch_id = e.batch_id
+                         AND u.roll_number = s.student_roll_number
+                       )
+                    ORDER BY CASE WHEN u.id = s.student_id THEN 0 ELSE 1 END
+                    LIMIT 1
+                ) roster ON TRUE
                 WHERE s.exam_id = $1
-                ORDER BY s.student_roll_number ASC NULLS LAST
+                  AND COALESCE(s.status, '') <> 'deleted'
+                ORDER BY s.student_roll_number ASC NULLS LAST,
+                         s.created_at ASC NULLS LAST,
+                         s.id ASC
                 ''',
                 exam_id
             )
             await conn.close()
-            submissions = [
-                {
-                    "id": str(r["id"]),
-                    "studentName": r["student_name"] or "Unknown",
-                    "studentRollNumber": r["student_roll_number"] or "",
-                    "totalScore": r["total_score"] or 0,
-                    "totalMarks": r["total_marks"] or 100,
-                    "status": r["status"] or "graded"
-                }
-                for r in rows
-            ]
+            submissions = []
+            for row in rows:
+                identity = normalize_review_student_identity(dict(row), int(row["display_ordinal"] or 1))
+                submissions.append({
+                    "id": str(row["id"]),
+                    "studentName": identity.student_name,
+                    "studentRollNumber": identity.student_roll_number,
+                    "matchedStudentId": identity.matched_student_id,
+                    "totalScore": row["total_score"] or 0,
+                    "totalMarks": row["total_marks"] or 100,
+                    "status": row["status"] or "graded"
+                })
             return {"data": submissions, "total": len(submissions)}
         except Exception as e:
             logger.error(f"Error querying Neon for submissions list: {e}")
@@ -2763,11 +2847,58 @@ async def get_submission_detail_proxy(submission_id: str, request: Request, auth
             conn = await asyncpg.connect(webapp_db_url)
             sub_row = await conn.fetchrow(
                 '''
-                SELECT s.id, s.student_name, s.student_roll_number, s.total_score, s.status,
-                       s.teacher_feedback, e.id AS exam_id, e.total_marks
-                FROM submissions s
-                JOIN exams e ON e.id = s.exam_id
-                WHERE s.id = $1 AND e.teacher_id = $2
+                WITH ranked_submissions AS (
+                    SELECT s.id,
+                           s.exam_id,
+                           s.student_id,
+                           s.student_name,
+                           s.student_roll_number,
+                           s.total_score,
+                           s.status,
+                           s.teacher_feedback,
+                           e.teacher_id,
+                           e.batch_id,
+                           e.total_marks,
+                           ROW_NUMBER() OVER (
+                             PARTITION BY s.exam_id
+                             ORDER BY s.student_roll_number ASC NULLS LAST,
+                                      s.created_at ASC NULLS LAST,
+                                      s.id ASC
+                           ) AS display_ordinal
+                    FROM submissions s
+                    JOIN exams e ON e.id = s.exam_id
+                    WHERE COALESCE(s.status, '') <> 'deleted'
+                )
+                SELECT rs.id,
+                       rs.student_id,
+                       rs.student_name,
+                       rs.student_roll_number,
+                       rs.total_score,
+                       rs.status,
+                       rs.teacher_feedback,
+                       rs.exam_id,
+                       rs.total_marks,
+                       rs.display_ordinal,
+                       roster.name AS roster_student_name,
+                       roster.roll_number AS roster_student_roll_number
+                FROM ranked_submissions rs
+                LEFT JOIN LATERAL (
+                    SELECT u.id, u.name, u.roll_number
+                    FROM users u
+                    LEFT JOIN batch_students bs
+                      ON bs.student_id = u.id
+                     AND bs.batch_id = rs.batch_id
+                    WHERE (rs.student_id IS NOT NULL AND u.id = rs.student_id)
+                       OR (
+                         rs.student_id IS NULL
+                         AND NULLIF(rs.student_roll_number, '') IS NOT NULL
+                         AND bs.batch_id = rs.batch_id
+                         AND u.roll_number = rs.student_roll_number
+                       )
+                    ORDER BY CASE WHEN u.id = rs.student_id THEN 0 ELSE 1 END
+                    LIMIT 1
+                ) roster ON TRUE
+                WHERE rs.id = $1 AND rs.teacher_id = $2
                 ''',
                 submission_id,
                 user.user_id
@@ -2838,13 +2969,12 @@ async def get_submission_detail_proxy(submission_id: str, request: Request, auth
 
                 files = []
                 file_base_url = public_request_base_url(request)
-                cache_seed = uuid.uuid4().hex
                 for f in file_rows:
                     gcs_key = f["gcs_key"]
                     ann_key = f["annotation_gcs_key"]
                     
-                    signed_url = build_gcs_proxy_url(file_base_url, gcs_key, cache_key=f"{f['id']}-{cache_seed}")
-                    ann_signed_url = build_gcs_proxy_url(file_base_url, ann_key, cache_key=f"{f['id']}-ann-{cache_seed}")
+                    signed_url = build_gcs_proxy_url(file_base_url, gcs_key, cache_key=f"{f['id']}")
+                    ann_signed_url = build_gcs_proxy_url(file_base_url, ann_key, cache_key=f"{f['id']}-ann")
                         
                     files.append({
                         "id": str(f["id"]),
@@ -2857,7 +2987,7 @@ async def get_submission_detail_proxy(submission_id: str, request: Request, auth
                     })
                 for f in exam_file_rows:
                     gcs_key = f["gcs_key"]
-                    signed_url = build_gcs_proxy_url(file_base_url, gcs_key, cache_key=f"{f['id']}-{cache_seed}")
+                    signed_url = build_gcs_proxy_url(file_base_url, gcs_key, cache_key=f"{f['id']}")
                     files.append({
                         "id": str(f["id"]),
                         "kind": f["kind"],
@@ -2868,12 +2998,17 @@ async def get_submission_detail_proxy(submission_id: str, request: Request, auth
                         "annotationSignedUrl": None
                     })
 
+                identity = normalize_review_student_identity(
+                    dict(sub_row),
+                    int(sub_row["display_ordinal"] or 1),
+                )
                 return {
                     "data": {
                         "submission": {
                             "id": str(sub_row["id"]),
-                            "studentName": sub_row["student_name"] or "Unknown",
-                            "studentRollNumber": sub_row["student_roll_number"] or "",
+                            "studentName": identity.student_name,
+                            "studentRollNumber": identity.student_roll_number,
+                            "matchedStudentId": identity.matched_student_id,
                             "totalScore": sub_row["total_score"] or 0,
                             "totalMarks": sub_row["total_marks"] or 100,
                             "status": sub_row["status"] or "graded",
