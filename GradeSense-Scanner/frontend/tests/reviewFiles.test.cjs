@@ -42,7 +42,7 @@ function loadTsModule(relativePath, moduleCache = new Map()) {
   return module.exports;
 }
 
-const { buildLocalReviewFiles, buildReviewFileSlides } = loadTsModule('src/utils/reviewFiles.ts');
+const { buildLocalReviewFiles, buildReviewFileSlides, mergeReviewFiles } = loadTsModule('src/utils/reviewFiles.ts');
 const { normalizeReviewScores } = loadTsModule('src/utils/reviewScores.ts');
 const {
   buildReviewSettingsPayload,
@@ -237,6 +237,44 @@ test('buildLocalReviewFiles preserves local PDF page metadata for paper viewers'
   assert.equal(byKind.answer_sheet.originalName, 'student-answer.pdf');
 });
 
+test('mergeReviewFiles prefers synced API files over stale local files by paper type', () => {
+  const files = mergeReviewFiles(
+    [
+      {
+        id: 'api-student',
+        kind: 'answer_sheet',
+        signedUrl: 'https://api.example/student.pdf',
+        annotationSignedUrl: null,
+      },
+      {
+        id: 'api-model',
+        kind: 'model_answer',
+        signedUrl: 'https://api.example/model.pdf',
+        annotationSignedUrl: null,
+      },
+    ],
+    [
+      {
+        id: 'local-student',
+        kind: 'answer_sheet',
+        signedUrl: 'file:///stale-student.pdf',
+        annotationSignedUrl: null,
+      },
+      {
+        id: 'local-question',
+        kind: 'question_paper',
+        signedUrl: 'file:///question.pdf',
+        annotationSignedUrl: null,
+      },
+    ]
+  );
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(files.map(file => file.id))),
+    ['api-student', 'api-model', 'local-question']
+  );
+});
+
 test('createImportedPdfPage marks selected documents as PDF pages', () => {
   const page = createImportedPdfPage(
     {
@@ -411,25 +449,27 @@ test('review-ready exams require completed grading data', () => {
   assert.equal(isReviewReadyExam({ reviewReady: true, submissionCount: 2, gradedSubmissionCount: 1 }), true);
 });
 
-test('grading control opens teacher notes in a dedicated editor modal', () => {
+test('grading control edits teacher notes inline without opening a separate modal', () => {
   const panelSource = fs.readFileSync(
     path.join(__dirname, '..', 'src/components/review/GradingControlPanel.tsx'),
     'utf8'
   );
 
-  assert.equal(panelSource.includes('TeacherNoteEditorModal'), true);
+  assert.equal(panelSource.includes('TextInput'), true);
+  assert.equal(panelSource.includes('onChangeText={comment => onCommentChange(activeScore.id, comment)}'), true);
+  assert.equal(panelSource.includes('TeacherNoteEditorModal'), false);
   assert.equal(panelSource.includes('KeyboardAvoidingView'), false);
 });
 
-test('teacher note editor stays above the Android keyboard', () => {
-  const modalSource = fs.readFileSync(
-    path.join(__dirname, '..', 'src/components/review/TeacherNoteEditorModal.tsx'),
+test('teacher note editor expands inline for keyboard visibility', () => {
+  const panelSource = fs.readFileSync(
+    path.join(__dirname, '..', 'src/components/review/GradingControlPanel.tsx'),
     'utf8'
   );
 
-  assert.equal(modalSource.includes('statusBarTranslucent'), true);
-  assert.equal(modalSource.includes('keyboardVerticalOffset={0}'), true);
-  assert.equal(modalSource.includes('keyboardRoot: {\n    flex: 1,'), true);
+  assert.equal(panelSource.includes('isNoteFocused && densityStyles.commentInputFocused'), true);
+  assert.equal(panelSource.includes('multiline'), true);
+  assert.equal(panelSource.includes('textAlignVertical="top"'), true);
 });
 
 test('student result feedback prefers teacher corrections before AI comments', () => {
@@ -450,6 +490,14 @@ test('review grading caches active submission details and prefetches the next pa
   assert.equal(reviewSource.includes('detailRequestRef'), true);
   assert.equal(reviewSource.includes('fetchSubmissionDetail(nextSubmission.id)'), true);
   assert.equal(reviewSource.includes('fetchActiveSubmissionDetail(true)'), true);
+});
+
+test('review grading header shows active submission total score and marks', () => {
+  const reviewSource = fs.readFileSync(path.join(__dirname, '..', 'app/review-grading.tsx'), 'utf8');
+
+  assert.equal(reviewSource.includes('activeTotalScore'), true);
+  assert.equal(reviewSource.includes('activeTotalMarks'), true);
+  assert.equal(reviewSource.includes('Score: {formatMarks(activeTotalScore)} / {formatMarks(activeTotalMarks)}'), true);
 });
 
 test('home grading polling batches active job requests', () => {

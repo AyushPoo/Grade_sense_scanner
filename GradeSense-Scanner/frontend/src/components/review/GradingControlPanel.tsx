@@ -4,13 +4,13 @@ import {
   Platform,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../../config';
 import type { ScoreItem } from '../../types/review';
-import { TeacherNoteEditorModal } from './TeacherNoteEditorModal';
 import {
   getReviewDensityConfig,
   ReviewDensity,
@@ -38,90 +38,80 @@ export function GradingControlPanel({
   onOpenDictation,
   onSaveAndNext,
 }: GradingControlPanelProps) {
-  const [isNoteEditorVisible, setIsNoteEditorVisible] = useState(false);
+  const [isNoteFocused, setIsNoteFocused] = useState(false);
   const teacherNote = activeScore.teacherCorrection || '';
   const densityConfig = useMemo(() => getReviewDensityConfig(density), [density]);
   const densityStyles = useMemo(() => createDensityStyles(densityConfig), [densityConfig]);
 
-  const handleSaveNote = (note: string) => {
-    onCommentChange(activeScore.id, note);
-    setIsNoteEditorVisible(false);
-  };
-
   return (
-    <>
-      <View style={[styles.panel, densityStyles.panel]}>
-        <View style={[styles.stepperRow, densityStyles.stepperRow]}>
-          <View style={styles.questionSummary}>
-            <Text style={[styles.panelEyebrow, densityStyles.panelEyebrow]}>Current question</Text>
-            <Text style={[styles.questionTitle, densityStyles.questionTitle]}>Question {activeScore.questionNumber}</Text>
-          </View>
-
-          <View style={styles.stepperContainer}>
-            <TouchableOpacity
-              style={[styles.stepperButton, densityStyles.stepperButton]}
-              onPress={() => onScoreChange(activeScore.id, activeScore.obtainedMarks - 0.5)}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="remove" size={densityConfig.stepperIconSize} color={COLORS.primary} />
-            </TouchableOpacity>
-            <Text style={[styles.stepperValue, densityStyles.stepperValue]}>{activeScore.obtainedMarks.toFixed(1)}</Text>
-            <TouchableOpacity
-              style={[styles.stepperButton, densityStyles.stepperButton]}
-              onPress={() => onScoreChange(activeScore.id, activeScore.obtainedMarks + 0.5)}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="add" size={densityConfig.stepperIconSize} color={COLORS.primary} />
-            </TouchableOpacity>
-          </View>
+    <View style={[styles.panel, densityStyles.panel]}>
+      <View style={[styles.stepperRow, densityStyles.stepperRow]}>
+        <View style={styles.questionSummary}>
+          <Text style={[styles.panelEyebrow, densityStyles.panelEyebrow]}>Current question</Text>
+          <Text style={[styles.questionTitle, densityStyles.questionTitle]}>Question {activeScore.questionNumber}</Text>
         </View>
 
-        <Text style={[styles.commentLabel, densityStyles.commentLabel]}>Teacher note</Text>
-        <View style={[styles.commentRow, densityStyles.commentRow]}>
+        <View style={styles.stepperContainer}>
           <TouchableOpacity
-            style={[styles.commentInputContainer, densityStyles.commentInputContainer]}
-            onPress={() => setIsNoteEditorVisible(true)}
-            activeOpacity={0.78}
+            style={[styles.stepperButton, densityStyles.stepperButton]}
+            onPress={() => onScoreChange(activeScore.id, activeScore.obtainedMarks - 0.5)}
+            activeOpacity={0.8}
           >
-            <Text
-              style={[styles.commentPreview, densityStyles.commentPreview, !teacherNote && styles.commentPlaceholder]}
-              numberOfLines={2}
-            >
-              {teacherNote || 'Add a short correction or override note...'}
-            </Text>
+            <Ionicons name="remove" size={densityConfig.stepperIconSize} color={COLORS.primary} />
           </TouchableOpacity>
-          <TouchableOpacity style={[styles.micButton, densityStyles.micButton]} onPress={onOpenDictation} activeOpacity={0.75}>
-            <Ionicons name="mic-outline" size={densityConfig.micIconSize} color={COLORS.primary} />
+          <Text style={[styles.stepperValue, densityStyles.stepperValue]}>{activeScore.obtainedMarks.toFixed(1)}</Text>
+          <TouchableOpacity
+            style={[styles.stepperButton, densityStyles.stepperButton]}
+            onPress={() => onScoreChange(activeScore.id, activeScore.obtainedMarks + 0.5)}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="add" size={densityConfig.stepperIconSize} color={COLORS.primary} />
           </TouchableOpacity>
         </View>
+      </View>
 
-        <TouchableOpacity
-          style={[styles.saveButton, densityStyles.saveButton, isSaving && styles.saveButtonDisabled]}
-          onPress={onSaveAndNext}
-          disabled={isSaving}
-          activeOpacity={0.85}
-        >
-          {isSaving ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <>
-              <Ionicons name="checkmark-done" size={densityConfig.saveIconSize} color="#fff" />
-              <Text style={[styles.saveButtonText, densityStyles.saveButtonText]}>
-                {isLastSubmission ? 'APPROVE & FINISH' : 'APPROVE & NEXT STUDENT'}
-              </Text>
-            </>
-          )}
+      <Text style={[styles.commentLabel, densityStyles.commentLabel]}>Teacher note</Text>
+      <View style={[styles.commentRow, densityStyles.commentRow]}>
+        <TextInput
+          style={[
+            styles.commentInput,
+            densityStyles.commentInput,
+            isNoteFocused && densityStyles.commentInputFocused,
+          ]}
+          value={teacherNote}
+          onChangeText={comment => onCommentChange(activeScore.id, comment)}
+          onFocus={() => setIsNoteFocused(true)}
+          onBlur={() => setIsNoteFocused(false)}
+          placeholder="Add a short correction or override note..."
+          placeholderTextColor={COLORS.textMuted}
+          multiline
+          textAlignVertical="top"
+          returnKeyType="default"
+          blurOnSubmit={false}
+        />
+        <TouchableOpacity style={[styles.micButton, densityStyles.micButton]} onPress={onOpenDictation} activeOpacity={0.75}>
+          <Ionicons name="mic-outline" size={densityConfig.micIconSize} color={COLORS.primary} />
         </TouchableOpacity>
       </View>
 
-      <TeacherNoteEditorModal
-        visible={isNoteEditorVisible}
-        initialValue={teacherNote}
-        questionNumber={activeScore.questionNumber}
-        onClose={() => setIsNoteEditorVisible(false)}
-        onSave={handleSaveNote}
-      />
-    </>
+      <TouchableOpacity
+        style={[styles.saveButton, densityStyles.saveButton, isSaving && styles.saveButtonDisabled]}
+        onPress={onSaveAndNext}
+        disabled={isSaving}
+        activeOpacity={0.85}
+      >
+        {isSaving ? (
+          <ActivityIndicator size="small" color="#fff" />
+        ) : (
+          <>
+            <Ionicons name="checkmark-done" size={densityConfig.saveIconSize} color="#fff" />
+            <Text style={[styles.saveButtonText, densityStyles.saveButtonText]}>
+              {isLastSubmission ? 'APPROVE & FINISH' : 'APPROVE & NEXT STUDENT'}
+            </Text>
+          </>
+        )}
+      </TouchableOpacity>
+    </View>
   );
 }
 
@@ -189,19 +179,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexDirection: 'row',
   },
-  commentInputContainer: {
+  commentInput: {
     backgroundColor: COLORS.surface,
     borderColor: COLORS.border,
     borderRadius: 11,
     borderWidth: 1,
-    flex: 1,
-    justifyContent: 'center',
-  },
-  commentPreview: {
     color: COLORS.text,
-  },
-  commentPlaceholder: {
-    color: COLORS.textMuted,
+    flex: 1,
   },
   micButton: {
     alignItems: 'center',
@@ -266,14 +250,16 @@ function createDensityStyles(config: ReviewDensityConfig) {
       gap: config.footerGap,
       marginBottom: config.footerGap,
     },
-    commentInputContainer: {
-      minHeight: config.noteMinHeight,
-    },
-    commentPreview: {
+    commentInput: {
       fontSize: config.noteFontSize,
       lineHeight: config.noteLineHeight,
+      maxHeight: config.noteMinHeight * 3,
+      minHeight: config.noteMinHeight,
       paddingHorizontal: Math.max(8, config.footerPaddingHorizontal - 2),
       paddingVertical: Math.max(6, config.footerPaddingTop),
+    },
+    commentInputFocused: {
+      minHeight: Math.max(config.noteMinHeight * 2.5, 86),
     },
     micButton: {
       height: config.micButtonSize,

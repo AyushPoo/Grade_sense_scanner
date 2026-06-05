@@ -133,6 +133,8 @@ export default function ReviewGradingScreen() {
     () => buildReviewFileSlides(reviewFiles),
     [reviewFiles]
   );
+  const activeTotalScore = Number(activeSub?.totalScore ?? 0);
+  const activeTotalMarks = Number(activeSub?.totalMarks ?? 0);
 
   // Voice dictation pulsing animation
   useEffect(() => {
@@ -632,6 +634,9 @@ export default function ReviewGradingScreen() {
           <Text style={styles.studentLabel}>Active paper</Text>
           <Text style={styles.studentName}>{activeSub?.studentName || 'Unknown Student'}</Text>
           <Text style={styles.studentRoll}>Roll: {activeSub?.studentRollNumber || 'N/A'}</Text>
+          <Text style={styles.studentScore}>
+            Score: {formatMarks(activeTotalScore)} / {formatMarks(activeTotalMarks)}
+          </Text>
         </View>
 
         <TouchableOpacity
@@ -731,6 +736,13 @@ export default function ReviewGradingScreen() {
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
+}
+
+function formatMarks(value: number): string {
+  if (!Number.isFinite(value)) {
+    return '0';
+  }
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
 const styles = StyleSheet.create({
@@ -862,6 +874,12 @@ const styles = StyleSheet.create({
   studentRoll: {
     fontSize: 10,
     color: COLORS.textLight,
+    marginTop: 2,
+  },
+  studentScore: {
+    color: COLORS.primary,
+    fontSize: 10,
+    fontWeight: '800',
     marginTop: 2,
   },
   // Tabs

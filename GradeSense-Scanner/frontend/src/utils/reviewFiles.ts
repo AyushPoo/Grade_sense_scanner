@@ -50,8 +50,10 @@ export function buildLocalReviewFiles(
 export function mergeReviewFiles(apiFiles: ReviewFileItem[], localFiles: ReviewFileItem[]): ReviewFileItem[] {
   const seen = new Set<string>();
   const merged: ReviewFileItem[] = [];
+  const apiDocumentTypes = new Set(apiFiles.map(getFileType));
+  const localFallbackFiles = localFiles.filter(file => !apiDocumentTypes.has(getFileType(file)));
 
-  for (const file of [...localFiles, ...apiFiles]) {
+  for (const file of [...apiFiles, ...localFallbackFiles]) {
     const key = fileKey(file);
     if (seen.has(key)) {
       continue;
