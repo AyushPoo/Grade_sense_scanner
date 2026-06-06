@@ -616,6 +616,22 @@ test('manage screen renders operational tabs without waiting on analytics loader
   assert.equal(manageSource.includes('minWidth: 0'), true);
 });
 
+test('manage roster derives visible student counts from loaded roster and opens reports', () => {
+  const manageSource = fs.readFileSync(path.join(__dirname, '..', 'app/(tabs)/manage.tsx'), 'utf8');
+  const reportSource = fs.readFileSync(
+    path.join(__dirname, '..', 'src/components/manage/StudentReportModal.tsx'),
+    'utf8'
+  );
+
+  assert.equal(manageSource.includes('visibleStudentCount'), true);
+  assert.equal(manageSource.includes('setBatches(prev => prev.map(batch => ('), true);
+  assert.equal(manageSource.includes('StudentReportModal'), true);
+  assert.equal(manageSource.includes('setSelectedStudentReport(std)'), true);
+  assert.equal(reportSource.includes('Performance Snapshot'), true);
+  assert.equal(reportSource.includes('Subject Performance'), true);
+  assert.equal(reportSource.includes('Exam History'), true);
+});
+
 test('manage exam delete refreshes scanner sessions so home cannot keep stale exams', () => {
   const manageSource = fs.readFileSync(path.join(__dirname, '..', 'app/(tabs)/manage.tsx'), 'utf8');
 

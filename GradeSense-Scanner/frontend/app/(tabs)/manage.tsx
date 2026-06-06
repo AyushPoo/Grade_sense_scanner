@@ -28,6 +28,10 @@ import {
 } from '../../src/api/manage';
 import { AnalyticsPerformancePanel } from '../../src/components/manage/AnalyticsPerformancePanel';
 import { ExamManagementPanel } from '../../src/components/manage/ExamManagementPanel';
+import {
+  ManagedRosterStudent,
+  StudentReportModal,
+} from '../../src/components/manage/StudentReportModal';
 import { ManagedExam, ManagePerformance } from '../../src/utils/manageData';
 import { AIBrainRule, createAIBrainRule, fetchAIBrainRules } from '../../src/api/aiBrain';
 
@@ -51,12 +55,7 @@ interface Batch {
   student_count: number;
 }
 
-interface Student {
-  student_id: string;
-  name: string;
-  roll_number: string;
-  email?: string;
-}
+type Student = ManagedRosterStudent;
 
 function MetricCard({ value, label, icon, color, bg }: {
   value: string | number; label: string;
@@ -187,6 +186,7 @@ export default function ManageScreen() {
   const [expandedBatchId, setExpandedBatchId] = useState<string | null>(null);
   const [studentsByBatch, setStudentsByBatch] = useState<Record<string, Student[]>>({});
   const [loadingStudents, setLoadingStudents] = useState<string | null>(null);
+  const [selectedStudentReport, setSelectedStudentReport] = useState<Student | null>(null);
 
   // Re-evaluation States
   const [reevaluations, setReevaluations] = useState<any[]>([]);
@@ -304,7 +304,13 @@ export default function ManageScreen() {
       });
       if (res.ok) {
         const json = await res.json();
-        setStudentsByBatch(prev => ({ ...prev, [batchId]: json.students || [] }));
+        const students = json.students || [];
+        setStudentsByBatch(prev => ({ ...prev, [batchId]: students }));
+        setBatches(prev => prev.map(batch => (
+          batch.batch_id === batchId
+            ? { ...batch, student_count: students.length }
+            : batch
+        )));
       }
     } catch (err) {
       console.error(err);
@@ -913,6 +919,9 @@ export default function ManageScreen() {
                 batches.map(batch => {
                   const isExpanded = expandedBatchId === batch.batch_id;
                   const students = studentsByBatch[batch.batch_id] || [];
+                  const visibleStudentCount = studentsByBatch[batch.batch_id]
+                    ? students.length
+                    : batch.student_count || 0;
 
                   return (
                     <View key={batch.batch_id} style={styles.manageCard}>
@@ -923,7 +932,7 @@ export default function ManageScreen() {
                       >
                         <View style={styles.manageInfo}>
                           <Text style={styles.manageName}>{batch.name}</Text>
-                          <Text style={styles.manageSubtitle}>{batch.student_count || 0} students</Text>
+                          <Text style={styles.manageSubtitle}>{visibleStudentCount} students</Text>
                         </View>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                           <TouchableOpacity
@@ -967,21 +976,36 @@ export default function ManageScreen() {
                           )}
 
                           {students.map(std => (
-                            <View key={std.student_id} style={styles.studentItem}>
+                            <TouchableOpacity
+                              key={std.student_id}
+                              style={styles.studentItem}
+                              onPress={() => setSelectedStudentReport(std)}
+                              activeOpacity={0.78}
+                            >
                               <View style={styles.studentAvatar}>
                                 <Text style={styles.studentAvatarText}>{std.name[0]?.toUpperCase()}</Text>
                               </View>
                               <View style={{ flex: 1, marginLeft: 10 }}>
                                 <Text style={styles.studentNameText}>{std.name}</Text>
+                                <Text style={styles.studentPerformanceText}>
+                                  Avg {formatStudentAverage(std.averagePercentage)}% - {std.examCount || 0} exams
+                                </Text>
                                 <Text style={styles.studentMetaText}>Roll No: {std.roll_number} {std.email ? `• ${std.email}` : ''}</Text>
                               </View>
+                              <TouchableOpacity
+                                style={styles.studentDetailButton}
+                                onPress={() => setSelectedStudentReport(std)}
+                                activeOpacity={0.75}
+                              >
+                                <Text style={styles.studentDetailText}>Details</Text>
+                              </TouchableOpacity>
                               <TouchableOpacity
                                 onPress={() => handleDeleteStudent(batch.batch_id, std.student_id, std.name)}
                                 hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
                               >
                                 <Ionicons name="close-circle" size={18} color={COLORS.textMuted} />
                               </TouchableOpacity>
-                            </View>
+                            </TouchableOpacity>
                           ))}
                         </View>
                       )}
@@ -1211,6 +1235,12 @@ export default function ManageScreen() {
         </View>
       </Modal>
 
+      <StudentReportModal
+        visible={Boolean(selectedStudentReport)}
+        student={selectedStudentReport}
+        onClose={() => setSelectedStudentReport(null)}
+      />
+
       {/* Resolve Re-evaluation Modal */}
       <Modal visible={showResolveModal} transparent animationType="slide" onRequestClose={() => setShowResolveModal(false)}>
         <View style={modalStyles.backdrop}>
@@ -1273,6 +1303,11 @@ export default function ManageScreen() {
       </Modal>
     </SafeAreaView>
   );
+}
+
+function formatStudentAverage(value?: number | null): string {
+  const average = Number(value || 0);
+  return Number.isInteger(average) ? String(average) : average.toFixed(1);
 }
 
 const styles = StyleSheet.create({
@@ -1804,6 +1839,24 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: COLORS.textMuted,
     marginTop: 2,
+  },
+  studentPerformanceText: {
+    color: COLORS.primary,
+    fontSize: 11,
+    fontWeight: '800',
+    marginTop: 2,
+  },
+  studentDetailButton: {
+    backgroundColor: COLORS.primaryXLight,
+    borderRadius: 999,
+    marginHorizontal: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  studentDetailText: {
+    color: COLORS.primary,
+    fontSize: 11,
+    fontWeight: '900',
   },
 
 });
