@@ -14,11 +14,23 @@ interface ExamApiOptions extends ManageApiOptions {
   examId: string;
 }
 
+interface StudentApiOptions extends ManageApiOptions {
+  batchId: string;
+  studentId: string;
+}
+
 export interface UpdateManagedExamInput {
   name?: string;
   examDate?: string | null;
   totalMarks?: number;
   status?: string;
+}
+
+export interface UpdateBatchStudentInput {
+  name?: string;
+  rollNumber?: string;
+  email?: string;
+  mobileNumber?: string;
 }
 
 function authHeaders(token: string) {
@@ -106,4 +118,26 @@ export async function archiveManagedExam({ backendUrl, token, examId }: ExamApiO
     const text = await res.text();
     throw new Error(text || `Status ${res.status}`);
   }
+}
+
+export async function updateBatchStudent(
+  { backendUrl, token, batchId, studentId }: StudentApiOptions,
+  input: UpdateBatchStudentInput
+): Promise<unknown> {
+  const res = await fetch(`${backendUrl}/api/batches/${batchId}/students/${studentId}`, {
+    method: 'PATCH',
+    headers: {
+      ...authHeaders(token),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(input),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Status ${res.status}`);
+  }
+
+  const json = await res.json();
+  return json.student ?? json.data ?? json;
 }

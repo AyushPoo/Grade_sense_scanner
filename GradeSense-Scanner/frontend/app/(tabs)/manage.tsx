@@ -25,12 +25,14 @@ import {
   fetchManagedExams,
   fetchManagePerformance,
   publishManagedExam,
+  updateBatchStudent,
 } from '../../src/api/manage';
 import { AnalyticsPerformancePanel } from '../../src/components/manage/AnalyticsPerformancePanel';
 import { ExamManagementPanel } from '../../src/components/manage/ExamManagementPanel';
 import {
   ManagedRosterStudent,
   StudentReportModal,
+  StudentProfileUpdateInput,
 } from '../../src/components/manage/StudentReportModal';
 import { ManagedExam, ManagePerformance } from '../../src/utils/manageData';
 import { AIBrainRule, createAIBrainRule, fetchAIBrainRules } from '../../src/api/aiBrain';
@@ -187,6 +189,7 @@ export default function ManageScreen() {
   const [studentsByBatch, setStudentsByBatch] = useState<Record<string, Student[]>>({});
   const [loadingStudents, setLoadingStudents] = useState<string | null>(null);
   const [selectedStudentReport, setSelectedStudentReport] = useState<Student | null>(null);
+  const [savingStudentId, setSavingStudentId] = useState<string | null>(null);
 
   // Re-evaluation States
   const [reevaluations, setReevaluations] = useState<any[]>([]);
@@ -673,11 +676,53 @@ export default function ManageScreen() {
     );
   };
 
+  const handleUpdateStudent = async (studentId: string, input: StudentProfileUpdateInput) => {
+    if (!token) return;
+    const batchId = selectedBatchId
+      || Object.entries(studentsByBatch).find(([, students]) => students.some(student => student.student_id === studentId))?.[0];
+    if (!batchId) {
+      Alert.alert('Student not saved', 'Open the class roster again and retry.');
+      return;
+    }
+
+    setSavingStudentId(studentId);
+    try {
+      const updated = await updateBatchStudent({
+        backendUrl: getBackendUrl(),
+        token,
+        batchId,
+        studentId,
+      }, input) as Student;
+      const mergedStudent = {
+        ...selectedStudentReport,
+        ...updated,
+        student_id: updated.student_id || studentId,
+        roll_number: updated.roll_number || input.rollNumber,
+        rollNumber: updated.rollNumber || updated.roll_number || input.rollNumber,
+        mobileNumber: updated.mobileNumber || updated.mobile_number || input.mobileNumber,
+      } as Student;
+
+      setStudentsByBatch(prev => ({
+        ...prev,
+        [batchId]: (prev[batchId] || []).map(student => (
+          student.student_id === studentId ? { ...student, ...mergedStudent } : student
+        )),
+      }));
+      setSelectedStudentReport(mergedStudent);
+      await fetchStudents(batchId);
+    } catch (err: any) {
+      Alert.alert('Student not saved', err.message || 'Could not update student details.');
+    } finally {
+      setSavingStudentId(null);
+    }
+  };
+
   const toggleBatchExpand = (batchId: string) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     if (expandedBatchId === batchId) {
       setExpandedBatchId(null);
     } else {
+      setSelectedBatchId(batchId);
       setExpandedBatchId(batchId);
       if (!studentsByBatch[batchId]) {
         fetchStudents(batchId);
@@ -979,7 +1024,10 @@ export default function ManageScreen() {
                             <TouchableOpacity
                               key={std.student_id}
                               style={styles.studentItem}
-                              onPress={() => setSelectedStudentReport(std)}
+                              onPress={() => {
+                                setSelectedBatchId(batch.batch_id);
+                                setSelectedStudentReport(std);
+                              }}
                               activeOpacity={0.78}
                             >
                               <View style={styles.studentAvatar}>
@@ -994,7 +1042,10 @@ export default function ManageScreen() {
                               </View>
                               <TouchableOpacity
                                 style={styles.studentDetailButton}
-                                onPress={() => setSelectedStudentReport(std)}
+                                onPress={() => {
+                                  setSelectedBatchId(batch.batch_id);
+                                  setSelectedStudentReport(std);
+                                }}
                                 activeOpacity={0.75}
                               >
                                 <Text style={styles.studentDetailText}>Details</Text>
@@ -1239,6 +1290,8 @@ export default function ManageScreen() {
         visible={Boolean(selectedStudentReport)}
         student={selectedStudentReport}
         onClose={() => setSelectedStudentReport(null)}
+        onSaveProfile={handleUpdateStudent}
+        isSavingProfile={savingStudentId === selectedStudentReport?.student_id}
       />
 
       {/* Resolve Re-evaluation Modal */}

@@ -461,18 +461,23 @@ test('grading control edits teacher notes inline without opening a separate moda
   assert.equal(panelSource.includes('KeyboardAvoidingView'), false);
 });
 
-test('teacher note editor keeps a stable footer height while typing', () => {
+test('teacher note editor expands inline while Android owns keyboard resize', () => {
   const panelSource = fs.readFileSync(
     path.join(__dirname, '..', 'src/components/review/GradingControlPanel.tsx'),
     'utf8'
   );
+  const reviewSource = fs.readFileSync(path.join(__dirname, '..', 'app/review-grading.tsx'), 'utf8');
 
-  assert.equal(panelSource.includes('isNoteFocused'), false);
+  assert.equal(panelSource.includes('onContentSizeChange'), true);
+  assert.equal(panelSource.includes('setNoteContentHeight'), true);
+  assert.equal(panelSource.includes('noteHeight >= maxNoteHeight'), true);
   assert.equal(panelSource.includes('commentInputFocused'), false);
-  assert.equal(panelSource.includes('height: config.noteMinHeight'), true);
+  assert.equal(panelSource.includes('height: noteHeight'), true);
   assert.equal(panelSource.includes('scrollEnabled'), true);
   assert.equal(panelSource.includes('multiline'), true);
   assert.equal(panelSource.includes('textAlignVertical="top"'), true);
+  assert.equal(reviewSource.includes("enabled={Platform.OS === 'ios'}"), true);
+  assert.equal(reviewSource.includes("behavior={Platform.OS === 'ios' ? 'padding' : undefined}"), true);
 });
 
 test('rubric feedback is editable and saved with review payload', () => {
@@ -650,6 +655,24 @@ test('manage roster derives visible student counts from loaded roster and opens 
   assert.equal(reportSource.includes('Performance Snapshot'), true);
   assert.equal(reportSource.includes('Subject Performance'), true);
   assert.equal(reportSource.includes('Exam History'), true);
+});
+
+test('manage roster edits student profiles through the synced backend', () => {
+  const manageSource = fs.readFileSync(path.join(__dirname, '..', 'app/(tabs)/manage.tsx'), 'utf8');
+  const reportSource = fs.readFileSync(
+    path.join(__dirname, '..', 'src/components/manage/StudentReportModal.tsx'),
+    'utf8'
+  );
+  const apiSource = fs.readFileSync(path.join(__dirname, '..', 'src/api/manage.ts'), 'utf8');
+
+  assert.equal(apiSource.includes('updateBatchStudent'), true);
+  assert.equal(apiSource.includes('/api/batches/${batchId}/students/${studentId}'), true);
+  assert.equal(manageSource.includes('handleUpdateStudent'), true);
+  assert.equal(manageSource.includes('onSaveProfile={handleUpdateStudent}'), true);
+  assert.equal(reportSource.includes('onSaveProfile'), true);
+  assert.equal(reportSource.includes('mobileNumber'), true);
+  assert.equal(reportSource.includes('Student ID'), true);
+  assert.equal(reportSource.includes('Save details'), true);
 });
 
 test('manage exam delete refreshes scanner sessions so home cannot keep stale exams', () => {

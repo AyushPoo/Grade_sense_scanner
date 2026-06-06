@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -41,6 +41,15 @@ export function GradingControlPanel({
   const teacherNote = activeScore.teacherCorrection || '';
   const densityConfig = useMemo(() => getReviewDensityConfig(density), [density]);
   const densityStyles = useMemo(() => createDensityStyles(densityConfig), [densityConfig]);
+  const [isNoteFocused, setIsNoteFocused] = useState(false);
+  const [noteContentHeight, setNoteContentHeight] = useState(0);
+  const minNoteHeight = densityConfig.noteMinHeight;
+  const focusedMinNoteHeight = Math.max(minNoteHeight * 1.9, 82);
+  const maxNoteHeight = Math.max(minNoteHeight * 3.4, 132);
+  const noteHeight = Math.min(
+    Math.max(isNoteFocused ? focusedMinNoteHeight : minNoteHeight, noteContentHeight + 14),
+    maxNoteHeight
+  );
 
   return (
     <View style={[styles.panel, densityStyles.panel]}>
@@ -72,13 +81,16 @@ export function GradingControlPanel({
       <Text style={[styles.commentLabel, densityStyles.commentLabel]}>Teacher note</Text>
       <View style={[styles.commentRow, densityStyles.commentRow]}>
         <TextInput
-          style={[styles.commentInput, densityStyles.commentInput]}
+          style={[styles.commentInput, densityStyles.commentInput, { height: noteHeight }]}
           value={teacherNote}
           onChangeText={comment => onCommentChange(activeScore.id, comment)}
+          onFocus={() => setIsNoteFocused(true)}
+          onBlur={() => setIsNoteFocused(false)}
+          onContentSizeChange={event => setNoteContentHeight(event.nativeEvent.contentSize.height)}
           placeholder="Add a short correction or override note..."
           placeholderTextColor={COLORS.textMuted}
           multiline
-          scrollEnabled
+          scrollEnabled={noteHeight >= maxNoteHeight}
           textAlignVertical="top"
           returnKeyType="default"
           blurOnSubmit={false}
@@ -246,8 +258,8 @@ function createDensityStyles(config: ReviewDensityConfig) {
     },
     commentInput: {
       fontSize: config.noteFontSize,
-      height: config.noteMinHeight,
       lineHeight: config.noteLineHeight,
+      minHeight: config.noteMinHeight,
       paddingHorizontal: Math.max(8, config.footerPaddingHorizontal - 2),
       paddingVertical: Math.max(6, config.footerPaddingTop),
     },

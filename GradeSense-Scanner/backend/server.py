@@ -30,6 +30,7 @@ from review_settings_service import (
 )
 from improve_ai_service import ImproveAIServiceError, save_question_improvement
 from review_save_service import ReviewSaveServiceError, save_submission_review_edits
+from student_roster_service import StudentRosterServiceError, update_batch_student_profile
 from grading_lifecycle_service import (
     build_grading_jobs,
     build_grading_submission_queue,
@@ -1157,6 +1158,57 @@ async def delete_student(batch_id: str, student_id: str, authorization: Optional
             raise HTTPException(status_code=response.status_code, detail=response.text)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.patch("/batches/{batch_id}/students/{student_id}")
+async def update_student(batch_id: str, student_id: str, data: dict, authorization: Optional[str] = Header(None)):
+    """Update student profile fields that teachers manage from the mobile roster."""
+    user = await get_current_user(authorization)
+
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if webapp_db_url:
+        conn = None
+        try:
+            conn = await asyncpg.connect(webapp_db_url)
+            student = await update_batch_student_profile(
+                conn,
+                teacher_id=user.user_id,
+                batch_id=batch_id,
+                student_id=student_id,
+                data=data,
+            )
+            await db.students.update_one(
+                {"batch_id": batch_id, "student_id": student_id},
+                {"$set": student},
+                upsert=True,
+            )
+            return {"success": True, "student": student}
+        except StudentRosterServiceError as e:
+            raise HTTPException(status_code=e.status_code, detail=e.detail)
+        except Exception as e:
+            logger.error(f"Error updating student profile in Neon: {e}")
+            raise HTTPException(status_code=503, detail="Student profile sync is unavailable. Please retry.")
+        finally:
+            if conn:
+                await conn.close()
+
+    update_doc = {
+        "name": data.get("name"),
+        "roll_number": data.get("rollNumber") or data.get("roll_number") or data.get("studentId"),
+        "rollNumber": data.get("rollNumber") or data.get("roll_number") or data.get("studentId"),
+        "email": data.get("email") or "",
+        "mobile_number": data.get("mobileNumber") or data.get("mobile_number") or data.get("phone") or "",
+        "mobileNumber": data.get("mobileNumber") or data.get("mobile_number") or data.get("phone") or "",
+    }
+    update_doc = {key: value for key, value in update_doc.items() if value is not None}
+    result = await db.students.update_one(
+        {"batch_id": batch_id, "student_id": student_id},
+        {"$set": update_doc},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Student not found")
+    student = await db.students.find_one({"batch_id": batch_id, "student_id": student_id}, {"_id": 0})
+    return {"success": True, "student": student}
 
 
 @api_router.post("/exams/{exam_id}/regrade")

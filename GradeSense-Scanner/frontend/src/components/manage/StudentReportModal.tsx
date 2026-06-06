@@ -1,9 +1,11 @@
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   Modal,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -31,7 +33,10 @@ export interface ManagedRosterStudent {
   student_id: string;
   name: string;
   roll_number: string;
+  rollNumber?: string;
   email?: string;
+  mobile_number?: string;
+  mobileNumber?: string;
   averagePercentage?: number;
   examCount?: number;
   subjectPerformance?: StudentSubjectPerformance[];
@@ -45,11 +50,60 @@ interface StudentReportModalProps {
   student: ManagedRosterStudent | null;
   visible: boolean;
   onClose: () => void;
+  onSaveProfile?: (studentId: string, input: StudentProfileUpdateInput) => Promise<void>;
+  isSavingProfile?: boolean;
 }
 
-export function StudentReportModal({ student, visible, onClose }: StudentReportModalProps) {
+export interface StudentProfileUpdateInput {
+  name: string;
+  rollNumber: string;
+  email: string;
+  mobileNumber: string;
+}
+
+export function StudentReportModal({
+  student,
+  visible,
+  onClose,
+  onSaveProfile,
+  isSavingProfile = false,
+}: StudentReportModalProps) {
   const subjects = student?.subjectPerformance || [];
   const history = student?.examHistory || [];
+  const [isEditing, setIsEditing] = useState(false);
+  const [draft, setDraft] = useState<StudentProfileUpdateInput>({
+    name: '',
+    rollNumber: '',
+    email: '',
+    mobileNumber: '',
+  });
+
+  useEffect(() => {
+    if (!student) return;
+    setDraft({
+      name: student.name || '',
+      rollNumber: student.roll_number || '',
+      email: student.email || '',
+      mobileNumber: student.mobileNumber || student.mobile_number || '',
+    });
+    setIsEditing(false);
+  }, [student]);
+
+  const canSave = useMemo(
+    () => Boolean(student?.student_id && draft.name.trim() && onSaveProfile && !isSavingProfile),
+    [draft.name, isSavingProfile, onSaveProfile, student?.student_id]
+  );
+
+  const handleSaveProfile = async () => {
+    if (!student?.student_id || !onSaveProfile || !canSave) return;
+    await onSaveProfile(student.student_id, {
+      name: draft.name.trim(),
+      rollNumber: draft.rollNumber.trim(),
+      email: draft.email.trim(),
+      mobileNumber: draft.mobileNumber.trim(),
+    });
+    setIsEditing(false);
+  };
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -63,15 +117,73 @@ export function StudentReportModal({ student, visible, onClose }: StudentReportM
             <View style={styles.headerCopy}>
               <Text style={styles.title}>{student?.name || 'Student'}</Text>
               <Text style={styles.subtitle}>
-                Roll: {student?.roll_number || 'Not set'}{student?.email ? ` · ${student.email}` : ''}
+                Roll: {student?.roll_number || 'Not set'}{student?.email ? ` - ${student.email}` : ''}
               </Text>
             </View>
+            {onSaveProfile && (
+              <TouchableOpacity
+                style={styles.editButton}
+                onPress={() => setIsEditing(value => !value)}
+                activeOpacity={0.75}
+              >
+                <Ionicons name={isEditing ? 'eye-outline' : 'create-outline'} size={18} color={COLORS.primary} />
+              </TouchableOpacity>
+            )}
             <TouchableOpacity style={styles.closeButton} onPress={onClose} activeOpacity={0.75}>
               <Ionicons name="close" size={22} color={COLORS.text} />
             </TouchableOpacity>
           </View>
 
           <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+            {isEditing && (
+              <View style={styles.section}>
+                <View style={styles.formHeader}>
+                  <Text style={styles.sectionTitle}>Personal Details</Text>
+                  <Text style={styles.systemIdText}>System ID: {shortId(student?.student_id)}</Text>
+                </View>
+                <ProfileField
+                  label="Name"
+                  value={draft.name}
+                  onChangeText={name => setDraft(prev => ({ ...prev, name }))}
+                  placeholder="Student name"
+                />
+                <ProfileField
+                  label="Student ID"
+                  value={draft.rollNumber}
+                  onChangeText={rollNumber => setDraft(prev => ({ ...prev, rollNumber }))}
+                  placeholder="Roll number or school ID"
+                />
+                <ProfileField
+                  label="Email"
+                  value={draft.email}
+                  onChangeText={email => setDraft(prev => ({ ...prev, email }))}
+                  placeholder="student@example.com"
+                  keyboardType="email-address"
+                />
+                <ProfileField
+                  label="Mobile number"
+                  value={draft.mobileNumber}
+                  onChangeText={mobileNumber => setDraft(prev => ({ ...prev, mobileNumber }))}
+                  placeholder="Optional"
+                  keyboardType="phone-pad"
+                />
+                <TouchableOpacity
+                  style={[styles.saveProfileButton, !canSave && styles.saveProfileButtonDisabled]}
+                  onPress={handleSaveProfile}
+                  disabled={!canSave}
+                  activeOpacity={0.8}
+                >
+                  {isSavingProfile ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <>
+                      <Ionicons name="checkmark" size={16} color="#fff" />
+                      <Text style={styles.saveProfileText}>Save details</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </View>
+            )}
             <View style={styles.metrics}>
               <Metric label="Average" value={`${formatPercent(student?.averagePercentage)}%`} />
               <Metric label="Exams" value={String(student?.examCount || history.length || 0)} />
@@ -190,6 +302,35 @@ function EmptyRow({ text }: { text: string }) {
   return <Text style={styles.emptyText}>{text}</Text>;
 }
 
+function ProfileField({
+  keyboardType = 'default',
+  label,
+  onChangeText,
+  placeholder,
+  value,
+}: {
+  keyboardType?: React.ComponentProps<typeof TextInput>['keyboardType'];
+  label: string;
+  onChangeText: (value: string) => void;
+  placeholder: string;
+  value: string;
+}) {
+  return (
+    <View style={styles.profileField}>
+      <Text style={styles.profileLabel}>{label}</Text>
+      <TextInput
+        style={styles.profileInput}
+        value={value}
+        onChangeText={onChangeText}
+        placeholder={placeholder}
+        placeholderTextColor={COLORS.textMuted}
+        keyboardType={keyboardType}
+        autoCapitalize={keyboardType === 'email-address' ? 'none' : 'words'}
+      />
+    </View>
+  );
+}
+
 function formatSubjectDetail(subject?: StudentSubjectPerformance | null): string {
   if (!subject) {
     return 'More graded data will make this report useful.';
@@ -217,6 +358,11 @@ function formatDate(value?: string | null): string {
 
 function clampPercent(value?: number | null): number {
   return Math.max(0, Math.min(100, Number(value || 0)));
+}
+
+function shortId(value?: string): string {
+  if (!value) return 'Not set';
+  return value.length > 10 ? `${value.slice(0, 8)}...` : value;
 }
 
 const styles = StyleSheet.create({
@@ -283,6 +429,15 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     width: 40,
   },
+  editButton: {
+    alignItems: 'center',
+    backgroundColor: COLORS.primaryXLight,
+    borderRadius: 14,
+    height: 40,
+    justifyContent: 'center',
+    marginRight: 8,
+    width: 40,
+  },
   content: {
     padding: 16,
     paddingBottom: 34,
@@ -326,6 +481,56 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '900',
     marginBottom: 10,
+  },
+  formHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  systemIdText: {
+    color: COLORS.textMuted,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  profileField: {
+    marginBottom: 10,
+  },
+  profileLabel: {
+    color: COLORS.textLight,
+    fontSize: 10,
+    fontWeight: '900',
+    marginBottom: 5,
+    textTransform: 'uppercase',
+  },
+  profileInput: {
+    backgroundColor: COLORS.cardBg,
+    borderColor: COLORS.border,
+    borderRadius: 11,
+    borderWidth: 1,
+    color: COLORS.text,
+    fontSize: 14,
+    fontWeight: '700',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  saveProfileButton: {
+    alignItems: 'center',
+    backgroundColor: COLORS.primary,
+    borderRadius: 12,
+    flexDirection: 'row',
+    gap: 6,
+    justifyContent: 'center',
+    marginTop: 2,
+    paddingVertical: 11,
+  },
+  saveProfileButtonDisabled: {
+    backgroundColor: COLORS.textMuted,
+  },
+  saveProfileText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '900',
   },
   signalRow: {
     alignItems: 'center',
