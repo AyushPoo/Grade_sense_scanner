@@ -29,6 +29,7 @@ from review_settings_service import (
     utc_now_text,
 )
 from improve_ai_service import ImproveAIServiceError, save_question_improvement
+from review_save_service import ReviewSaveServiceError, save_submission_review_edits
 from grading_lifecycle_service import (
     build_grading_jobs,
     build_grading_submission_queue,
@@ -3272,6 +3273,30 @@ async def enqueue_pilot_review_continuation(submission_id: str, authorization: O
 @api_router.post("/v1/submissions/{submission_id}/review")
 async def post_submission_review_proxy(submission_id: str, data: dict, authorization: Optional[str] = Header(None)):
     """Save review grades (proxied to webapp or mock save)"""
+    direct_save_response = None
+    direct_save_failed = False
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if webapp_db_url and not submission_id.startswith("sub_mock_") and not submission_id.startswith("sub_local_"):
+        conn = None
+        try:
+            user = await get_current_user(authorization)
+            conn = await asyncpg.connect(webapp_db_url)
+            direct_save_response = await save_submission_review_edits(
+                conn,
+                teacher_id=user.user_id,
+                submission_id=submission_id,
+                data=data,
+                now_text=utc_now_text(),
+            )
+        except ReviewSaveServiceError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+        except Exception as exc:
+            direct_save_failed = True
+            logger.error(f"Error saving mobile review edits directly: {exc}")
+        finally:
+            if conn:
+                await conn.close()
+
     webapp_url = os.environ.get("WEBAPP_URL")
     token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
     
@@ -3286,10 +3311,19 @@ async def post_submission_review_proxy(submission_id: str, data: dict, authoriza
                 )
                 if response.status_code in [200, 201]:
                     await enqueue_pilot_review_continuation(submission_id, authorization)
+                    if direct_save_response:
+                        return direct_save_response
                     return response.json()
                 logger.warn(f"Proxy review save returned status {response.status_code}: {response.text}")
         except Exception as e:
             logger.error(f"Error proxying submission review: {e}")
+
+    if direct_save_response:
+        await enqueue_pilot_review_continuation(submission_id, authorization)
+        return direct_save_response
+
+    if direct_save_failed:
+        raise HTTPException(status_code=503, detail="Failed to save review changes")
 
     logger.info(f"Mock review saved for submission {submission_id}: {data}")
     return {"success": True, "message": "Review saved successfully (mock)"}

@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../../config';
 import type { ScoreItem } from '../../types/review';
@@ -17,6 +17,7 @@ interface RubricReviewPanelProps {
   density: ReviewDensity;
   onSelectScore: (index: number) => void;
   onDensityChange: (density: ReviewDensity) => void;
+  onFeedbackChange?: (scoreId: string, feedback: string) => void;
   onImproveAI?: () => void;
   isImprovingAI?: boolean;
 }
@@ -28,6 +29,7 @@ export function RubricReviewPanel({
   density,
   onSelectScore,
   onDensityChange,
+  onFeedbackChange,
   onImproveAI,
   isImprovingAI = false,
 }: RubricReviewPanelProps) {
@@ -97,18 +99,24 @@ export function RubricReviewPanel({
               </View>
             ) : null}
 
-            {feedbackEnabled && activeScore.aiFeedback ? (
+            {feedbackEnabled ? (
               <View style={[styles.feedbackBox, densityStyles.feedbackBox]}>
                 <View style={styles.feedbackHeader}>
                   <Ionicons name="sparkles" size={density === 'compact' ? 14 : 16} color={COLORS.primary} />
                   <Text style={[styles.feedbackTitle, densityStyles.feedbackTitle]}>AI Evaluation Feedback</Text>
+                  {onFeedbackChange ? <Text style={styles.editableBadge}>Editable</Text> : null}
                 </View>
-                <Text style={[styles.feedbackText, densityStyles.feedbackText]}>{activeScore.aiFeedback}</Text>
-              </View>
-            ) : feedbackEnabled ? (
-              <View style={[styles.feedbackBox, densityStyles.feedbackBox]}>
-                <Text style={[styles.feedbackTitle, densityStyles.feedbackTitle]}>AI Evaluation Feedback</Text>
-                <Text style={[styles.feedbackText, densityStyles.feedbackText]}>No AI feedback is available for this question.</Text>
+                <TextInput
+                  style={[styles.feedbackInput, densityStyles.feedbackInput]}
+                  value={activeScore.aiFeedback || ''}
+                  onChangeText={feedback => onFeedbackChange?.(activeScore.id, feedback)}
+                  placeholder="Add feedback students should see for this question..."
+                  placeholderTextColor={COLORS.textMuted}
+                  editable={Boolean(onFeedbackChange)}
+                  multiline
+                  scrollEnabled
+                  textAlignVertical="top"
+                />
               </View>
             ) : null}
 
@@ -255,6 +263,20 @@ const styles = StyleSheet.create({
   feedbackText: {
     color: COLORS.text,
   },
+  feedbackInput: {
+    color: COLORS.text,
+    margin: 0,
+    padding: 0,
+  },
+  editableBadge: {
+    backgroundColor: COLORS.primaryXLight,
+    borderRadius: 999,
+    color: COLORS.primary,
+    fontSize: 10,
+    fontWeight: '800',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
   improveButton: {
     alignItems: 'center',
     alignSelf: 'flex-start',
@@ -348,6 +370,11 @@ function createDensityStyles(config: ReviewDensityConfig) {
     feedbackText: {
       fontSize: config.feedbackTextFontSize,
       lineHeight: config.feedbackLineHeight,
+    },
+    feedbackInput: {
+      fontSize: config.feedbackTextFontSize,
+      lineHeight: config.feedbackLineHeight,
+      minHeight: config.feedbackLineHeight * 2,
     },
   });
 }

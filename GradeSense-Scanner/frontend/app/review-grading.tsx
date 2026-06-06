@@ -496,6 +496,12 @@ export default function ReviewGradingScreen() {
     );
   };
 
+  const handleFeedbackChange = (scoreId: string, feedback: string) => {
+    setScores(prev =>
+      prev.map(s => (s.id === scoreId ? { ...s, aiFeedback: feedback } : s))
+    );
+  };
+
   const handleSaveAndNext = async () => {
     if (submissions.length === 0 || !token || !webappUrl) return;
     const activeSub = submissions[currentSubIndex];
@@ -507,8 +513,10 @@ export default function ReviewGradingScreen() {
         teacherFeedback,
         scores: scores.map(s => ({
           id: s.id,
+          scoreId: s.id,
           obtainedMarks: s.obtainedMarks,
-          teacherCorrection: s.teacherCorrection || undefined,
+          teacherCorrection: s.teacherCorrection ?? '',
+          aiFeedback: s.aiFeedback ?? '',
         })),
       };
 
@@ -694,6 +702,7 @@ export default function ReviewGradingScreen() {
               density={reviewDensity}
               onSelectScore={setActiveScoreIndex}
               onDensityChange={setReviewDensity}
+              onFeedbackChange={handleFeedbackChange}
               onImproveAI={() => setShowImproveAIModal(true)}
               isImprovingAI={isSubmittingImprovement}
             />

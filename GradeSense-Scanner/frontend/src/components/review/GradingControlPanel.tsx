@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -38,7 +38,6 @@ export function GradingControlPanel({
   onOpenDictation,
   onSaveAndNext,
 }: GradingControlPanelProps) {
-  const [isNoteFocused, setIsNoteFocused] = useState(false);
   const teacherNote = activeScore.teacherCorrection || '';
   const densityConfig = useMemo(() => getReviewDensityConfig(density), [density]);
   const densityStyles = useMemo(() => createDensityStyles(densityConfig), [densityConfig]);
@@ -73,18 +72,13 @@ export function GradingControlPanel({
       <Text style={[styles.commentLabel, densityStyles.commentLabel]}>Teacher note</Text>
       <View style={[styles.commentRow, densityStyles.commentRow]}>
         <TextInput
-          style={[
-            styles.commentInput,
-            densityStyles.commentInput,
-            isNoteFocused && densityStyles.commentInputFocused,
-          ]}
+          style={[styles.commentInput, densityStyles.commentInput]}
           value={teacherNote}
           onChangeText={comment => onCommentChange(activeScore.id, comment)}
-          onFocus={() => setIsNoteFocused(true)}
-          onBlur={() => setIsNoteFocused(false)}
           placeholder="Add a short correction or override note..."
           placeholderTextColor={COLORS.textMuted}
           multiline
+          scrollEnabled
           textAlignVertical="top"
           returnKeyType="default"
           blurOnSubmit={false}
@@ -252,14 +246,10 @@ function createDensityStyles(config: ReviewDensityConfig) {
     },
     commentInput: {
       fontSize: config.noteFontSize,
+      height: config.noteMinHeight,
       lineHeight: config.noteLineHeight,
-      maxHeight: config.noteMinHeight * 3,
-      minHeight: config.noteMinHeight,
       paddingHorizontal: Math.max(8, config.footerPaddingHorizontal - 2),
       paddingVertical: Math.max(6, config.footerPaddingTop),
-    },
-    commentInputFocused: {
-      minHeight: Math.max(config.noteMinHeight * 2.5, 86),
     },
     micButton: {
       height: config.micButtonSize,

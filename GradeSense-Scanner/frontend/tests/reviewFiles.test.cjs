@@ -461,15 +461,35 @@ test('grading control edits teacher notes inline without opening a separate moda
   assert.equal(panelSource.includes('KeyboardAvoidingView'), false);
 });
 
-test('teacher note editor expands inline for keyboard visibility', () => {
+test('teacher note editor keeps a stable footer height while typing', () => {
   const panelSource = fs.readFileSync(
     path.join(__dirname, '..', 'src/components/review/GradingControlPanel.tsx'),
     'utf8'
   );
 
-  assert.equal(panelSource.includes('isNoteFocused && densityStyles.commentInputFocused'), true);
+  assert.equal(panelSource.includes('isNoteFocused'), false);
+  assert.equal(panelSource.includes('commentInputFocused'), false);
+  assert.equal(panelSource.includes('height: config.noteMinHeight'), true);
+  assert.equal(panelSource.includes('scrollEnabled'), true);
   assert.equal(panelSource.includes('multiline'), true);
   assert.equal(panelSource.includes('textAlignVertical="top"'), true);
+});
+
+test('rubric feedback is editable and saved with review payload', () => {
+  const reviewSource = fs.readFileSync(path.join(__dirname, '..', 'app/review-grading.tsx'), 'utf8');
+  const rubricSource = fs.readFileSync(
+    path.join(__dirname, '..', 'src/components/review/RubricReviewPanel.tsx'),
+    'utf8'
+  );
+
+  assert.equal(rubricSource.includes('TextInput'), true);
+  assert.equal(rubricSource.includes('onFeedbackChange?.(activeScore.id, feedback)'), true);
+  assert.equal(rubricSource.includes('value={activeScore.aiFeedback || \'\'}'), true);
+  assert.equal(reviewSource.includes('const handleFeedbackChange'), true);
+  assert.equal(reviewSource.includes('onFeedbackChange={handleFeedbackChange}'), true);
+  assert.equal(reviewSource.includes('scoreId: s.id'), true);
+  assert.equal(reviewSource.includes('aiFeedback: s.aiFeedback ?? \'\''), true);
+  assert.equal(reviewSource.includes('teacherCorrection: s.teacherCorrection ?? \'\''), true);
 });
 
 test('student result feedback prefers teacher corrections before AI comments', () => {
