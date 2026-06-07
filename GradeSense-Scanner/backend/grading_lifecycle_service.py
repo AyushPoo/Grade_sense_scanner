@@ -108,10 +108,25 @@ def validate_scan_session_ready_for_sync(session: dict[str, Any] | None) -> list
         return ["Scan session was not found."]
 
     errors = []
+    total_marks = session.get("total_marks")
+    exam_date = str(session.get("exam_date") or "").strip()
     model_pages = len((session.get("model_answer") or {}).get("pages") or [])
     question_pages = len((session.get("question_paper") or {}).get("pages") or [])
     student_count = count_students_with_answer_pages(session)
 
+    if not str(session.get("session_name") or "").strip():
+        errors.append("Exam name is required before upload.")
+    if not str(session.get("batch_id") or "").strip():
+        errors.append("Batch is required before upload.")
+    if not str(session.get("subject_id") or "").strip():
+        errors.append("Subject is required before upload.")
+    try:
+        if float(total_marks) <= 0:
+            errors.append("Total marks must be greater than 0 before upload.")
+    except (TypeError, ValueError):
+        errors.append("Total marks must be greater than 0 before upload.")
+    if not exam_date:
+        errors.append("Exam date is required before upload.")
     if model_pages <= 0:
         errors.append("Upload the model answer paper before starting grading.")
     if model_pages <= 0 and question_pages <= 0:

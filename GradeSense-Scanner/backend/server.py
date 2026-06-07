@@ -74,6 +74,11 @@ from runtime_readiness_service import build_readiness_report
 from upload_flow_service import merge_upload_flow_state
 from sync_cleanup_service import delete_stale_upload_flows_for_teacher, delete_upload_flows_for_exams
 from webapp_proxy_service import WebappProxyConfigError, build_proxy_headers, build_webapp_url
+from google_invite_auth_service import (
+    GoogleInviteAuthError,
+    GoogleProfile,
+    resolve_or_claim_teacher_invite,
+)
 import jwt as pyjwt
 import asyncpg
 
@@ -276,6 +281,7 @@ class ScanSession(BaseModel):
 class ScanSessionCreate(BaseModel):
     session_name: str
     batch_id: str
+    batch_name: Optional[str] = None
     settings: dict
     subject_id: Optional[str] = None
     total_marks: Optional[float] = None
@@ -767,42 +773,45 @@ async def google_idtoken_auth(data: dict):
         raise HTTPException(status_code=403, detail="Google email is not verified")
 
 
-    # 4. Look up user in the webapp's PostgreSQL DB
-    webapp_user_id = None
-    user_role = "teacher"
+    # 4. Resolve an existing active user, or claim a pending teacher invite.
+    # This makes admin invites work for mobile-first sign-ins too; users no
+    # longer need to open the webapp once before the native app can authenticate.
+    webapp_user = None
     if webapp_db_url:
+        conn = None
         try:
             conn = await asyncpg.connect(webapp_db_url)
-            row = await conn.fetchrow(
-                'SELECT id, role, account_status FROM users WHERE email = $1 LIMIT 1',
-                google_email
+            webapp_user = await resolve_or_claim_teacher_invite(
+                conn,
+                GoogleProfile(
+                    email=google_email,
+                    name=google_name,
+                    picture_url=google_picture,
+                    subject=google_sub,
+                ),
+                id_factory=lambda: generate_drizzle_id("usr_"),
             )
-            await conn.close()
-            if row:
-                if row["account_status"] != "active":
-                    raise HTTPException(status_code=403, detail="Account is not active")
-                webapp_user_id = row["id"]
-                user_role = row["role"]
-            else:
-                logger.warning(f"Google auth: user {google_email} not found in webapp DB")
-                raise HTTPException(
-                    status_code=403,
-                    detail="This email is not registered in GradeSense. Please contact your administrator."
-                )
+        except GoogleInviteAuthError as e:
+            logger.warning(f"Google auth rejected for {google_email}: {e.detail}")
+            raise HTTPException(status_code=e.status_code, detail=e.detail)
         except HTTPException:
             raise
         except Exception as e:
             logger.error(f"Error querying webapp DB: {e}")
-            # Fall through - we'll try webapp token validation instead
-            webapp_user_id = None
+            webapp_user = None
+        finally:
+            if conn:
+                await conn.close()
 
     # 5. If we couldn't get the user ID from DB, try via webapp API
-    if not webapp_user_id:
-        # As a fallback, try calling the webapp's login via the proxy
+    if not webapp_user:
         raise HTTPException(
             status_code=503,
             detail="User database unavailable. Please try again or use email/password login."
         )
+
+    webapp_user_id = webapp_user["id"]
+    user_role = webapp_user.get("role") or "teacher"
 
     # 6. Create a webapp-compatible JWT token
     now = datetime.now(timezone.utc)
@@ -819,8 +828,8 @@ async def google_idtoken_auth(data: dict):
     user_doc = {
         "user_id": webapp_user_id,
         "email": google_email,
-        "name": google_name,
-        "picture": google_picture,
+        "name": webapp_user.get("name") or google_name,
+        "picture": webapp_user.get("picture_url") or google_picture,
         "role": user_role,
         "org_name": "GradeSense Academy"
     }
@@ -961,33 +970,118 @@ async def get_batches(authorization: Optional[str] = Header(None)):
 
 @api_router.post("/batches")
 async def create_batch(data: dict, authorization: Optional[str] = Header(None)):
-    """Create a new batch on the webapp"""
+    """Create a new batch on the webapp and cache it for mobile setup."""
     user = await get_current_user(authorization)
+    token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
+    batch_name = str(data.get("name") or "").strip()
+    if not batch_name:
+        raise HTTPException(status_code=400, detail="Batch name is required")
+
+    class_standard = data.get("classStandard", data.get("class_standard"))
+    section = data.get("section")
+    academic_year = data.get("academicYear", data.get("academic_year"))
+    now = utc_now_text()
+
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if webapp_db_url and token != "sess_mock_token_12345":
+        batch_id = generate_drizzle_id("bat_")
+        conn = None
+        try:
+            conn = await asyncpg.connect(webapp_db_url)
+            row = await conn.fetchrow(
+                '''
+                INSERT INTO batches (
+                    id, teacher_id, name, class_standard, section,
+                    academic_year, status, created_at, updated_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $7)
+                RETURNING id, name, class_standard, section, academic_year, status
+                ''',
+                batch_id,
+                user.user_id,
+                batch_name,
+                class_standard,
+                section,
+                academic_year,
+                now,
+            )
+            new_batch = {
+                "batch_id": str(row["id"]),
+                "id": str(row["id"]),
+                "name": row["name"],
+                "student_count": 0,
+                "class_standard": row["class_standard"],
+                "classStandard": row["class_standard"],
+                "section": row["section"],
+                "academic_year": row["academic_year"],
+                "academicYear": row["academic_year"],
+                "status": row["status"],
+                "org_id": user.org_id,
+                "user_id": user.user_id,
+            }
+            await db.batches.update_one(
+                {"batch_id": new_batch["batch_id"]},
+                {"$set": new_batch},
+                upsert=True,
+            )
+            return {"success": True, "batch": new_batch}
+        except Exception as e:
+            logger.error(f"Error creating batch in Neon: {e}")
+            raise HTTPException(status_code=500, detail="Failed to create batch")
+        finally:
+            if conn:
+                await conn.close()
+
     webapp_url = os.environ.get("WEBAPP_URL")
     
     if not webapp_url:
         import time
         new_batch = {
             "batch_id": f"batch_{int(time.time())}",
-            "name": data.get("name"),
+            "name": batch_name,
             "student_count": 0,
-            "org_id": user.org_id
+            "org_id": user.org_id,
+            "user_id": user.user_id,
         }
         await db.batches.insert_one(new_batch)
         return {"success": True, "batch": new_batch}
         
-    token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
     try:
         async with httpx.AsyncClient() as client_http:
             response = await client_http.post(
                 f"{webapp_url.rstrip('/')}/api/v1/batches",
                 headers={"Authorization": f"Bearer {token}"},
-                json=data,
+                json={
+                    "name": batch_name,
+                    "classStandard": class_standard,
+                    "section": section,
+                    "academicYear": academic_year,
+                },
                 timeout=15.0
             )
             if response.status_code in [200, 201]:
-                return response.json()
+                body = response.json()
+                created = body.get("data") or body.get("batch") or body
+                batch_id = created.get("id") or created.get("batch_id")
+                if not batch_id:
+                    raise HTTPException(status_code=500, detail="Batch creation response missing id")
+                new_batch = {
+                    "batch_id": batch_id,
+                    "id": batch_id,
+                    "name": created.get("name") or batch_name,
+                    "student_count": int(created.get("studentCount") or created.get("student_count") or 0),
+                    "org_id": user.org_id,
+                    "user_id": user.user_id,
+                }
+                await db.batches.update_one(
+                    {"batch_id": new_batch["batch_id"]},
+                    {"$set": new_batch},
+                    upsert=True,
+                )
+                return {"success": True, "batch": new_batch}
             raise HTTPException(status_code=response.status_code, detail=response.text)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1478,11 +1572,82 @@ async def create_subject(data: SubjectCreateRequest, authorization: Optional[str
 async def create_scan_session(data: ScanSessionCreate, authorization: Optional[str] = Header(None)):
     """Create a new scan session"""
     user = await get_current_user(authorization)
+    token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
     session_id = f"scan_{uuid.uuid4().hex[:12]}"
     
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if webapp_db_url and token != "sess_mock_token_12345":
+        conn = None
+        try:
+            conn = await asyncpg.connect(webapp_db_url)
+            batch_id = data.batch_id
+            batch_name = data.batch_name
+            row = await conn.fetchrow(
+                '''
+                SELECT id, name
+                FROM batches
+                WHERE id = $1
+                  AND teacher_id = $2
+                  AND COALESCE(status, 'active') = 'active'
+                LIMIT 1
+                ''',
+                batch_id,
+                user.user_id,
+            )
+            if not row:
+                if not batch_name:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Selected batch is not synced with the webapp. Refresh batches or create it again before scanning.",
+                    )
+                batch_id = await ensure_webapp_batch_for_session(
+                    conn,
+                    {
+                        "session_id": None,
+                        "batch_id": data.batch_id,
+                        "batch_name": batch_name,
+                    },
+                    user.user_id,
+                )
+                row = await conn.fetchrow(
+                    '''
+                    SELECT id, name
+                    FROM batches
+                    WHERE id = $1
+                      AND teacher_id = $2
+                      AND COALESCE(status, 'active') = 'active'
+                    LIMIT 1
+                    ''',
+                    batch_id,
+                    user.user_id,
+                )
+                if not row:
+                    raise HTTPException(status_code=503, detail="Batch sync is unavailable. Please retry.")
+                data.batch_id = str(row["id"])
+            await db.batches.update_one(
+                {"batch_id": str(row["id"])},
+                {"$set": {
+                    "batch_id": str(row["id"]),
+                    "id": str(row["id"]),
+                    "name": row["name"],
+                    "student_count": 0,
+                    "org_id": user.org_id,
+                    "user_id": user.user_id,
+                }},
+                upsert=True,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error validating batch before scan session create: {e}")
+            raise HTTPException(status_code=503, detail="Batch sync is unavailable. Please retry.")
+        finally:
+            if conn:
+                await conn.close()
+
     # Find batch info from db
     batch = await db.batches.find_one({"batch_id": data.batch_id}, {"_id": 0})
-    batch_name = batch["name"] if batch else "Unknown Batch"
+    batch_name = batch["name"] if batch else (data.batch_name or "Unknown Batch")
     
     session = ScanSession(
         session_id=session_id,
@@ -1673,6 +1838,97 @@ async def upload_student_papers(session_id: str, data: UploadStudentRequest, aut
     return {"status": "success", "pages_received": len(data.student.pages)}
 
 
+async def ensure_webapp_batch_for_session(conn, session: dict, user_id: str) -> str:
+    """
+    Return a valid webapp batch id for a scan session.
+
+    Older mobile builds could create local-only batch ids like batch_123. During
+    final sync we repair that by finding a teacher-owned batch with the same
+    name, or creating one directly in the webapp database.
+    """
+    batch_id = str(session.get("batch_id") or "").strip()
+    batch_name = str(session.get("batch_name") or "").strip() or "Mobile Batch"
+    now = datetime.utcnow().isoformat() + 'Z'
+
+    if batch_id:
+        existing = await conn.fetchrow(
+            '''
+            SELECT id
+            FROM batches
+            WHERE id = $1
+              AND teacher_id = $2
+              AND COALESCE(status, 'active') NOT IN ('archived', 'deleted')
+            LIMIT 1
+            ''',
+            batch_id,
+            user_id,
+        )
+        if existing:
+            return str(existing["id"])
+
+    matched = await conn.fetchrow(
+        '''
+        SELECT id
+        FROM batches
+        WHERE teacher_id = $1
+          AND lower(name) = lower($2)
+          AND COALESCE(status, 'active') NOT IN ('archived', 'deleted')
+        ORDER BY created_at ASC
+        LIMIT 1
+        ''',
+        user_id,
+        batch_name,
+    )
+    if matched:
+        repaired_id = str(matched["id"])
+    else:
+        repaired_id = generate_drizzle_id("bat_")
+        await conn.execute(
+            '''
+            INSERT INTO batches (
+                id, teacher_id, name, class_standard, section,
+                academic_year, status, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, NULL, NULL, NULL, 'active', $4, $4)
+            ''',
+            repaired_id,
+            user_id,
+            batch_name,
+            now,
+        )
+
+    if repaired_id != batch_id:
+        session["batch_id"] = repaired_id
+        if session.get("session_id"):
+            await db.scan_sessions.update_one(
+                {"session_id": session["session_id"], "user_id": user_id},
+                {"$set": {
+                    "batch_id": repaired_id,
+                    "batch_name": batch_name,
+                    "updated_at": datetime.now(timezone.utc),
+                }},
+            )
+        await db.batches.update_one(
+            {"batch_id": repaired_id},
+            {"$set": {
+                "batch_id": repaired_id,
+                "id": repaired_id,
+                "name": batch_name,
+                "student_count": 0,
+                "user_id": user_id,
+            }},
+            upsert=True,
+        )
+        logger.info(
+            "Repaired mobile scan session batch before sync: session=%s old_batch=%s new_batch=%s",
+            session.get("session_id") or "<new-session>",
+            batch_id,
+            repaired_id,
+        )
+
+    return repaired_id
+
+
 async def create_exam_on_webapp(session_id: str, user_id: str, token: str) -> str:
     """
     Creates an Exam on the webapp and returns the created webapp exam_id.
@@ -1691,7 +1947,7 @@ async def create_exam_on_webapp(session_id: str, user_id: str, token: str) -> st
             conn = await asyncpg.connect(webapp_db_url)
             
             exam_name = session["session_name"]
-            batch_id = session["batch_id"]
+            batch_id = await ensure_webapp_batch_for_session(conn, session, user_id)
             subject_id = session.get("subject_id")
             exam_date = session.get("exam_date")
             if not exam_date:
