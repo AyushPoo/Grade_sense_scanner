@@ -68,6 +68,7 @@ const MOTION_THRESHOLD = 0.04;   // delta g-units (was 0.5 raw magnitude — wro
 const MOTION_SAMPLE_COUNT = 5;      // consecutive stable readings required
 const MOTION_UPDATE_INTERVAL = 100;    // ms — poll frequency (was 250, too slow for delta)
 const AUTO_CAPTURE_CONFIDENCE_THRESHOLD = 0.50;
+const POST_CAPTURE_DETECTION_WIDTH = 960;
 
 // ─── Scanner State Machine ────────────────────────────────────────────────────
 type ScannerPhase =
@@ -327,8 +328,8 @@ export default function ScannerScreen() {
                     // Downscale the EXIF-resolved canonical image (NOT raw sensor image)
                     const downscaled = await ImageManipulator.manipulateAsync(
                         canonicalUri,
-                        [{ resize: { width: 640 } }],
-                        { base64: false, format: ImageManipulator.SaveFormat.JPEG, compress: 0.5 }
+                        [{ resize: { width: POST_CAPTURE_DETECTION_WIDTH } }],
+                        { base64: false, format: ImageManipulator.SaveFormat.JPEG, compress: 0.72 }
                     );
 
                     if (__DEV__) {

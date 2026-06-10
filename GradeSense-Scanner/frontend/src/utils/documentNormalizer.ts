@@ -19,8 +19,10 @@ export interface NormalizationResult {
 }
 
 const TARGET_MAX_HEIGHT = 2048;
-const OUTPUT_WIDTH = 1440;
-const OUTPUT_HEIGHT = 2048;
+const OUTPUT_LONG_SIDE = 2048;
+const MIN_OUTPUT_SIDE = 960;
+const MIN_PAGE_ASPECT = 0.55;
+const MAX_PAGE_ASPECT = 1.65;
 const CROP_PADDING_RATIO = 0.03; // 3% padding
 
 /**
@@ -68,6 +70,36 @@ function expandQuad(quad: Quadrilateral, width: number, height: number, ratio: n
     topRight: expandPoint(quad.topRight),
     bottomRight: expandPoint(quad.bottomRight),
     bottomLeft: expandPoint(quad.bottomLeft)
+  };
+}
+
+function distance(a: Point, b: Point): number {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function computeWarpDimensions(quad: Quadrilateral): { width: number; height: number } {
+  const topWidth = distance(quad.topLeft, quad.topRight);
+  const bottomWidth = distance(quad.bottomLeft, quad.bottomRight);
+  const leftHeight = distance(quad.topLeft, quad.bottomLeft);
+  const rightHeight = distance(quad.topRight, quad.bottomRight);
+  const estimatedWidth = Math.max(topWidth, bottomWidth, 1);
+  const estimatedHeight = Math.max(leftHeight, rightHeight, 1);
+  const aspect = clamp(estimatedWidth / estimatedHeight, MIN_PAGE_ASPECT, MAX_PAGE_ASPECT);
+
+  if (aspect >= 1) {
+    return {
+      width: OUTPUT_LONG_SIDE,
+      height: Math.max(MIN_OUTPUT_SIDE, Math.round(OUTPUT_LONG_SIDE / aspect)),
+    };
+  }
+
+  return {
+    width: Math.max(MIN_OUTPUT_SIDE, Math.round(OUTPUT_LONG_SIDE * aspect)),
+    height: OUTPUT_LONG_SIDE,
   };
 }
 
@@ -185,6 +217,7 @@ export async function normalizeCapturedDocument(
 
     // Apply smart crop padding, unless manual crop explicitly overrides
     const expandedQuad = (options.isManualCrop && ENABLE_MANUAL_CROP_EXACT_EXPORT) ? orderedQuad : expandQuad(orderedQuad, targetWidth, targetHeight, CROP_PADDING_RATIO);
+    const warpSize = computeWarpDimensions(expandedQuad);
 
     // ── STEP 4: Perspective Warp ─────────────────────────────────────────
     // Source points
@@ -199,9 +232,9 @@ export async function normalizeCapturedDocument(
     // Destination points (flattened rectangle)
     const dstPoints = [
       OpenCV.createObject(ObjectType.Point2f, 0, 0),
-      OpenCV.createObject(ObjectType.Point2f, OUTPUT_WIDTH, 0),
-      OpenCV.createObject(ObjectType.Point2f, OUTPUT_WIDTH, OUTPUT_HEIGHT),
-      OpenCV.createObject(ObjectType.Point2f, 0, OUTPUT_HEIGHT)
+      OpenCV.createObject(ObjectType.Point2f, warpSize.width, 0),
+      OpenCV.createObject(ObjectType.Point2f, warpSize.width, warpSize.height),
+      OpenCV.createObject(ObjectType.Point2f, 0, warpSize.height)
     ];
     const dstVector = OpenCV.createObject(ObjectType.Point2fVector, dstPoints);
 
@@ -210,8 +243,8 @@ export async function normalizeCapturedDocument(
 
     const tWarpStart = performance.now();
     // Warp
-    dstMat = OpenCV.createObject(ObjectType.Mat, OUTPUT_HEIGHT, OUTPUT_WIDTH, DataTypes.CV_8UC3);
-    const dsize = OpenCV.createObject(ObjectType.Size, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+    dstMat = OpenCV.createObject(ObjectType.Mat, warpSize.height, warpSize.width, DataTypes.CV_8UC3);
+    const dsize = OpenCV.createObject(ObjectType.Size, warpSize.width, warpSize.height);
     // 1 = INTER_LINEAR, 0 = BORDER_CONSTANT
     const scalar0 = OpenCV.createObject(ObjectType.Scalar, 0, 0, 0);
     (OpenCV as any).invoke('warpPerspective', resizedMat, dstMat, transformMat, dsize, 1, 0, scalar0);
@@ -221,7 +254,7 @@ export async function normalizeCapturedDocument(
     let finalProcessingMat = dstMat;
 
     if (options.enhancementMode === 'grayscale') {
-      enhancedMat = OpenCV.createObject(ObjectType.Mat, OUTPUT_HEIGHT, OUTPUT_WIDTH, DataTypes.CV_8UC1);
+      enhancedMat = OpenCV.createObject(ObjectType.Mat, warpSize.height, warpSize.width, DataTypes.CV_8UC1);
       (OpenCV as any).invoke('cvtColor', dstMat, enhancedMat, 6); // COLOR_RGBA2GRAY
       finalProcessingMat = enhancedMat;
     } else if (options.enhancementMode === 'enhanced_color' || !options.enhancementMode) {
@@ -250,8 +283,8 @@ export async function normalizeCapturedDocument(
 
     return {
       uri: finalUri,
-      width: OUTPUT_WIDTH,
-      height: OUTPUT_HEIGHT
+      width: warpSize.width,
+      height: warpSize.height
     };
 
   } finally {

@@ -3,6 +3,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { File, Paths } from 'expo-file-system';
 import { OpenCV, ObjectType, DataTypes } from 'react-native-fast-opencv';
 import { evaluateAutoCropCandidate } from './cropQuality';
+import { refineQuadWithBoundaryPoints } from './documentBoundary';
 
 export interface CVProcessingResult {
   isDocumentDetected: boolean;
@@ -545,8 +546,9 @@ export async function detectDocumentInFrame(
           console.log(`[ADAPTIVE-DP] epsilon=${epsilonRatio.toFixed(3)} vertices=4 ACCEPTED`);
         }
 
-        const cropGate = evaluateAutoCropCandidate(orderedQuad, { width, height });
-        if (!cropGate.accepted || !passesDocumentPlausibility(orderedQuad, hullArea, width, height)) {
+        const refinedQuad = refineQuadWithBoundaryPoints(orderedQuad, hull, { width, height });
+        const cropGate = evaluateAutoCropCandidate(refinedQuad, { width, height });
+        if (!cropGate.accepted || !passesDocumentPlausibility(refinedQuad, hullArea, width, height)) {
           rejectionReasons.PLAUSIBILITY_FAIL++;
           break;
         }
@@ -554,9 +556,9 @@ export async function detectDocumentInFrame(
         acceptedCount++;
         sweepSuccess = true;
 
-        const { finalScore, telemetry } = calculateSemanticScore(contour, hull, approx, orderedQuad, width, height);
+        const { finalScore, telemetry } = calculateSemanticScore(contour, hull, approx, refinedQuad, width, height);
         candidates.push({
-          quad: orderedQuad,
+          quad: refinedQuad,
           score: finalScore,
           telemetry: `Score=${finalScore.toFixed(4)} Epsilon=${epsilonRatio.toFixed(3)} | ${telemetry}`,
           area: hullArea
@@ -593,7 +595,8 @@ export async function detectDocumentInFrame(
 
       if (currentPoly.length === 4) {
         const orderedQuad = orderPoints(currentPoly);
-        const pointsArr = [orderedQuad.topLeft, orderedQuad.topRight, orderedQuad.bottomRight, orderedQuad.bottomLeft];
+        const refinedQuad = refineQuadWithBoundaryPoints(orderedQuad, hull, { width, height });
+        const pointsArr = [refinedQuad.topLeft, refinedQuad.topRight, refinedQuad.bottomRight, refinedQuad.bottomLeft];
         const topLen = Math.hypot(pointsArr[1].x - pointsArr[0].x, pointsArr[1].y - pointsArr[0].y);
         const rightLen = Math.hypot(pointsArr[2].x - pointsArr[1].x, pointsArr[2].y - pointsArr[1].y);
         const bottomLen = Math.hypot(pointsArr[3].x - pointsArr[2].x, pointsArr[3].y - pointsArr[2].y);
@@ -603,15 +606,15 @@ export async function detectDocumentInFrame(
         const maxEdge = Math.max(topLen, rightLen, bottomLen, leftLen);
 
         if (minEdge >= 20 && maxEdge / minEdge <= 10) {
-          const cropGate = evaluateAutoCropCandidate(orderedQuad, { width, height });
-          if (!cropGate.accepted || !passesDocumentPlausibility(orderedQuad, hullArea, width, height)) {
+          const cropGate = evaluateAutoCropCandidate(refinedQuad, { width, height });
+          if (!cropGate.accepted || !passesDocumentPlausibility(refinedQuad, hullArea, width, height)) {
             rejectionReasons.PLAUSIBILITY_FAIL++;
           } else {
             acceptedCount++;
             sweepSuccess = true;
-            const { finalScore, telemetry } = calculateSemanticScore(contour, hull, currentPoly, orderedQuad, width, height);
+            const { finalScore, telemetry } = calculateSemanticScore(contour, hull, currentPoly, refinedQuad, width, height);
             candidates.push({
-              quad: orderedQuad,
+              quad: refinedQuad,
               score: finalScore,
               telemetry: `Score=${finalScore.toFixed(4)} SemanticReduced(from ${fallbackPolygon.length}) | ${telemetry}`,
               area: hullArea
