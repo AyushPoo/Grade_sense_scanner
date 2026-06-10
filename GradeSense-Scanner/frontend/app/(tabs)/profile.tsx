@@ -242,7 +242,7 @@ export default function ProfileScreen() {
           <View style={styles.card}>
             <SettingRow
               icon="camera-outline"
-              label="Scanner Preferences"
+              label="Capture Preferences"
               sublabel={`Mode: ${defaultGradingMode.toUpperCase()} • Res: ${cameraResolution.toUpperCase()}`}
               iconBg={COLORS.primaryXLight}
               iconColor={COLORS.primary}
@@ -286,7 +286,7 @@ export default function ProfileScreen() {
             <SettingRow
               icon="information-circle-outline"
               label="About"
-              sublabel="GradeSense Scanner v1.0.0"
+              sublabel="GradeSense v1.0.0"
               iconBg={COLORS.surfaceElevated}
               iconColor={COLORS.textLight}
             />
@@ -306,7 +306,7 @@ export default function ProfileScreen() {
           </View>
         </View>
 
-        <Text style={styles.version}>GradeSense Scanner v1.0.0</Text>
+        <Text style={styles.version}>GradeSense v1.0.0</Text>
         <View style={{ height: 32 }} />
       </ScrollView>
 
@@ -340,12 +340,12 @@ export default function ProfileScreen() {
       </Modal>
 
 
-      {/* Scanner Preferences Modal */}
+      {/* Capture Preferences Modal */}
       <Modal visible={showScannerModal} transparent animationType="slide" onRequestClose={() => setShowScannerModal(false)}>
         <View style={modalStyles.backdrop}>
           <View style={modalStyles.sheet}>
             <View style={modalStyles.handle} />
-            <Text style={modalStyles.sheetTitle}>Scanner Preferences</Text>
+            <Text style={modalStyles.sheetTitle}>Capture Preferences</Text>
             <Text style={modalStyles.sheetSub}>Configure grading correction defaults and camera resolution values.</Text>
             
             <Text style={styles.fieldLabel}>DEFAULT AI GRADING MODE</Text>

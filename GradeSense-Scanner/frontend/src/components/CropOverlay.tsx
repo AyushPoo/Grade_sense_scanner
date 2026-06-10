@@ -13,6 +13,7 @@ import { Quadrilateral } from '../utils/cvProcessor';
 import Svg, { Polygon, Line, Circle } from 'react-native-svg';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { isConvexQuad, hasConsistentWinding, minimumEdgeLengthValid } from '../utils/geometryUtils';
+import { evaluateAutoCropCandidate } from '../utils/cropQuality';
 
 const ENABLE_MANUAL_CROP_VALIDATION = true;
 const ENABLE_EXIF_NORMALIZATION = true;
@@ -102,7 +103,9 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
                 p.y < -finalHeight * 0.1 || p.y > finalHeight * 1.1
             );
 
-            if (isOffScreen || (ENABLE_MANUAL_CROP_VALIDATION && (!isConvexQuad(rawQ) || !hasConsistentWinding(rawQ)))) {
+            const initialCropGate = evaluateAutoCropCandidate(rawQ, { width: finalWidth, height: finalHeight });
+
+            if (isOffScreen || !initialCropGate.accepted || (ENABLE_MANUAL_CROP_VALIDATION && (!isConvexQuad(rawQ) || !hasConsistentWinding(rawQ)))) {
                 console.warn("[CropOverlay] initialQuad is invalid or off-screen. Falling back to default pad.");
                 applyFallback();
             } else {

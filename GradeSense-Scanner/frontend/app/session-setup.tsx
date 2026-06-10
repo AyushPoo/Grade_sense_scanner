@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -11,18 +11,22 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { COLORS } from '../src/config';
 import { useScanStore } from '../src/store/scanStore';
 import { Batch, ScanSessionSettings, Subject } from '../src/types';
+import { useHardwareAwareBottomInset } from '../src/utils/safeArea';
 
 export default function SessionSetupScreen() {
   const router = useRouter();
   const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
-  const { createSession, savedSessions, updateSessionDetails, savedBatches, addBatch, deleteBatch, fetchBatches, savedSubjects, fetchSubjects, createSubject } = useScanStore();
+  const insets = useSafeAreaInsets();
+  const bottomContentInset = useHardwareAwareBottomInset(insets.bottom, 24);
+  const { createSession, savedSessions, updateSessionDetails, savedBatches, createBatch, deleteBatch, fetchBatches, savedSubjects, fetchSubjects, createSubject } = useScanStore();
   
   useEffect(() => {
     fetchBatches().catch(err => console.error('Failed to load batches:', err));
@@ -36,11 +40,14 @@ export default function SessionSetupScreen() {
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
   const [totalMarks, setTotalMarks] = useState('100');
   const [examDate, setExamDate] = useState(new Date().toISOString().split('T')[0]);
+  const [isStartingSession, setIsStartingSession] = useState(false);
+  const isStartingSessionRef = useRef(false);
   
   // Create batch modal
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newBatchName, setNewBatchName] = useState('');
   const [newBatchStudentCount, setNewBatchStudentCount] = useState('');
+  const [isCreatingBatch, setIsCreatingBatch] = useState(false);
   const [showSubjectModal, setShowSubjectModal] = useState(false);
   const [newSubjectName, setNewSubjectName] = useState('');
   const [newSubjectClass, setNewSubjectClass] = useState('');
@@ -49,9 +56,9 @@ export default function SessionSetupScreen() {
   // Scan options
   const [settings, setSettings] = useState<ScanSessionSettings>({
     scan_question_paper: false,
-    scan_model_answer: false,
+    scan_model_answer: true,
     auto_capture: true,
-    auto_crop: true,
+    auto_crop: false,
     barcode_detection: false,
     blur_detection: false,
     flash_mode: 'auto',
@@ -85,6 +92,7 @@ export default function SessionSetupScreen() {
         setExamDate(existing.exam_date || new Date().toISOString().split('T')[0]);
         setSettings({
           ...existing.settings,
+          auto_crop: false,
           grading_mode: existing.settings.grading_mode || 'balanced',
           pilot_review_first: Boolean(existing.settings.pilot_review_first || (existing.settings as any).pilotReviewFirst),
           feedback_enabled: existing.settings.feedback_enabled ?? (existing.settings as any).feedbackEnabled ?? true,
@@ -93,24 +101,42 @@ export default function SessionSetupScreen() {
     }
   }, [sessionId, savedSessions, savedBatches, savedSubjects]);
 
-  const handleCreateBatch = () => {
+  const totalMarksNumber = Number(totalMarks);
+  const hasValidTotalMarks = Number.isFinite(totalMarksNumber) && totalMarksNumber > 0;
+  const hasValidExamDate = /^\d{4}-\d{2}-\d{2}$/.test(examDate.trim()) && !Number.isNaN(Date.parse(`${examDate.trim()}T00:00:00`));
+  const setupErrors = [
+    !sessionName.trim() ? 'Enter an exam name.' : null,
+    !selectedSubject ? 'Select or create a subject.' : null,
+    !hasValidTotalMarks ? 'Enter total marks greater than 0.' : null,
+    !hasValidExamDate ? 'Enter a valid exam date in YYYY-MM-DD format.' : null,
+    !selectedBatch ? 'Select or create a batch.' : null,
+    !settings.scan_model_answer ? 'Model Answer is required before scanning or uploading.' : null,
+  ].filter(Boolean) as string[];
+  const canStartScanning = setupErrors.length === 0 && !isCreatingBatch && !isCreatingSubject && !isStartingSession;
+
+  const handleCreateBatch = async () => {
     if (!newBatchName.trim()) {
+      Alert.alert('Batch name required', 'Enter a batch name before creating it.');
       return;
     }
     
     const studentCount = parseInt(newBatchStudentCount) || 0;
-    
-    const newBatch: Batch = {
-      batch_id: `batch_${Date.now()}`,
-      name: newBatchName.trim(),
-      student_count: studentCount,
-    };
-    
-    addBatch(newBatch);
-    setSelectedBatch(newBatch);
-    setShowCreateModal(false);
-    setNewBatchName('');
-    setNewBatchStudentCount('');
+
+    setIsCreatingBatch(true);
+    try {
+      const newBatch = await createBatch(newBatchName, studentCount);
+      setSelectedBatch({
+        ...newBatch,
+        student_count: studentCount || newBatch.student_count,
+      });
+      setShowCreateModal(false);
+      setNewBatchName('');
+      setNewBatchStudentCount('');
+    } catch (err: any) {
+      Alert.alert('Batch not created', err.message || 'Could not sync this batch with the webapp.');
+    } finally {
+      setIsCreatingBatch(false);
+    }
   };
 
   const handleDeleteBatch = (batchId: string) => {
@@ -137,39 +163,55 @@ export default function SessionSetupScreen() {
     }
   };
 
-  const handleStartScanning = async () => {
-    if (!selectedBatch) return;
+  const handleStartScanning = async (destination: 'scanner' | 'upload' = 'scanner') => {
+    if (!canStartScanning) {
+      Alert.alert('Complete setup first', setupErrors.join('\n'));
+      return;
+    }
+
+    if (isStartingSessionRef.current) return;
     
+    isStartingSessionRef.current = true;
+    setIsStartingSession(true);
     try {
+      const cleanSessionName = sessionName.trim();
+      const cleanExamDate = examDate.trim();
       if (sessionId) {
         // Edit Mode: Update details on existing session
         updateSessionDetails(
           sessionId,
-          sessionName,
-          selectedBatch.batch_id,
-          selectedBatch.name,
-          selectedSubject?.id,
-          parseFloat(totalMarks) || 100,
-          examDate,
+          cleanSessionName,
+          selectedBatch!.batch_id,
+          selectedBatch!.name,
+          selectedSubject!.id,
+          totalMarksNumber,
+          cleanExamDate,
           settings
         );
         router.back();
       } else {
         // Create Mode
-        await createSession(
-          sessionName,
-          selectedBatch.batch_id,
-          selectedBatch.name,
+        const createdSession = await createSession(
+          cleanSessionName,
+          selectedBatch!.batch_id,
+          selectedBatch!.name,
           settings,
-          selectedSubject?.id,
-          parseFloat(totalMarks) || 100,
-          examDate
+          selectedSubject!.id,
+          totalMarksNumber,
+          cleanExamDate
         );
-        router.push('/scanner');
+        if (destination === 'upload') {
+          router.replace({ pathname: '/upload', params: { sessionId: createdSession.session_id, documentMode: '1' } });
+        } else {
+          router.replace('/scanner');
+        }
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      // Handle error, maybe show an alert
+      Alert.alert('Could not start scanning', err.message || 'Please check your setup and try again.');
+    } finally {
+      isStartingSessionRef.current = false;
+      setIsStartingSession(false);
     }
   };
 
@@ -191,7 +233,11 @@ export default function SessionSetupScreen() {
         style={{ flex: 1 }} 
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+        <ScrollView
+          style={styles.content}
+          contentContainerStyle={{ paddingBottom: bottomContentInset + 16 }}
+          showsVerticalScrollIndicator={false}
+        >
           {/* Session Name */}
           <View style={styles.section}>
             <Text style={styles.label}>Session Name</Text>
@@ -368,12 +414,19 @@ export default function SessionSetupScreen() {
                     key={mode.key}
                     style={[
                       styles.gradingOptionCard,
-                      isSelected && { borderColor: mode.color, backgroundColor: `${mode.color}08` }
+                      isSelected && [
+                        styles.gradingOptionCardSelected,
+                        { borderColor: mode.color, backgroundColor: '#fff' },
+                      ]
                     ]}
                     onPress={() => updateSetting('grading_mode', mode.key)}
                     activeOpacity={0.8}
                   >
-                    <View style={[styles.gradingIconContainer, { backgroundColor: isSelected ? mode.color : '#F5F5F5' }]}>
+                    <View style={[
+                      styles.gradingIconContainer,
+                      { backgroundColor: isSelected ? mode.color : '#F5F5F5' },
+                      isSelected && styles.gradingIconContainerSelected,
+                    ]}>
                       <Ionicons name={mode.icon as any} size={20} color={isSelected ? '#fff' : '#666'} />
                     </View>
                     <View style={styles.gradingTextContainer}>
@@ -514,8 +567,8 @@ export default function SessionSetupScreen() {
                     <Ionicons name="clipboard" size={20} color="#388E3C" />
                   </View>
                   <View style={styles.optionTextContainer}>
-                    <Text style={styles.optionLabel}>Scan Model Answer</Text>
-                    <Text style={styles.optionHint}>Scan answer key before student papers</Text>
+                    <Text style={styles.optionLabel}>Scan Model Answer *</Text>
+                    <Text style={styles.optionHint}>Required for grading before student papers</Text>
                   </View>
                 </View>
                 <Switch
@@ -557,10 +610,10 @@ export default function SessionSetupScreen() {
                   </View>
                 </View>
                 <Switch
-                  value={settings.auto_crop !== false}
+                  value={settings.auto_crop === true}
                   onValueChange={(value) => updateSetting('auto_crop', value)}
                   trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
-                  thumbColor={settings.auto_crop !== false ? COLORS.primary : '#f4f3f4'}
+                  thumbColor={settings.auto_crop === true ? COLORS.primary : '#f4f3f4'}
                 />
               </View>
 
@@ -615,21 +668,71 @@ export default function SessionSetupScreen() {
             </Text>
           </View>
 
-          {/* Start Button */}
-          <TouchableOpacity
-            style={[
-              styles.startButton,
-              !selectedBatch && styles.startButtonDisabled,
-            ]}
-            onPress={handleStartScanning}
-            disabled={!selectedBatch}
-            activeOpacity={0.8}
-          >
-            <Ionicons name={sessionId ? "save" : "camera"} size={24} color="#fff" />
-            <Text style={styles.startButtonText}>{sessionId ? 'SAVE CHANGES' : 'START SCANNING'}</Text>
-          </TouchableOpacity>
+          {setupErrors.length > 0 && (
+            <View style={styles.validationBox}>
+              {setupErrors.map(error => (
+                <Text key={error} style={styles.validationText}>- {error}</Text>
+              ))}
+            </View>
+          )}
 
-          <View style={{ height: 40 }} />
+          {sessionId ? (
+            <TouchableOpacity
+              style={[
+                styles.startButton,
+                !canStartScanning && styles.startButtonDisabled,
+              ]}
+              onPress={() => handleStartScanning('scanner')}
+              disabled={!canStartScanning}
+              activeOpacity={0.8}
+            >
+              {isStartingSession ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Ionicons name="save" size={24} color="#fff" />
+              )}
+              <Text style={styles.startButtonText}>SAVE CHANGES</Text>
+            </TouchableOpacity>
+          ) : (
+            <View style={styles.actionRow}>
+              <TouchableOpacity
+                style={[
+                  styles.secondaryActionButton,
+                  !canStartScanning && styles.secondaryActionButtonDisabled,
+                ]}
+                onPress={() => handleStartScanning('upload')}
+                disabled={!canStartScanning}
+                activeOpacity={0.85}
+              >
+                {isStartingSession ? (
+                  <ActivityIndicator color={COLORS.primary} />
+                ) : (
+                  <Ionicons name="cloud-upload-outline" size={22} color={COLORS.primary} />
+                )}
+                <Text style={styles.secondaryActionText}>UPLOAD</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.startButton,
+                  styles.actionRowPrimary,
+                  !canStartScanning && styles.startButtonDisabled,
+                ]}
+                onPress={() => handleStartScanning('scanner')}
+                disabled={!canStartScanning}
+                activeOpacity={0.85}
+              >
+                {isStartingSession ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Ionicons name="camera" size={22} color="#fff" />
+                )}
+                <Text style={styles.startButtonText}>SCAN</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          <View style={{ height: 8 }} />
         </ScrollView>
       </KeyboardAvoidingView>
 
@@ -644,7 +747,7 @@ export default function SessionSetupScreen() {
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Create New Batch</Text>
-              <TouchableOpacity onPress={() => setShowCreateModal(false)}>
+              <TouchableOpacity onPress={() => setShowCreateModal(false)} disabled={isCreatingBatch}>
                 <Ionicons name="close" size={24} color={COLORS.text} />
               </TouchableOpacity>
             </View>
@@ -678,18 +781,19 @@ export default function SessionSetupScreen() {
               <TouchableOpacity 
                 style={styles.modalCancelBtn}
                 onPress={() => setShowCreateModal(false)}
+                disabled={isCreatingBatch}
               >
                 <Text style={styles.modalCancelText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity 
                 style={[
                   styles.modalCreateBtn,
-                  !newBatchName.trim() && styles.modalCreateBtnDisabled,
+                  (!newBatchName.trim() || isCreatingBatch) && styles.modalCreateBtnDisabled,
                 ]}
                 onPress={handleCreateBatch}
-                disabled={!newBatchName.trim()}
+                disabled={!newBatchName.trim() || isCreatingBatch}
               >
-                <Text style={styles.modalCreateText}>Create Batch</Text>
+                <Text style={styles.modalCreateText}>{isCreatingBatch ? 'Creating...' : 'Create Batch'}</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -1040,6 +1144,20 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     lineHeight: 20,
   },
+  validationBox: {
+    backgroundColor: COLORS.errorLight,
+    borderColor: `${COLORS.error}30`,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginBottom: 16,
+    padding: 14,
+  },
+  validationText: {
+    color: COLORS.error,
+    fontSize: 13,
+    fontWeight: '600',
+    lineHeight: 20,
+  },
   startButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1057,6 +1175,35 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#fff',
     letterSpacing: 1,
+  },
+  actionRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  actionRowPrimary: {
+    flex: 1,
+  },
+  secondaryActionButton: {
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderColor: COLORS.primary,
+    borderRadius: 16,
+    borderWidth: 2,
+    flex: 1,
+    flexDirection: 'row',
+    gap: 10,
+    justifyContent: 'center',
+    paddingVertical: 16,
+  },
+  secondaryActionButtonDisabled: {
+    borderColor: COLORS.border,
+    opacity: 0.6,
+  },
+  secondaryActionText: {
+    color: COLORS.primary,
+    fontSize: 17,
+    fontWeight: '800',
+    letterSpacing: 0.6,
   },
   // Modal styles
   modalOverlay: {
@@ -1194,6 +1341,13 @@ const styles = StyleSheet.create({
     shadowRadius: 2,
     elevation: 1,
   },
+  gradingOptionCardSelected: {
+    shadowColor: COLORS.primary,
+    shadowOpacity: 0.16,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 4,
+  },
   gradingIconContainer: {
     width: 40,
     height: 40,
@@ -1201,6 +1355,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 14,
+  },
+  gradingIconContainerSelected: {
+    shadowColor: COLORS.primary,
+    shadowOpacity: 0.22,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
   },
   gradingTextContainer: {
     flex: 1,

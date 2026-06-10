@@ -733,6 +733,8 @@ export default function ReviewScreen() {
                         file_path: dest.uri,
                         original_file_path: destOrig.uri,
                         crop_quad: quad,
+                        crop_applied: true,
+                        crop_confidence: undefined,
                     };
                     // Fully immutable Zustand update — new references at every nesting level
                     // Previous code mutated in-place, so useShallow selector never detected changes

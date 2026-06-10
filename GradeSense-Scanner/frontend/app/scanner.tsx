@@ -14,7 +14,7 @@ import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as DocumentPicker from 'expo-document-picker';
-import { detectDocumentInFrame, convertToGrayscale, FilterMode, applyFilter, resetScannerState } from '../src/utils/cvProcessor';
+import { detectDocumentInFrame, FilterMode, applyFilter, resetScannerState } from '../src/utils/cvProcessor';
 import { normalizeCapturedDocument } from '../src/utils/documentNormalizer';
 import { generateUUID, useScanStore } from '../src/store/scanStore';
 import { useRouter } from 'expo-router';
@@ -34,6 +34,8 @@ import { detectBlur, BlurDetectionResult } from '../src/utils/blurDetection';
 import { Ionicons } from '@expo/vector-icons';
 import { useMotionStability } from '../src/hooks/useMotionStability';
 import { createImportedPdfPage, isPdfScannedPage } from '../src/utils/scannedPageAssets';
+import { useLocalSearchParams } from 'expo-router';
+import { evaluateAutoCropCandidate } from '../src/utils/cropQuality';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const CAPTURE_COOLDOWN_MS = 2500;
@@ -97,6 +99,8 @@ function phaseToLiveStatus(phase: ScannerPhase): LiveScanStatus {
 
 export default function ScannerScreen() {
     const router = useRouter();
+    const { returnToUpload, sessionId } = useLocalSearchParams<{ returnToUpload?: string; sessionId?: string }>();
+    const shouldReturnToUpload = returnToUpload === '1';
     const insets = useSafeAreaInsets();
     const cameraRef = useRef<CameraView>(null);
     const isMounted = useRef(true);
@@ -258,8 +262,9 @@ export default function ScannerScreen() {
                 rawDims: { width: photo.width, height: photo.height },
             };
 
-            // Commit with grayscale as the default OCR-optimised filter.
-            await commitCapture(pending, 'grayscale');
+            // Commit with a natural document-clean filter, while preserving the
+            // original image separately for fallback and manual re-filtering.
+            await commitCapture(pending, 'high_contrast');
         } catch (e) {
             console.warn('[triggerCapture] error:', e);
         } finally {
@@ -301,6 +306,7 @@ export default function ScannerScreen() {
             let detectionQuad = null;
             let detectionDims = pending.dims;
             let finalScaledQuad = null;
+            let cropConfidence: number | undefined;
 
             // Save raw un-warped camera image
             const rawFilename = `raw_${Date.now()}.jpg`;
@@ -341,9 +347,22 @@ export default function ScannerScreen() {
                         }));
 
                         if (cvResult && cvResult.quadrilateral) {
-                            detectionQuad = cvResult.quadrilateral;
-                            detectionDims = { width: downscaled.width, height: downscaled.height };
-                            console.log('[commitCapture] Post-capture detection SUCCESS');
+                            const cropGate = evaluateAutoCropCandidate(
+                                cvResult.quadrilateral,
+                                { width: downscaled.width, height: downscaled.height },
+                                { confidence: cvResult.confidence, areaScore: cvResult.areaScore }
+                            );
+                            if (!cropGate.accepted) {
+                                console.warn('[commitCapture] Auto-crop rejected. Falling back to full image.', {
+                                    reason: cropGate.reason,
+                                    metrics: cropGate.metrics,
+                                });
+                            } else {
+                                detectionQuad = cvResult.quadrilateral;
+                                detectionDims = { width: downscaled.width, height: downscaled.height };
+                                cropConfidence = cvResult.confidence;
+                                console.log('[commitCapture] Post-capture detection SUCCESS');
+                            }
                         } else {
                             console.log('[commitCapture] Post-capture detection failed to find document. Falling back to original image.');
                         }
@@ -385,8 +404,16 @@ export default function ScannerScreen() {
                         bottomRight: { x: detectionQuad.bottomRight.x * scaleX, y: detectionQuad.bottomRight.y * scaleY },
                         bottomLeft: { x: detectionQuad.bottomLeft.x * scaleX, y: detectionQuad.bottomLeft.y * scaleY },
                     };
-                    finalScaledQuad = scaledQuad;
-
+                    const scaledCropGate = evaluateAutoCropCandidate(scaledQuad, canonicalDims);
+                    if (!scaledCropGate.accepted) {
+                        console.warn('[commitCapture] Scaled auto-crop rejected before warp. Falling back to full image.', {
+                            reason: scaledCropGate.reason,
+                            metrics: scaledCropGate.metrics,
+                        });
+                        detectionQuad = null;
+                        finalScaledQuad = null;
+                        throw new Error(`Unsafe auto-crop geometry: ${scaledCropGate.reason}`);
+                    }
                     // Pass the EXIF-resolved canonical URI so OpenCV.imread loads
                     // an upright image matching the coordinate space of the quad.
                     const norm = await normalizeCapturedDocument(
@@ -395,7 +422,10 @@ export default function ScannerScreen() {
                         canonicalDims,
                     );
                     finalUri = norm.uri;
+                    finalScaledQuad = scaledQuad;
                 } catch (e) {
+                    finalScaledQuad = null;
+                    cropConfidence = undefined;
                     console.warn('[commitCapture] perspective correction failed:', e);
                 }
             }
@@ -454,6 +484,8 @@ export default function ScannerScreen() {
                 original_file_path: destOrig.uri,
                 raw_file_path: rawVerified ? destRaw.uri : undefined,
                 crop_quad: finalScaledQuad || undefined,
+                crop_applied: !!finalScaledQuad,
+                crop_confidence: finalScaledQuad ? cropConfidence : undefined,
                 filter_mode: filter,
                 file_size: dest.size || 0,
                 is_blurry: pending.blur.isBlurry,
@@ -533,11 +565,34 @@ export default function ScannerScreen() {
         }
     }, [currentPhase]);
 
+    const returnToUploadScreen = useCallback(() => {
+        const activeSession = useScanStore.getState().currentSession;
+        const targetSessionId = activeSession?.session_id || sessionId;
+        saveSession();
+
+        if (targetSessionId) {
+            router.replace({
+                pathname: '/upload',
+                params: {
+                    sessionId: targetSessionId,
+                    documentMode: '1',
+                },
+            });
+        } else {
+            router.replace('/(tabs)/sessions');
+        }
+    }, [router, saveSession, sessionId]);
+
     const handleFinishPhase = useCallback(() => {
         const session = useScanStore.getState().currentSession;
         if (!session) return;
 
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+        if (shouldReturnToUpload) {
+            returnToUploadScreen();
+            return;
+        }
 
         if (currentPhase === 'question_paper') {
             if (session.settings?.scan_model_answer) {
@@ -549,7 +604,7 @@ export default function ScannerScreen() {
             useScanStore.getState().setCurrentPhase('students');
         }
         resetScannerState();
-    }, [currentPhase]);
+    }, [currentPhase, returnToUploadScreen, shouldReturnToUpload]);
 
     const handleMotionStabilizingChange = useCallback((stabilizing: boolean) => {
         setIsStabilizing(stabilizing);
@@ -734,8 +789,12 @@ export default function ScannerScreen() {
                 onUndo={undoLastPage}
                 onFinishPhase={handleFinishPhase}
                 onFinishSession={() => {
-                    saveSession();
-                    router.replace('/review');
+                    if (shouldReturnToUpload) {
+                        returnToUploadScreen();
+                    } else {
+                        saveSession();
+                        router.replace('/review');
+                    }
                 }}
             />
 

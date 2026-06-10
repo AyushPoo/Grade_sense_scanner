@@ -2,6 +2,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { File, Paths } from 'expo-file-system';
 import { OpenCV, ObjectType, DataTypes } from 'react-native-fast-opencv';
 import { Point, Quadrilateral, cleanupMats } from './cvProcessor';
+import { evaluateAutoCropCandidate } from './cropQuality';
 
 export interface NormalizationOptions {
   enhancementMode?: 'original' | 'enhanced_color' | 'grayscale';
@@ -174,6 +175,13 @@ export async function normalizeCapturedDocument(
       scaledQuad.bottomRight,
       scaledQuad.bottomLeft
     ]);
+
+    if (!options.isManualCrop) {
+      const cropGate = evaluateAutoCropCandidate(orderedQuad, { width: targetWidth, height: targetHeight });
+      if (!cropGate.accepted) {
+        throw new Error(`[normalizeCapturedDocument] Unsafe auto-crop geometry: ${cropGate.reason}`);
+      }
+    }
 
     // Apply smart crop padding, unless manual crop explicitly overrides
     const expandedQuad = (options.isManualCrop && ENABLE_MANUAL_CROP_EXACT_EXPORT) ? orderedQuad : expandQuad(orderedQuad, targetWidth, targetHeight, CROP_PADDING_RATIO);

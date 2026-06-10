@@ -10,15 +10,21 @@ import {
   Modal,
   FlatList,
   TextInput,
+  ScrollView,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { COLORS, WEBAPP_URL } from '../src/config';
 import { useScanStore } from '../src/store/scanStore';
 import { useShallow } from 'zustand/react/shallow';
-import { ScanSession } from '../src/types';
+import { ScanPhase, ScanSession } from '../src/types';
 import { uploadSessionToWebApp } from '../src/api/export';
+import * as DocumentPicker from 'expo-document-picker';
+import { createImportedPdfPage } from '../src/utils/scannedPageAssets';
+import { generateUUID } from '../src/store/scanStore';
+import { getScanPhaseBlockingIssues, getUploadBlockingIssues } from '../src/utils/uploadRequirements';
+import { useHardwareAwareBottomInset } from '../src/utils/safeArea';
 
 // Simple Progress Bar Component
 const ProgressBar = ({ progress }: { progress: number }) => (
@@ -44,7 +50,10 @@ const progressStyles = StyleSheet.create({
 
 export default function UploadScreen() {
   const router = useRouter();
-  const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
+  const { sessionId, documentMode } = useLocalSearchParams<{ sessionId: string; documentMode?: string }>();
+  const isDocumentMode = documentMode === '1';
+  const insets = useSafeAreaInsets();
+  const bottomContentInset = useHardwareAwareBottomInset(insets.bottom, 24);
 
   // ── DEV INSTRUMENTATION (Phase 1) ──────────────────────────────────────────
   const renderCountRef = useRef(0);
@@ -57,6 +66,8 @@ export default function UploadScreen() {
   // ── PHASE 1 FIX: Granular selectors — UploadScreen is now isolated from broad store changes.
   const updateSessionStatus = useScanStore(state => state.updateSessionStatus);
   const updateSessionDetails = useScanStore(state => state.updateSessionDetails);
+  const replaceSessionDocuments = useScanStore(state => state.replaceSessionDocuments);
+  const prepareSessionForScanning = useScanStore(state => state.prepareSessionForScanning);
   const { savedSubjects, fetchSubjects, createSubject } = useScanStore();
   const sessionDataFromStore = useScanStore(useShallow(state => 
     state.savedSessions.find(s => s.session_id === sessionId) || null
@@ -71,6 +82,7 @@ export default function UploadScreen() {
   const [newSubjectName, setNewSubjectName] = useState('');
   const [newSubjectClass, setNewSubjectClass] = useState('');
   const [isCreatingSubject, setIsCreatingSubject] = useState(false);
+  const [isPickingDocument, setIsPickingDocument] = useState(false);
 
   useEffect(() => {
     fetchSubjects().catch(err => console.error('Failed to load subjects:', err));
@@ -153,6 +165,22 @@ export default function UploadScreen() {
   const handleStartUpload = () => {
     if (!session) return;
 
+    const blockingIssues = getUploadBlockingIssues(session);
+    if (blockingIssues.length > 0) {
+      Alert.alert(
+        'Complete exam details first',
+        blockingIssues.join('\n'),
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Edit Details',
+            onPress: () => router.push({ pathname: '/session-setup', params: { sessionId: session.session_id } }),
+          },
+        ]
+      );
+      return;
+    }
+
     if (!session.subject_id) {
       setShowSubjectSelector(true);
       return;
@@ -166,6 +194,69 @@ export default function UploadScreen() {
         { text: 'Upload', onPress: simulateUpload },
       ]
     );
+  };
+
+  const handleScanDocument = (phase: ScanPhase) => {
+    if (!session) return;
+
+    const blockingIssues = getScanPhaseBlockingIssues(session, phase);
+    if (blockingIssues.length > 0) {
+      Alert.alert(
+        'Complete exam details first',
+        blockingIssues.join('\n'),
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Edit Details',
+            onPress: () => router.push({ pathname: '/session-setup', params: { sessionId: session.session_id } }),
+          },
+        ]
+      );
+      return;
+    }
+
+    prepareSessionForScanning(session.session_id, phase);
+    router.push({
+      pathname: '/scanner',
+      params: {
+        sessionId: session.session_id,
+        returnToUpload: '1',
+      },
+    });
+  };
+
+  const pickDocuments = async (kind: 'question' | 'model' | 'students') => {
+    if (!session || isPickingDocument) return;
+
+    setIsPickingDocument(true);
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['application/pdf', 'image/*'],
+        multiple: kind === 'students',
+        copyToCacheDirectory: true,
+      });
+
+      if (result.canceled || !result.assets?.length) {
+        return;
+      }
+
+      const assets = kind === 'students' ? result.assets : result.assets.slice(0, 1);
+      const pages = assets.map(asset => createImportedPdfPage(asset, generateUUID));
+
+      replaceSessionDocuments(session.session_id, {
+        questionPaper: kind === 'question' ? pages : undefined,
+        modelAnswer: kind === 'model' ? pages : undefined,
+        studentPapers: kind === 'students' ? pages : undefined,
+      });
+
+      if (kind !== 'students' && result.assets.length > 1) {
+        Alert.alert('One document added', 'This section accepts one document. The first selected file was added.');
+      }
+    } catch (error: any) {
+      Alert.alert('Could not add document', error?.message || 'Please choose a PDF or image file and try again.');
+    } finally {
+      setIsPickingDocument(false);
+    }
   };
 
   const handleCancel = () => {
@@ -207,6 +298,8 @@ export default function UploadScreen() {
     );
   }
 
+  const uploadBlockingIssues = getUploadBlockingIssues(session);
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
@@ -214,12 +307,16 @@ export default function UploadScreen() {
           <Ionicons name="close" size={24} color={COLORS.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>
-          {uploadComplete ? 'Upload Complete' : isUploading ? 'Uploading...' : 'Upload'}
+          {uploadComplete ? 'Upload Complete' : isUploading ? 'Uploading...' : isDocumentMode ? 'Upload Documents' : 'Upload'}
         </Text>
         <View style={{ width: 40 }} />
       </View>
 
-      <View style={styles.content}>
+      <ScrollView
+        style={styles.content}
+        contentContainerStyle={[styles.contentScroll, { paddingBottom: bottomContentInset + 16 }]}
+        showsVerticalScrollIndicator={false}
+      >
         {uploadComplete ? (
           // Upload Complete View
           <View style={styles.completeContainer}>
@@ -312,6 +409,18 @@ export default function UploadScreen() {
         ) : (
           // Pre-upload View
           <View style={styles.preUploadContainer}>
+            {uploadBlockingIssues.length > 0 && (
+              <View style={styles.validationCard}>
+                <View style={styles.validationHeader}>
+                  <Ionicons name="alert-circle" size={18} color={COLORS.error} />
+                  <Text style={styles.validationTitle}>Complete before upload</Text>
+                </View>
+                {uploadBlockingIssues.map(issue => (
+                  <Text key={issue} style={styles.validationItem}>- {issue}</Text>
+                ))}
+              </View>
+            )}
+
             <View style={styles.sessionSummary}>
               <Text style={styles.sessionName}>{session.session_name}</Text>
               <Text style={styles.sessionBatch}>{session.batch_name}</Text>
@@ -325,12 +434,50 @@ export default function UploadScreen() {
               </TouchableOpacity>
             </View>
 
+            <View style={styles.documentImportCard}>
+              <View style={styles.documentImportHeader}>
+                <Ionicons name="attach" size={18} color={COLORS.primary} />
+                <Text style={styles.documentImportTitle}>Attach documents</Text>
+              </View>
+              <Text style={styles.documentImportHint}>
+                Upload PDFs/images or scan any missing section. Model Answer is required before student papers can be graded.
+              </Text>
+
+              <DocumentAttachRow
+                icon="document-text-outline"
+                label="Question Paper"
+                optional
+                value={formatDocumentCount(session.question_paper.pages.length)}
+                onPress={() => pickDocuments('question')}
+                onScanPress={() => handleScanDocument('question_paper')}
+                disabled={isPickingDocument || isUploading}
+              />
+              <DocumentAttachRow
+                icon="clipboard-outline"
+                label="Model Answer"
+                required
+                value={formatDocumentCount(session.model_answer.pages.length)}
+                onPress={() => pickDocuments('model')}
+                onScanPress={() => handleScanDocument('model_answer')}
+                disabled={isPickingDocument || isUploading}
+              />
+              <DocumentAttachRow
+                icon="people-outline"
+                label="Student Answer Papers"
+                required
+                value={`${session.stats.total_students} document${session.stats.total_students === 1 ? '' : 's'}`}
+                onPress={() => pickDocuments('students')}
+                onScanPress={() => handleScanDocument('students')}
+                disabled={isPickingDocument || isUploading}
+              />
+            </View>
+
             <View style={styles.uploadPreview}>
               <View style={styles.previewItem}>
                 <Ionicons name="document-text" size={24} color={COLORS.primary} />
                 <View style={styles.previewItemInfo}>
                   <Text style={styles.previewItemLabel}>Question Paper</Text>
-                  <Text style={styles.previewItemValue}>{session.question_paper.page_count} pages</Text>
+                  <Text style={styles.previewItemValue}>{formatDocumentCount(session.question_paper.pages.length)}</Text>
                 </View>
               </View>
 
@@ -338,7 +485,7 @@ export default function UploadScreen() {
                 <Ionicons name="clipboard" size={24} color={COLORS.primary} />
                 <View style={styles.previewItemInfo}>
                   <Text style={styles.previewItemLabel}>Model Answer</Text>
-                  <Text style={styles.previewItemValue}>{session.model_answer.page_count} pages</Text>
+                  <Text style={styles.previewItemValue}>{formatDocumentCount(session.model_answer.pages.length)}</Text>
                 </View>
               </View>
 
@@ -347,13 +494,19 @@ export default function UploadScreen() {
                 <View style={styles.previewItemInfo}>
                   <Text style={styles.previewItemLabel}>Students</Text>
                   <Text style={styles.previewItemValue}>
-                    {session.stats.total_students} students, {session.stats.total_pages - session.question_paper.page_count - session.model_answer.page_count} pages
+                    {session.stats.total_students} student document{session.stats.total_students === 1 ? '' : 's'}
                   </Text>
                 </View>
               </View>
             </View>
 
-            <TouchableOpacity style={styles.startUploadButton} onPress={handleStartUpload}>
+            <TouchableOpacity
+              style={[
+                styles.startUploadButton,
+                uploadBlockingIssues.length > 0 && styles.startUploadButtonDisabled,
+              ]}
+              onPress={handleStartUpload}
+            >
               <Ionicons name="cloud-upload" size={24} color="#fff" />
               <Text style={styles.startUploadText}>START UPLOAD</Text>
             </TouchableOpacity>
@@ -363,7 +516,7 @@ export default function UploadScreen() {
             </Text>
           </View>
         )}
-      </View>
+      </ScrollView>
 
       <Modal
         visible={showSubjectSelector}
@@ -449,6 +602,64 @@ export default function UploadScreen() {
   );
 }
 
+function formatDocumentCount(count: number): string {
+  if (count <= 0) return 'No document selected';
+  return `${count} document${count === 1 ? '' : 's'}`;
+}
+
+function DocumentAttachRow({
+  icon,
+  label,
+  value,
+  optional,
+  required,
+  disabled,
+  onPress,
+  onScanPress,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  value: string;
+  optional?: boolean;
+  required?: boolean;
+  disabled?: boolean;
+  onPress: () => void;
+  onScanPress?: () => void;
+}) {
+  return (
+    <View style={styles.documentAttachRow}>
+      <TouchableOpacity
+        style={[styles.documentAttachMain, disabled && styles.documentAttachRowDisabled]}
+        onPress={onPress}
+        disabled={disabled}
+        activeOpacity={0.8}
+      >
+        <View style={styles.documentAttachIcon}>
+          <Ionicons name={icon as any} size={20} color={COLORS.primary} />
+        </View>
+        <View style={styles.documentAttachText}>
+          <Text style={styles.documentAttachLabel}>
+            {label}{required ? ' *' : optional ? ' (optional)' : ''}
+          </Text>
+          <Text style={styles.documentAttachValue}>{value}</Text>
+        </View>
+        <Ionicons name="cloud-upload-outline" size={22} color={COLORS.primary} />
+      </TouchableOpacity>
+      {onScanPress && (
+        <TouchableOpacity
+          style={[styles.documentScanAction, disabled && styles.documentAttachRowDisabled]}
+          onPress={onScanPress}
+          disabled={disabled}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="camera-outline" size={20} color={COLORS.primary} />
+          <Text style={styles.documentScanText}>Scan</Text>
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -475,6 +686,10 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: 24,
   },
+  contentScroll: {
+    flexGrow: 1,
+    paddingBottom: 28,
+  },
   centerContent: {
     flex: 1,
     justifyContent: 'center',
@@ -486,6 +701,30 @@ const styles = StyleSheet.create({
   },
   preUploadContainer: {
     flex: 1,
+  },
+  validationCard: {
+    backgroundColor: COLORS.errorLight,
+    borderColor: `${COLORS.error}30`,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 18,
+  },
+  validationHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+  },
+  validationTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: COLORS.error,
+  },
+  validationItem: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: COLORS.error,
   },
   sessionSummary: {
     alignItems: 'center',
@@ -506,6 +745,89 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 16,
     marginBottom: 32,
+  },
+  documentImportCard: {
+    backgroundColor: COLORS.cardBg,
+    borderColor: COLORS.border,
+    borderRadius: 16,
+    borderWidth: 1,
+    marginBottom: 20,
+    padding: 14,
+  },
+  documentImportHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 6,
+  },
+  documentImportTitle: {
+    color: COLORS.text,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  documentImportHint: {
+    color: COLORS.textLight,
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: 12,
+  },
+  documentAttachRow: {
+    alignItems: 'stretch',
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 10,
+  },
+  documentAttachMain: {
+    alignItems: 'center',
+    backgroundColor: COLORS.backgroundDark,
+    borderColor: COLORS.border,
+    borderRadius: 14,
+    borderWidth: 1,
+    flex: 1,
+    flexDirection: 'row',
+    gap: 12,
+    padding: 13,
+  },
+  documentAttachRowDisabled: {
+    opacity: 0.55,
+  },
+  documentAttachIcon: {
+    alignItems: 'center',
+    backgroundColor: COLORS.primaryXLight,
+    borderRadius: 11,
+    height: 38,
+    justifyContent: 'center',
+    width: 38,
+  },
+  documentAttachText: {
+    flex: 1,
+  },
+  documentAttachLabel: {
+    color: COLORS.text,
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  documentAttachValue: {
+    color: COLORS.textMuted,
+    fontSize: 12,
+    marginTop: 2,
+  },
+  documentScanAction: {
+    alignItems: 'center',
+    backgroundColor: COLORS.cardBg,
+    borderColor: `${COLORS.primary}55`,
+    borderRadius: 14,
+    borderWidth: 1,
+    justifyContent: 'center',
+    minHeight: 66,
+    paddingHorizontal: 12,
+    width: 74,
+  },
+  documentScanText: {
+    color: COLORS.primary,
+    fontSize: 12,
+    fontWeight: '800',
+    marginTop: 3,
   },
   previewItem: {
     flexDirection: 'row',
@@ -536,6 +858,9 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.primary,
     paddingVertical: 18,
     borderRadius: 16,
+  },
+  startUploadButtonDisabled: {
+    opacity: 0.55,
   },
   startUploadText: {
     color: '#fff',

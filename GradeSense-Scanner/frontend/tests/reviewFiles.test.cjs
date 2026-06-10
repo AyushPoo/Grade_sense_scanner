@@ -60,6 +60,10 @@ const {
   isReviewReadyExam,
   shouldShowGradingStatus,
 } = loadTsModule('src/utils/gradingLifecycle.ts');
+const {
+  normalizeManagedBatches,
+  normalizeManagedRosterStudents,
+} = loadTsModule('src/utils/manageData.ts');
 const { reconcileFetchedScanSessions } = loadTsModule('src/utils/sessionReconciliation.ts');
 const {
   DEFAULT_REVIEW_DENSITY,
@@ -406,7 +410,7 @@ test('manage screen does not expose sandbox backdoor controls to teachers', () =
   assert.equal(manageSource.includes('/api/backdoor/reset'), false);
 });
 
-test('grading lifecycle ignores completed jobs in home progress section', () => {
+test('grading lifecycle keeps completed jobs visible until review card is shown', () => {
   const completedJob = {
     type: 'grade_submissions',
     status: 'completed',
@@ -415,7 +419,7 @@ test('grading lifecycle ignores completed jobs in home progress section', () => 
   };
 
   assert.equal(isCompletedGradingJob(completedJob), true);
-  assert.equal(shouldShowGradingStatus({ status: 'grading' }, completedJob), false);
+  assert.equal(shouldShowGradingStatus({ status: 'grading' }, completedJob), true);
   assert.equal(shouldShowGradingStatus({ status: 'syncing' }, null), true);
 });
 
@@ -467,17 +471,53 @@ test('teacher note editor expands inline while Android owns keyboard resize', ()
     'utf8'
   );
   const reviewSource = fs.readFileSync(path.join(__dirname, '..', 'app/review-grading.tsx'), 'utf8');
+  const keyboardLiftSource = fs.readFileSync(path.join(__dirname, '..', 'src/hooks/useKeyboardLift.ts'), 'utf8');
 
   assert.equal(panelSource.includes('onContentSizeChange'), true);
   assert.equal(panelSource.includes('setNoteContentHeight'), true);
   assert.equal(panelSource.includes('noteHeight >= maxNoteHeight'), true);
   assert.equal(panelSource.includes('commentInputFocused'), false);
   assert.equal(panelSource.includes('height: noteHeight'), true);
+  assert.equal(panelSource.includes('keyboardLift'), true);
+  assert.equal(panelSource.includes('translateY: -keyboardLift'), true);
   assert.equal(panelSource.includes('scrollEnabled'), true);
   assert.equal(panelSource.includes('multiline'), true);
   assert.equal(panelSource.includes('textAlignVertical="top"'), true);
+  assert.equal(keyboardLiftSource.includes('Keyboard.addListener'), true);
+  assert.equal(keyboardLiftSource.includes('keyboardDidHide'), true);
   assert.equal(reviewSource.includes("enabled={Platform.OS === 'ios'}"), true);
   assert.equal(reviewSource.includes("behavior={Platform.OS === 'ios' ? 'padding' : undefined}"), true);
+  assert.equal(reviewSource.includes('useKeyboardLift'), true);
+  assert.equal(reviewSource.includes('keyboardLift={keyboardLift}'), true);
+});
+
+test('release metadata uses GradeSense branding and app icons', () => {
+  const appConfig = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'app.json'), 'utf8'));
+  const androidStrings = fs.readFileSync(
+    path.join(__dirname, '..', 'android/app/src/main/res/values/strings.xml'),
+    'utf8'
+  );
+
+  assert.equal(appConfig.expo.name, 'GradeSense');
+  assert.equal(appConfig.expo.icon, './assets/images/icon.png');
+  assert.equal(appConfig.expo.android.adaptiveIcon.foregroundImage, './assets/images/adaptive-icon.png');
+  assert.equal(androidStrings.includes('<string name="app_name">GradeSense</string>'), true);
+  assert.equal(androidStrings.includes('GradeSense Scanner'), false);
+});
+
+test('portal tab bars use raised floating navigation', () => {
+  const teacherTabs = fs.readFileSync(path.join(__dirname, '..', 'app/(tabs)/_layout.tsx'), 'utf8');
+  const studentTabs = fs.readFileSync(path.join(__dirname, '..', 'app/(student)/_layout.tsx'), 'utf8');
+  const adminTabs = fs.readFileSync(path.join(__dirname, '..', 'app/(admin)/_layout.tsx'), 'utf8');
+  const navSource = fs.readFileSync(path.join(__dirname, '..', 'src/components/navigation/floatingTabBar.ts'), 'utf8');
+
+  for (const source of [teacherTabs, studentTabs, adminTabs]) {
+    assert.equal(source.includes('createFloatingTabBarOptions'), true);
+    assert.equal(source.includes('floatingTabBarStyles'), false);
+  }
+  assert.equal(navSource.includes("position: 'absolute'"), true);
+  assert.equal(navSource.includes('bottom: Platform.OS ==='), true);
+  assert.equal(navSource.includes('borderRadius:'), true);
 });
 
 test('rubric feedback is editable and saved with review payload', () => {
@@ -552,7 +592,9 @@ test('review screen shows source paper files directly and keeps grading controls
 
   assert.equal(reviewSource.includes('StudentAnswerSheetPanel'), false);
   assert.equal(reviewSource.includes('sheetMode'), false);
-  assert.equal(reviewSource.includes("activeTab === 'rubric' && activeScore"), true);
+  assert.equal(reviewSource.includes("pointerEvents={activeTab === 'rubric' ? 'auto' : 'none'}"), true);
+  assert.equal(reviewSource.includes('{activeScore && ('), true);
+  assert.equal(reviewSource.includes('<GradingControlPanel'), true);
   assert.equal(reviewSource.includes('PaperFileViewer'), true);
 });
 
@@ -594,6 +636,25 @@ test('paper viewer compares student sheet and model answer in split panes', () =
   assert.equal(viewerSource.includes('ZoomableImagePage'), true);
   assert.equal(viewerSource.includes('Gesture.Pinch()'), true);
   assert.equal(viewerSource.includes('buildZoomableImageHtml'), false);
+});
+
+test('paper viewer persists scroll state when switching review tabs', () => {
+  const viewerSource = fs.readFileSync(
+    path.join(__dirname, '..', 'src/components/review/PaperFileViewer.tsx'),
+    'utf8'
+  );
+  const reviewSource = fs.readFileSync(path.join(__dirname, '..', 'app/review-grading.tsx'), 'utf8');
+
+  assert.equal(viewerSource.includes('PaperFileViewerState'), true);
+  assert.equal(viewerSource.includes('initialScrollOffset'), true);
+  assert.equal(viewerSource.includes('onScrollOffsetChange'), true);
+  assert.equal(viewerSource.includes('scrollRef.current?.scrollTo'), true);
+  assert.equal(reviewSource.includes('paperViewerState'), true);
+  assert.equal(reviewSource.includes('onViewerStateChange={patch => setPaperViewerState'), true);
+  assert.equal(reviewSource.includes('contentPager'), true);
+  assert.equal(reviewSource.includes("pointerEvents={activeTab === 'sheet' ? 'auto' : 'none'}"), true);
+  assert.equal(reviewSource.includes("pointerEvents={activeTab === 'rubric' ? 'auto' : 'none'}"), true);
+  assert.equal(reviewSource.includes("activeTab === 'sheet' ? ("), false);
 });
 
 test('session reconciliation drops stale local copies of server-deleted synced sessions', () => {
@@ -657,6 +718,59 @@ test('manage roster derives visible student counts from loaded roster and opens 
   assert.equal(reportSource.includes('Exam History'), true);
 });
 
+test('manage roster normalizes backend batch and student response variants', () => {
+  const batches = normalizeManagedBatches({
+    batches: [
+      { id: 'bat_1', name: '12B', studentCount: 3 },
+      { batch_id: 'bat_2', name: '12C', student_count: 2 },
+    ],
+  });
+  const students = normalizeManagedRosterStudents({
+    data: {
+      students: [
+        {
+          id: 'std_1',
+          name: 'Asha',
+          rollNumber: '7',
+          average_percentage: 82.25,
+          subject_performance: [{ subject_name: 'Accounts', exam_count: 1, average_percentage: 82.25 }],
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(batches.map(batch => [batch.batch_id, batch.student_count]))), [
+    ['bat_1', 3],
+    ['bat_2', 2],
+  ]);
+  assert.equal(students[0].student_id, 'std_1');
+  assert.equal(students[0].roll_number, '7');
+  assert.equal(students[0].averagePercentage, 82.3);
+  assert.equal(students[0].subjectPerformance[0].examsCount, 1);
+});
+
+test('review progress and grading completion notifications are wired into mobile review flow', () => {
+  const reviewSource = fs.readFileSync(path.join(__dirname, '..', 'app/review-grading.tsx'), 'utf8');
+  const homeSource = fs.readFileSync(path.join(__dirname, '..', 'app/(tabs)/home.tsx'), 'utf8');
+  const notificationSource = fs.readFileSync(
+    path.join(__dirname, '..', 'src/services/gradingNotifications.ts'),
+    'utf8'
+  );
+
+  assert.equal(reviewSource.includes('gradesense.reviewProgress'), true);
+  assert.equal(reviewSource.includes('firstUnreviewedIndex'), true);
+  assert.equal(reviewSource.includes('reviewProgressCard'), true);
+  assert.equal(notificationSource.includes('scheduleNotificationAsync'), true);
+  assert.equal(notificationSource.includes('notifyGradingCompleteOnce'), true);
+  assert.equal(notificationSource.includes('notifyGradingProgress'), true);
+  assert.equal(notificationSource.includes('completionNotificationInFlight'), true);
+  assert.equal(notificationSource.includes('ACTIVE_PROGRESS_KEY'), true);
+  assert.equal(homeSource.includes('notifyGradingCompleteOnce'), true);
+  assert.equal(homeSource.includes('notifyGradingProgress'), true);
+  assert.equal(homeSource.includes('fetchExams().catch'), true);
+  assert.equal(homeSource.includes('fetchSessions().catch'), true);
+});
+
 test('manage roster edits student profiles through the synced backend', () => {
   const manageSource = fs.readFileSync(path.join(__dirname, '..', 'app/(tabs)/manage.tsx'), 'utf8');
   const reportSource = fs.readFileSync(
@@ -705,4 +819,22 @@ test('legacy upload subject selector can create subjects on mobile', () => {
   assert.equal(uploadSource.includes('createSubject'), true);
   assert.equal(uploadSource.includes('Please create one on the webapp'), false);
   assert.equal(uploadSource.includes('handleCreateSubject'), true);
+});
+
+test('auth login screen uses GradeSense brand assets without scanner copy', () => {
+  const loginSource = fs.readFileSync(path.join(__dirname, '..', 'app/(auth)/login.tsx'), 'utf8');
+
+  assert.equal(loginSource.includes("import appIcon from '../../assets/images/icon.png'"), true);
+  assert.equal(loginSource.includes('<Image source={appIcon}'), true);
+  assert.equal(loginSource.includes('Scanner</Text>'), false);
+  assert.equal(loginSource.includes('logoG'), false);
+});
+
+test('local Play bundle script uses production endpoints instead of LAN env', () => {
+  const buildScript = fs.readFileSync(path.join(__dirname, '..', 'scripts/build-android-local.ps1'), 'utf8');
+
+  assert.equal(buildScript.includes('https://gradesense-scanner-backend.onrender.com'), true);
+  assert.equal(buildScript.includes('https://app.gradesense.in'), true);
+  assert.equal(buildScript.includes('192.168.'), false);
+  assert.equal(buildScript.includes('.env.local-build-backup'), true);
 });

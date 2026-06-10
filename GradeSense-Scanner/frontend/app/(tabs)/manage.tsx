@@ -1,4 +1,4 @@
-import React, { useCallback, useState, useEffect } from 'react';
+import React, { useCallback, useRef, useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -22,6 +22,8 @@ import { useScanStore } from '../../src/store/scanStore';
 import {
   archiveManagedExam,
   closeManagedExam,
+  fetchBatchStudents,
+  fetchManagedBatches,
   fetchManagedExams,
   fetchManagePerformance,
   publishManagedExam,
@@ -34,8 +36,9 @@ import {
   StudentReportModal,
   StudentProfileUpdateInput,
 } from '../../src/components/manage/StudentReportModal';
-import { ManagedExam, ManagePerformance } from '../../src/utils/manageData';
+import { ManagedBatch, ManagedExam, ManagePerformance } from '../../src/utils/manageData';
 import { AIBrainRule, createAIBrainRule, fetchAIBrainRules } from '../../src/api/aiBrain';
+import { fetchWithTimeout } from '../../src/utils/fetchWithTimeout';
 
 interface TeacherOverview {
   examsCount: number;
@@ -51,11 +54,7 @@ interface TeacherOverview {
   }[];
 }
 
-interface Batch {
-  batch_id: string;
-  name: string;
-  student_count: number;
-}
+type Batch = ManagedBatch;
 
 type Student = ManagedRosterStudent;
 
@@ -171,9 +170,11 @@ export default function ManageScreen() {
   const [overview, setOverview] = useState<TeacherOverview | null>(null);
   const [performance, setPerformance] = useState<ManagePerformance | null>(null);
   const [managedExams, setManagedExams] = useState<ManagedExam[]>([]);
+  const managedExamsRef = useRef<ManagedExam[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [loadingPerformance, setLoadingPerformance] = useState(false);
   const [loadingExams, setLoadingExams] = useState(false);
+  const [examLoadError, setExamLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [isOffline, setIsOffline] = useState(false);
   const [processingExamId, setProcessingExamId] = useState<string | null>(null);
@@ -220,6 +221,10 @@ export default function ManageScreen() {
     };
   }, [savedSessions]);
 
+  useEffect(() => {
+    managedExamsRef.current = managedExams;
+  }, [managedExams]);
+
   const fetchOverview = useCallback(async (silent = false) => {
     if (!token) {
       setIsLoading(false);
@@ -229,7 +234,7 @@ export default function ManageScreen() {
     if (!silent) setIsLoading(true);
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
+      const timeout = setTimeout(() => controller.abort(), 2500);
       const res = await fetch(`${getBackendUrl()}/api/v1/analytics/overview`, {
         headers: { 'Authorization': `Bearer ${token}` },
         signal: controller.signal,
@@ -265,13 +270,15 @@ export default function ManageScreen() {
 
   const fetchExamManagement = useCallback(async () => {
     if (!token) return;
-    setLoadingExams(true);
+    setLoadingExams(managedExamsRef.current.length === 0);
     try {
       const data = await fetchManagedExams({ backendUrl: getBackendUrl(), token });
       setManagedExams(data);
+      setExamLoadError(null);
       setIsOffline(false);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      setExamLoadError(err?.message || 'The backend did not respond in time. Pull to retry.');
       setIsOffline(true);
     } finally {
       setLoadingExams(false);
@@ -283,13 +290,8 @@ export default function ManageScreen() {
     if (!token) return;
     setLoadingBatches(true);
     try {
-      const res = await fetch(`${getBackendUrl()}/api/batches`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const json = await res.json();
-        setBatches(json.batches || []);
-      }
+      const data = await fetchManagedBatches({ backendUrl: getBackendUrl(), token });
+      setBatches(data);
     } catch (err) {
       console.error(err);
     } finally {
@@ -302,19 +304,13 @@ export default function ManageScreen() {
     if (!token) return;
     setLoadingStudents(batchId);
     try {
-      const res = await fetch(`${getBackendUrl()}/api/batches/${batchId}/students`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const json = await res.json();
-        const students = json.students || [];
-        setStudentsByBatch(prev => ({ ...prev, [batchId]: students }));
-        setBatches(prev => prev.map(batch => (
-          batch.batch_id === batchId
-            ? { ...batch, student_count: students.length }
-            : batch
-        )));
-      }
+      const students = await fetchBatchStudents({ backendUrl: getBackendUrl(), token, batchId });
+      setStudentsByBatch(prev => ({ ...prev, [batchId]: students }));
+      setBatches(prev => prev.map(batch => (
+        batch.batch_id === batchId
+          ? { ...batch, student_count: students.length, studentCount: students.length }
+          : batch
+      )));
     } catch (err) {
       console.error(err);
     } finally {
@@ -326,9 +322,9 @@ export default function ManageScreen() {
     if (!token) return;
     setLoadingReevaluations(true);
     try {
-      const res = await fetch(`${getBackendUrl()}/api/v1/re-evaluations`, {
+      const res = await fetchWithTimeout(`${getBackendUrl()}/api/v1/re-evaluations`, {
         headers: { 'Authorization': `Bearer ${token}` }
-      });
+      }, 2500);
       if (res.ok) {
         const json = await res.json();
         setReevaluations(json.data || []);
@@ -692,7 +688,7 @@ export default function ManageScreen() {
         token,
         batchId,
         studentId,
-      }, input) as Student;
+      }, input);
       const mergedStudent = {
         ...selectedStudentReport,
         ...updated,
@@ -937,6 +933,8 @@ export default function ManageScreen() {
               onClose={handleCloseExam}
               onArchive={handleArchiveExam}
               onCreateExam={() => router.push('/session-setup')}
+              onRetry={fetchExamManagement}
+              errorMessage={examLoadError}
             />
           ) : activeTab === 'classroom' ? (
             // ==================== CLASSROOM MANAGEMENT VIEW ====================

@@ -1,13 +1,19 @@
 import {
+  ManagedBatch,
   ManagedExam,
+  ManagedRosterStudent,
   ManagePerformance,
+  normalizeManagedBatches,
   normalizeManagedExams,
+  normalizeManagedRosterStudents,
   normalizeManagePerformance,
 } from '../utils/manageData';
+import { fetchWithTimeout } from '../utils/fetchWithTimeout';
 
 interface ManageApiOptions {
   backendUrl: string;
   token: string;
+  timeoutMs?: number;
 }
 
 interface ExamApiOptions extends ManageApiOptions {
@@ -17,6 +23,10 @@ interface ExamApiOptions extends ManageApiOptions {
 interface StudentApiOptions extends ManageApiOptions {
   batchId: string;
   studentId: string;
+}
+
+interface BatchStudentsApiOptions extends ManageApiOptions {
+  batchId: string;
 }
 
 export interface UpdateManagedExamInput {
@@ -59,17 +69,38 @@ function normalizeSingleExam(value: unknown): ManagedExam {
 }
 
 export async function fetchManagedExams({ backendUrl, token }: ManageApiOptions): Promise<ManagedExam[]> {
-  const res = await fetch(`${backendUrl}/api/v1/exams`, {
+  const res = await fetchWithTimeout(`${backendUrl}/api/v1/exams`, {
     headers: authHeaders(token),
-  });
+  }, 2500);
 
   return parseJsonResponse(res, normalizeManagedExams);
 }
 
-export async function fetchManagePerformance({ backendUrl, token }: ManageApiOptions): Promise<ManagePerformance> {
-  const res = await fetch(`${backendUrl}/api/v1/analytics/performance`, {
+export async function fetchManagedBatches({ backendUrl, token, timeoutMs = 8000 }: ManageApiOptions): Promise<ManagedBatch[]> {
+  const res = await fetchWithTimeout(`${backendUrl}/api/batches`, {
     headers: authHeaders(token),
-  });
+  }, timeoutMs);
+
+  return parseJsonResponse(res, normalizeManagedBatches);
+}
+
+export async function fetchBatchStudents({
+  backendUrl,
+  batchId,
+  token,
+  timeoutMs = 8000,
+}: BatchStudentsApiOptions): Promise<ManagedRosterStudent[]> {
+  const res = await fetchWithTimeout(`${backendUrl}/api/batches/${batchId}/students`, {
+    headers: authHeaders(token),
+  }, timeoutMs);
+
+  return parseJsonResponse(res, normalizeManagedRosterStudents);
+}
+
+export async function fetchManagePerformance({ backendUrl, token }: ManageApiOptions): Promise<ManagePerformance> {
+  const res = await fetchWithTimeout(`${backendUrl}/api/v1/analytics/performance`, {
+    headers: authHeaders(token),
+  }, 2500);
 
   return parseJsonResponse(res, normalizeManagePerformance);
 }
@@ -78,41 +109,41 @@ export async function updateManagedExam(
   { backendUrl, token, examId }: ExamApiOptions,
   input: UpdateManagedExamInput
 ): Promise<ManagedExam> {
-  const res = await fetch(`${backendUrl}/api/v1/exams/${examId}`, {
+  const res = await fetchWithTimeout(`${backendUrl}/api/v1/exams/${examId}`, {
     method: 'PATCH',
     headers: {
       ...authHeaders(token),
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(input),
-  });
+  }, 6000);
 
   return parseJsonResponse(res, normalizeSingleExam);
 }
 
 export async function publishManagedExam({ backendUrl, token, examId }: ExamApiOptions): Promise<ManagedExam> {
-  const res = await fetch(`${backendUrl}/api/v1/exams/${examId}/publish`, {
+  const res = await fetchWithTimeout(`${backendUrl}/api/v1/exams/${examId}/publish`, {
     method: 'POST',
     headers: authHeaders(token),
-  });
+  }, 8000);
 
   return parseJsonResponse(res, normalizeSingleExam);
 }
 
 export async function closeManagedExam({ backendUrl, token, examId }: ExamApiOptions): Promise<ManagedExam> {
-  const res = await fetch(`${backendUrl}/api/v1/exams/${examId}/close`, {
+  const res = await fetchWithTimeout(`${backendUrl}/api/v1/exams/${examId}/close`, {
     method: 'POST',
     headers: authHeaders(token),
-  });
+  }, 8000);
 
   return parseJsonResponse(res, normalizeSingleExam);
 }
 
 export async function archiveManagedExam({ backendUrl, token, examId }: ExamApiOptions): Promise<void> {
-  const res = await fetch(`${backendUrl}/api/v1/exams/${examId}`, {
+  const res = await fetchWithTimeout(`${backendUrl}/api/v1/exams/${examId}`, {
     method: 'DELETE',
     headers: authHeaders(token),
-  });
+  }, 8000);
 
   if (!res.ok) {
     const text = await res.text();
@@ -123,15 +154,15 @@ export async function archiveManagedExam({ backendUrl, token, examId }: ExamApiO
 export async function updateBatchStudent(
   { backendUrl, token, batchId, studentId }: StudentApiOptions,
   input: UpdateBatchStudentInput
-): Promise<unknown> {
-  const res = await fetch(`${backendUrl}/api/batches/${batchId}/students/${studentId}`, {
+): Promise<ManagedRosterStudent> {
+  const res = await fetchWithTimeout(`${backendUrl}/api/batches/${batchId}/students/${studentId}`, {
     method: 'PATCH',
     headers: {
       ...authHeaders(token),
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(input),
-  });
+  }, 8000);
 
   if (!res.ok) {
     const text = await res.text();
@@ -139,5 +170,9 @@ export async function updateBatchStudent(
   }
 
   const json = await res.json();
-  return json.student ?? json.data ?? json;
+  const student = normalizeManagedRosterStudents(json.student ?? json.data ?? json)[0];
+  if (!student) {
+    throw new Error('Student response was empty.');
+  }
+  return student;
 }

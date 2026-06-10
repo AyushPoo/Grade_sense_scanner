@@ -2,11 +2,12 @@
 // FIX: Removed fixed heights, flex-based layout, proper safe area for all Android devices
 
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CaptureButton } from './CaptureButton';
 import { COLORS } from '../config';
+import { useHardwareAwareBottomInset } from '../utils/safeArea';
 
 interface ScannerBottomBarProps {
   currentPhase: 'question_paper' | 'model_answer' | 'students';
@@ -35,7 +36,6 @@ const ScannerBottomBarBase: React.FC<ScannerBottomBarProps> = ({
   stabilityProgress,
   onTogglePause,
   onManualCapture,
-  onPickPdf,
   onNextStudent,
   onUndo,
   onFinishPhase,
@@ -48,7 +48,7 @@ const ScannerBottomBarBase: React.FC<ScannerBottomBarProps> = ({
   // Use insets directly instead of SafeAreaView wrapper
   // This gives us precise control over bottom padding on every device
   const insets = useSafeAreaInsets();
-  const bottomPad = Math.max(insets.bottom, 8);
+  const bottomPad = useHardwareAwareBottomInset(insets.bottom, 10);
 
   const isUndoDisabled = currentPagesCount === 0;
 
@@ -102,11 +102,6 @@ const ScannerBottomBarBase: React.FC<ScannerBottomBarProps> = ({
       <View style={styles.secondaryRow}>
         {currentPhase !== 'students' ? (
           <View style={styles.documentActionsRow}>
-            <TouchableOpacity style={styles.pdfBtn} onPress={onPickPdf}>
-              <Ionicons name="document-attach" size={16} color="#fff" />
-              <Text style={styles.pdfBtnText}>PDF</Text>
-            </TouchableOpacity>
-
             <TouchableOpacity style={styles.donePhaseBtn} onPress={onFinishPhase}>
               <Text style={styles.donePhaseBtnText}>
                 FINISH {currentPhase === 'question_paper' ? 'QP' : 'MODEL'}
@@ -123,11 +118,6 @@ const ScannerBottomBarBase: React.FC<ScannerBottomBarProps> = ({
             >
               <Ionicons name="arrow-undo" size={16} color="rgba(255,255,255,0.6)" />
               <Text style={styles.undoStudentBtnText}>Undo Last Page</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.pdfStudentBtn} onPress={onPickPdf}>
-              <Ionicons name="document-attach" size={15} color="#fff" />
-              <Text style={styles.pdfBtnText}>PDF</Text>
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.finishSessionBtn} onPress={onFinishSession}>
@@ -205,30 +195,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-  },
-  pdfBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    paddingHorizontal: 15,
-    paddingVertical: 11,
-    borderRadius: 24,
-    gap: 7,
-  },
-  pdfStudentBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 22,
-    gap: 6,
-  },
-  pdfBtnText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '900',
-    letterSpacing: 0.6,
   },
   donePhaseBtn: {
     flexDirection: 'row',

@@ -175,6 +175,11 @@ class GradingLifecycleServiceTest(unittest.TestCase):
 
     def test_scan_session_ready_for_sync_requires_student_answer_pages(self):
         errors = validate_scan_session_ready_for_sync({
+            "session_name": "Unit Test",
+            "batch_id": "batch_1",
+            "subject_id": "subject_1",
+            "total_marks": 50,
+            "exam_date": "2026-06-10",
             "model_answer": {"pages": [{"page_number": 1}]},
             "question_paper": {"pages": []},
             "students": [{"label": "Student 1", "pages": []}],

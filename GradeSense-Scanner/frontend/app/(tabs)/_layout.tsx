@@ -2,7 +2,9 @@ import React from 'react';
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../../src/config';
-import { Platform, View, StyleSheet } from 'react-native';
+import { View, StyleSheet } from 'react-native';
+import { createFloatingTabBarOptions } from '../../src/components/navigation/floatingTabBar';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type IconName = React.ComponentProps<typeof Ionicons>['name'];
 
@@ -15,33 +17,14 @@ function TabIcon({ name, color, focused }: { name: IconName; color: string; focu
 }
 
 export default function TabsLayout() {
+  const insets = useSafeAreaInsets();
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: COLORS.primary,
         tabBarInactiveTintColor: COLORS.textMuted,
-        tabBarStyle: {
-          backgroundColor: COLORS.surface,
-          borderTopColor: COLORS.border,
-          borderTopWidth: 1,
-          paddingBottom: Platform.OS === 'ios' ? 24 : 10,
-          paddingTop: 10,
-          height: Platform.OS === 'ios' ? 92 : 68,
-          shadowColor: '#000',
-          shadowOffset: { width: 0, height: -4 },
-          shadowOpacity: 0.06,
-          shadowRadius: 12,
-          elevation: 10,
-        },
-        tabBarLabelStyle: {
-          fontSize: 11,
-          fontWeight: '600',
-          marginTop: 2,
-        },
-        tabBarIconStyle: {
-          marginTop: 2,
-        },
+        ...createFloatingTabBarOptions(11, insets.bottom),
       }}
     >
       <Tabs.Screen

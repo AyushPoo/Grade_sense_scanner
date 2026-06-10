@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   Dimensions,
   Linking,
@@ -28,12 +28,19 @@ interface PaperFileViewerProps {
   slides: ReviewFileSlide[];
   activeIndex: number;
   failedImageIds: Record<string, boolean>;
+  viewerState?: PaperFileViewerState;
   onSelectIndex: (index: number) => void;
   onImageError: (slideId: string) => void;
   onRetry: () => void;
+  onViewerStateChange?: (state: Partial<PaperFileViewerState>) => void;
 }
 
 type DocumentType = ReviewFileSlide['type'];
+
+export interface PaperFileViewerState {
+  compareMode: boolean;
+  scrollOffsets: Record<string, number>;
+}
 
 interface DocumentGroup {
   type: DocumentType;
@@ -48,16 +55,43 @@ export function PaperFileViewer({
   slides,
   activeIndex,
   failedImageIds,
+  viewerState,
   onSelectIndex,
   onImageError,
   onRetry,
+  onViewerStateChange,
 }: PaperFileViewerProps) {
-  const [compareMode, setCompareMode] = useState(false);
   const groups = useMemo(() => buildDocumentGroups(slides), [slides]);
+  const compareMode = viewerState?.compareMode ?? false;
+  const scrollOffsets = viewerState?.scrollOffsets ?? {};
   const activeType = slides[activeIndex]?.type || groups[0]?.type;
   const activeGroup = groups.find(group => group.type === activeType) || groups[0];
   const compareGroups = groups.filter(group => group.type === 'student' || group.type === 'model');
   const canCompare = compareGroups.length > 1;
+
+  const setCompareMode = useCallback((nextValue: boolean) => {
+    onViewerStateChange?.({ compareMode: nextValue });
+  }, [onViewerStateChange]);
+
+  const setScrollOffset = useCallback((key: string, offset: number) => {
+    onViewerStateChange?.({
+      scrollOffsets: {
+        ...scrollOffsets,
+        [key]: offset,
+      },
+    });
+  }, [onViewerStateChange, scrollOffsets]);
+
+  useEffect(() => {
+    slides
+      .map(slide => slide.annotationSignedUrl || slide.signedUrl)
+      .filter((uri): uri is string => Boolean(uri))
+      .filter(uri => !uri.toLowerCase().includes('.pdf'))
+      .slice(0, 6)
+      .forEach(uri => {
+        Image.prefetch(uri).catch(() => {});
+      });
+  }, [slides]);
 
   if (slides.length === 0 || !activeGroup) {
     return (
@@ -97,7 +131,7 @@ export function PaperFileViewer({
           {canCompare ? (
             <TouchableOpacity
               style={[styles.documentTab, compareMode && styles.activeDocumentTab]}
-              onPress={() => setCompareMode(value => !value)}
+              onPress={() => setCompareMode(!compareMode)}
               activeOpacity={0.8}
             >
               <Ionicons name="git-compare-outline" size={13} color={compareMode ? '#fff' : '#E7E7E7'} />
@@ -111,15 +145,20 @@ export function PaperFileViewer({
         <CompareDocumentView
           groups={compareGroups}
           failedImageIds={failedImageIds}
+          scrollOffsets={scrollOffsets}
           onImageError={onImageError}
           onRetry={onRetry}
+          onScrollOffsetChange={setScrollOffset}
         />
       ) : (
         <DocumentGroupView
           group={activeGroup}
           failedImageIds={failedImageIds}
+          scrollKey={`single-${activeGroup.type}`}
+          initialScrollOffset={scrollOffsets[`single-${activeGroup.type}`] || 0}
           onImageError={onImageError}
           onRetry={onRetry}
+          onScrollOffsetChange={setScrollOffset}
         />
       )}
     </View>
@@ -129,13 +168,17 @@ export function PaperFileViewer({
 function CompareDocumentView({
   groups,
   failedImageIds,
+  scrollOffsets,
   onImageError,
   onRetry,
+  onScrollOffsetChange,
 }: {
   groups: DocumentGroup[];
   failedImageIds: Record<string, boolean>;
+  scrollOffsets: Record<string, number>;
   onImageError: (slideId: string) => void;
   onRetry: () => void;
+  onScrollOffsetChange: (key: string, offset: number) => void;
 }) {
   const studentGroup = groups.find(group => group.type === 'student');
   const modelGroup = groups.find(group => group.type === 'model');
@@ -146,15 +189,19 @@ function CompareDocumentView({
         title="Student Sheet"
         group={studentGroup}
         failedImageIds={failedImageIds}
+        scrollOffsets={scrollOffsets}
         onImageError={onImageError}
         onRetry={onRetry}
+        onScrollOffsetChange={onScrollOffsetChange}
       />
       <SplitComparePane
         title="Model Answer"
         group={modelGroup}
         failedImageIds={failedImageIds}
+        scrollOffsets={scrollOffsets}
         onImageError={onImageError}
         onRetry={onRetry}
+        onScrollOffsetChange={onScrollOffsetChange}
       />
     </View>
   );
@@ -164,14 +211,18 @@ function SplitComparePane({
   title,
   group,
   failedImageIds,
+  scrollOffsets,
   onImageError,
   onRetry,
+  onScrollOffsetChange,
 }: {
   title: string;
   group?: DocumentGroup;
   failedImageIds: Record<string, boolean>;
+  scrollOffsets: Record<string, number>;
   onImageError: (slideId: string) => void;
   onRetry: () => void;
+  onScrollOffsetChange: (key: string, offset: number) => void;
 }) {
   if (!group) {
     return (
@@ -192,8 +243,11 @@ function SplitComparePane({
         group={group}
         compact
         failedImageIds={failedImageIds}
+        scrollKey={`compare-${group.type}`}
+        initialScrollOffset={scrollOffsets[`compare-${group.type}`] || 0}
         onImageError={onImageError}
         onRetry={onRetry}
+        onScrollOffsetChange={onScrollOffsetChange}
       />
     </View>
   );
@@ -203,21 +257,44 @@ function DocumentGroupView({
   group,
   compact = false,
   failedImageIds,
+  scrollKey,
+  initialScrollOffset = 0,
   onImageError,
   onRetry,
+  onScrollOffsetChange,
 }: {
   group: DocumentGroup;
   compact?: boolean;
   failedImageIds: Record<string, boolean>;
+  scrollKey: string;
+  initialScrollOffset?: number;
   onImageError: (slideId: string) => void;
   onRetry: () => void;
+  onScrollOffsetChange: (key: string, offset: number) => void;
 }) {
+  const scrollRef = useRef<ScrollView>(null);
+
+  const restoreScroll = useCallback(() => {
+    if (initialScrollOffset <= 0) return;
+    requestAnimationFrame(() => {
+      scrollRef.current?.scrollTo({ y: initialScrollOffset, animated: false });
+    });
+  }, [initialScrollOffset]);
+
+  useEffect(() => {
+    restoreScroll();
+  }, [restoreScroll]);
+
   return (
     <ScrollView
+      ref={scrollRef}
       style={styles.documentScroll}
       contentContainerStyle={[styles.documentContent, compact && styles.compactDocumentContent]}
       showsVerticalScrollIndicator={false}
       nestedScrollEnabled
+      onContentSizeChange={restoreScroll}
+      onScroll={event => onScrollOffsetChange(scrollKey, event.nativeEvent.contentOffset.y)}
+      scrollEventThrottle={160}
     >
       {group.slides.map((slide, index) => (
         <View key={slide.id} style={[styles.pageFrame, compact && styles.compactPageFrame]}>

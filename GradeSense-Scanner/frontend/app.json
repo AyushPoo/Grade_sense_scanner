@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "GradeSense Scanner",
+    "name": "GradeSense",
     "slug": "gradesense-scanner",
-    "version": "1.0.0",
+    "version": "1.0.17",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": [
@@ -38,7 +38,8 @@
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE",
         "android.permission.VIBRATE",
-        "android.permission.ACCESS_NETWORK_STATE"
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.WAKE_LOCK"
       ],
       "package": "com.ayushp123.gradesensescanner"
     },
@@ -54,9 +55,17 @@
         "expo-splash-screen",
         {
           "image": "./assets/images/splash-icon.png",
-          "imageWidth": 200,
+          "imageWidth": 320,
           "resizeMode": "contain",
           "backgroundColor": "#FFFFFF"
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/notification-icon.png",
+          "color": "#FF6B35",
+          "defaultChannel": "grading-complete"
         }
       ],
       [

@@ -1,4 +1,4 @@
-// Type definitions for GradeSense Scanner
+// Type definitions for GradeSense
 
 export interface User {
   user_id: string;
@@ -44,6 +44,8 @@ export interface ScannedPage {
     bottomRight: { x: number; y: number };
     bottomLeft: { x: number; y: number };
   }; // the detected points used for the crop
+  crop_applied?: boolean;
+  crop_confidence?: number;
   filter_mode?: 'original' | 'grayscale' | 'high_contrast' | 'adaptive_threshold';
   file_size: number;
   is_blurry: boolean;

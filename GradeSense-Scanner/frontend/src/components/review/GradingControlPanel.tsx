@@ -16,12 +16,15 @@ import {
   ReviewDensity,
   ReviewDensityConfig,
 } from '../../utils/reviewDensity';
+import { useHardwareAwareBottomInset } from '../../utils/safeArea';
 
 interface GradingControlPanelProps {
   activeScore: ScoreItem;
   isSaving: boolean;
   isLastSubmission: boolean;
   density: ReviewDensity;
+  keyboardLift?: number;
+  bottomInset?: number;
   onScoreChange: (scoreId: string, obtainedMarks: number) => void;
   onCommentChange: (scoreId: string, comment: string) => void;
   onOpenDictation: () => void;
@@ -33,6 +36,8 @@ export function GradingControlPanel({
   isSaving,
   isLastSubmission,
   density,
+  keyboardLift = 0,
+  bottomInset = 0,
   onScoreChange,
   onCommentChange,
   onOpenDictation,
@@ -50,9 +55,18 @@ export function GradingControlPanel({
     Math.max(isNoteFocused ? focusedMinNoteHeight : minNoteHeight, noteContentHeight + 14),
     maxNoteHeight
   );
+  const hardwareBottomPadding = useHardwareAwareBottomInset(bottomInset, 0);
 
   return (
-    <View style={[styles.panel, densityStyles.panel]}>
+    <View
+      style={[
+        styles.panel,
+        densityStyles.panel,
+        { paddingBottom: densityConfig.footerPaddingBottomAndroid + hardwareBottomPadding },
+        Platform.OS === 'ios' && { paddingBottom: densityConfig.footerPaddingBottomIos + bottomInset },
+        keyboardLift > 0 && { transform: [{ translateY: -keyboardLift }] },
+      ]}
+    >
       <View style={[styles.stepperRow, densityStyles.stepperRow]}>
         <View style={styles.questionSummary}>
           <Text style={[styles.panelEyebrow, densityStyles.panelEyebrow]}>Current question</Text>
@@ -227,7 +241,6 @@ const styles = StyleSheet.create({
 function createDensityStyles(config: ReviewDensityConfig) {
   return StyleSheet.create({
     panel: {
-      paddingBottom: Platform.OS === 'ios' ? config.footerPaddingBottomIos : config.footerPaddingBottomAndroid,
       paddingHorizontal: config.footerPaddingHorizontal,
       paddingTop: config.footerPaddingTop,
     },

@@ -27,14 +27,16 @@ export function createImportedPdfPage(
   asset: ImportedDocumentAsset,
   idFactory: () => string,
 ): ScannedPage {
+  const sourceText = `${asset.mimeType || ''} ${asset.name || ''} ${asset.uri || ''}`.toLowerCase();
+  const isPdf = sourceText.includes('application/pdf') || sourceText.includes('.pdf');
   return {
     id: idFactory(),
     ui_id: '',
     page_number: 0,
     file_path: asset.uri,
-    source_type: 'pdf',
-    content_type: asset.mimeType || 'application/pdf',
-    original_name: asset.name || 'paper.pdf',
+    source_type: isPdf ? 'pdf' : 'image',
+    content_type: asset.mimeType || (isPdf ? 'application/pdf' : 'image/jpeg'),
+    original_name: asset.name || (isPdf ? 'paper.pdf' : 'paper.jpg'),
     file_size: asset.size || 0,
     is_blurry: false,
     sharpness_score: 100,

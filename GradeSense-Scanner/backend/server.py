@@ -17,7 +17,7 @@ import base64
 import json
 from io import BytesIO
 from fastapi import File, UploadFile, Form
-from fastapi.responses import FileResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse, Response, JSONResponse
 import shutil
 from storage_service import StorageService, get_storage_service
 from sync_preflight_service import SyncPreflightError, assert_webapp_sync_ready
@@ -75,9 +75,11 @@ from upload_flow_service import merge_upload_flow_state
 from sync_cleanup_service import delete_stale_upload_flows_for_teacher, delete_upload_flows_for_exams
 from webapp_proxy_service import WebappProxyConfigError, build_proxy_headers, build_webapp_url
 from google_invite_auth_service import (
+    AccessRequest,
     GoogleInviteAuthError,
     GoogleProfile,
     resolve_or_claim_teacher_invite,
+    upsert_access_request,
 )
 import jwt as pyjwt
 import asyncpg
@@ -694,6 +696,129 @@ async def process_session(x_session_id: str = Header(..., alias="X-Session-ID"))
     }
 
 
+def _string_from_context(context: dict, *keys: str) -> str:
+    for key in keys:
+        value = context.get(key)
+        if value is not None:
+            return str(value).strip()
+    return ""
+
+
+async def _notify_access_request(access_request: dict) -> None:
+    webhook_url = (os.environ.get("ACCESS_REQUEST_WEBHOOK_URL") or "").strip()
+    if not webhook_url:
+        return
+    try:
+        async with httpx.AsyncClient() as client_http:
+            await client_http.post(webhook_url, json=access_request, timeout=10.0)
+    except Exception as e:
+        logger.warning(f"Failed to notify access request webhook: {e}")
+
+
+async def _record_google_access_request(
+    *,
+    conn,
+    email: str,
+    name: str,
+    picture_url: str,
+    google_subject: str,
+    client_context: dict,
+) -> dict:
+    app_version = _string_from_context(client_context, "appVersion", "app_version")
+    build_version = _string_from_context(client_context, "buildVersion", "build_version")
+    source = _string_from_context(client_context, "source") or "mobile"
+
+    try:
+        stored = await upsert_access_request(
+            conn,
+            AccessRequest(
+                email=email,
+                name=name,
+                picture_url=picture_url,
+                subject=google_subject,
+                source=source,
+                app_version=app_version,
+                build_version=build_version,
+                device_info=client_context,
+            ),
+            id_factory=lambda: generate_drizzle_id("arq_"),
+        )
+    except Exception as e:
+        logger.warning(f"Could not store access request in webapp DB, falling back to MongoDB: {e}")
+        now_text = datetime.now(timezone.utc).isoformat()
+        stored = {
+            "id": f"arq_{uuid.uuid4().hex[:12]}",
+            "email": email,
+            "created": True,
+            "attempt_count": 1,
+        }
+        existing = await db.access_requests.find_one(
+            {
+                "$or": [
+                    {"email": email},
+                    {"google_subject": google_subject} if google_subject else {"_id": "__never__"},
+                ]
+            },
+            {"_id": 0, "attempt_count": 1, "request_id": 1},
+        )
+        if existing:
+            stored["id"] = existing.get("request_id") or stored["id"]
+            stored["created"] = False
+            stored["attempt_count"] = int(existing.get("attempt_count") or 0) + 1
+            await db.access_requests.update_one(
+                {"request_id": stored["id"]},
+                {
+                    "$set": {
+                        "email": email,
+                        "name": name,
+                        "picture_url": picture_url,
+                        "google_subject": google_subject,
+                        "source": source,
+                        "app_version": app_version,
+                        "build_version": build_version,
+                        "device_info": client_context,
+                        "last_attempted_at": now_text,
+                        "updated_at": now_text,
+                    },
+                    "$inc": {"attempt_count": 1},
+                },
+            )
+        else:
+            await db.access_requests.insert_one(
+                {
+                    "request_id": stored["id"],
+                    "email": email,
+                    "name": name,
+                    "picture_url": picture_url,
+                    "google_subject": google_subject,
+                    "source": source,
+                    "app_version": app_version,
+                    "build_version": build_version,
+                    "device_info": client_context,
+                    "status": "new",
+                    "attempt_count": 1,
+                    "last_attempted_at": now_text,
+                    "created_at": now_text,
+                    "updated_at": now_text,
+                }
+            )
+
+    payload = {
+        "id": stored.get("id"),
+        "email": email,
+        "name": name,
+        "googleSubject": google_subject,
+        "pictureUrl": picture_url,
+        "source": source,
+        "appVersion": app_version,
+        "buildVersion": build_version,
+        "created": bool(stored.get("created")),
+        "attemptCount": stored.get("attempt_count"),
+    }
+    await _notify_access_request(payload)
+    return stored
+
+
 @api_router.post("/auth/google-idtoken")
 async def google_idtoken_auth(data: dict):
     """
@@ -706,6 +831,7 @@ async def google_idtoken_auth(data: dict):
     id_token = data.get("id_token")
     access_token = data.get("access_token")
     prefetched_token_info = data.get("token_info")
+    client_context = data.get("client_context") if isinstance(data.get("client_context"), dict) else {}
 
     if not id_token and not access_token:
         raise HTTPException(status_code=400, detail="Either id_token or access_token is required")
@@ -793,6 +919,25 @@ async def google_idtoken_auth(data: dict):
             )
         except GoogleInviteAuthError as e:
             logger.warning(f"Google auth rejected for {google_email}: {e.detail}")
+            if e.code == "INVITE_REQUIRED":
+                stored = await _record_google_access_request(
+                    conn=conn,
+                    email=google_email,
+                    name=google_name,
+                    picture_url=google_picture,
+                    google_subject=google_sub,
+                    client_context=client_context,
+                )
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "code": "INVITE_REQUIRED",
+                        "message": "GradeSense is invite-only right now.",
+                        "accessRequestCreated": True,
+                        "accessRequestId": stored.get("id"),
+                        "email": google_email,
+                    },
+                )
             raise HTTPException(status_code=e.status_code, detail=e.detail)
         except HTTPException:
             raise

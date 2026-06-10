@@ -5,6 +5,9 @@ import { ScanSession, ScanPhase, ScannedPage, ScanSessionSettings, Batch, Subjec
 import * as FileSystem from 'expo-file-system';
 import { getBackendUrl } from '../config';
 import { reconcileFetchedScanSessions } from '../utils/sessionReconciliation';
+import { fetchWithTimeout } from '../utils/fetchWithTimeout';
+import { findReusableDraftSession } from '../utils/sessionDrafts';
+import { prepareSessionForScanningPhase } from '../utils/scanContinuation';
 
 // Simple UUID generator
 export const generateUUID = () => {
@@ -71,10 +74,12 @@ interface ScanState {
   clearCurrentSession: () => void;
   deleteSession: (sessionId: string) => Promise<void>;
   loadSession: (sessionId: string) => void;
+  prepareSessionForScanning: (sessionId: string, phase: ScanPhase) => void;
   updateSessionStatus: (sessionId: string, status: ScanSession['status'], progress: number, examId?: string) => void;
   fetchSessions: () => Promise<void>;
   fetchBatches: () => Promise<void>;
   fetchSubjects: () => Promise<void>;
+  createBatch: (name: string, studentCount?: number) => Promise<Batch>;
   createSubject: (name: string, classStandard?: string) => Promise<Subject>;
   createSession: (
     name: string,
@@ -84,7 +89,15 @@ interface ScanState {
     subjectId?: string,
     totalMarks?: number,
     examDate?: string
-  ) => Promise<void>;
+  ) => Promise<ScanSession>;
+  replaceSessionDocuments: (
+    sessionId: string,
+    documents: {
+      questionPaper?: ScannedPage[];
+      modelAnswer?: ScannedPage[];
+      studentPapers?: ScannedPage[];
+    }
+  ) => void;
   syncCurrentMetadata: (currentPhase?: 'question_paper' | 'model_answer' | 'student', studentIndex?: number) => Promise<void>;
   updateStudentBarcode: (studentIndex: number, barcodeData: { type: string; data: string; matched_name?: string }) => void;
   setFlashMode: (mode: 'off' | 'on' | 'auto') => void;
@@ -219,7 +232,7 @@ export const useScanStore = create<ScanState>()(
       isScanning: false,
       flashMode: 'auto',
       autoCaptureEnabled: true,
-      autoCropEnabled: true,
+      autoCropEnabled: false,
       pendingRetake: null,
       hasHydrated: false,
 
@@ -234,39 +247,33 @@ export const useScanStore = create<ScanState>()(
         totalMarks?: number,
         examDate?: string
       ) => {
-        let finalSessionId: string;
+        const reusableDraft = findReusableDraftSession(get().savedSessions, {
+          name,
+          batchId,
+          subjectId,
+          totalMarks,
+          examDate,
+          settings,
+        });
 
-        try {
-          const { useAuthStore } = await import('./authStore');
-          const token = useAuthStore.getState().sessionToken;
-
-          // Call backend to create real session
-          const response = await fetch(`${getBackendUrl()}/api/scan-sessions/create`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': token ? `Bearer ${token}` : '',
-            },
-            body: JSON.stringify({
-              session_name: name,
-              batch_id: batchId,
-              settings: settings,
-              subject_id: subjectId || null,
-              total_marks: totalMarks || null,
-              exam_date: examDate || null
-            })
+        if (reusableDraft) {
+          set({
+            currentSession: reusableDraft,
+            currentPhase: reusableDraft.settings.scan_question_paper
+              ? 'question_paper'
+              : reusableDraft.settings.scan_model_answer
+                ? 'model_answer'
+                : 'students',
+            currentStudentIndex: 0,
+            isScanning: true,
+            autoCaptureEnabled: reusableDraft.settings.auto_capture,
+            autoCropEnabled: reusableDraft.settings.auto_crop === true,
           });
 
-          if (!response.ok) {
-            throw new Error(`Server returned ${response.status}`);
-          }
-
-          const data = await response.json();
-          finalSessionId = data.session_id;
-        } catch (error) {
-          console.log("[Offline Mode] Fallback to local session creation:", error);
-          finalSessionId = `local_${generateUUID()}`;
+          return reusableDraft;
         }
+
+        const finalSessionId = `local_${generateUUID()}`;
 
         const session: ScanSession = {
           session_id: finalSessionId,
@@ -301,8 +308,10 @@ export const useScanStore = create<ScanState>()(
           currentStudentIndex: 0,
           isScanning: true,
           autoCaptureEnabled: settings.auto_capture,
-          autoCropEnabled: settings.auto_crop !== false,
+          autoCropEnabled: settings.auto_crop === true,
         });
+
+        return session;
       },
 
       setCurrentPhase: (phase) => set({ currentPhase: phase }),
@@ -785,12 +794,108 @@ export const useScanStore = create<ScanState>()(
         });
       },
 
+      replaceSessionDocuments: (sessionId, documents) => {
+        const { savedSessions, currentSession } = get();
+
+        const normalizedPages = (pages: ScannedPage[] | undefined) =>
+          (pages || []).map((page, index) => ({
+            ...page,
+            page_number: index + 1,
+          }));
+
+        const updateSessionObj = (session: ScanSession): ScanSession => {
+          const updated: ScanSession = {
+            ...session,
+            question_paper: {
+              ...session.question_paper,
+              pages: normalizedPages(documents.questionPaper ?? session.question_paper.pages),
+            },
+            model_answer: {
+              ...session.model_answer,
+              pages: normalizedPages(documents.modelAnswer ?? session.model_answer.pages),
+            },
+          };
+
+          updated.question_paper.page_count = updated.question_paper.pages.length;
+          updated.model_answer.page_count = updated.model_answer.pages.length;
+
+          if (documents.studentPapers) {
+            updated.students = documents.studentPapers.map((page, index) => {
+              const normalizedPage = {
+                ...page,
+                page_number: 1,
+                ui_id: `${session.session_id}_student_${index}_${page.file_path}`,
+              };
+              return {
+                id: generateUUID(),
+                student_index: index,
+                label: page.original_name?.replace(/\.[^.]+$/, '') || `Student #${index + 1}`,
+                page_count: 1,
+                has_blurry_pages: false,
+                pages: [normalizedPage],
+              };
+            });
+          }
+
+          updated.question_paper.pages = updated.question_paper.pages.map(page => ({
+            ...page,
+            ui_id: `${session.session_id}_qp_${page.file_path}`,
+          }));
+          updated.model_answer.pages = updated.model_answer.pages.map(page => ({
+            ...page,
+            ui_id: `${session.session_id}_ma_${page.file_path}`,
+          }));
+          updated.stats = recomputeStats(updated);
+          return updated;
+        };
+
+        let updatedCurrentSession: ScanSession | null = null;
+        const newSavedSessions = savedSessions.map(session => {
+          if (session.session_id !== sessionId) return session;
+          const updated = updateSessionObj(session);
+          updatedCurrentSession = updated;
+          return updated;
+        });
+
+        if (!updatedCurrentSession && currentSession?.session_id === sessionId) {
+          updatedCurrentSession = updateSessionObj(currentSession);
+        }
+
+        set({
+          savedSessions: newSavedSessions,
+          currentSession: currentSession?.session_id === sessionId
+            ? updatedCurrentSession
+            : currentSession,
+        });
+      },
+
       loadSession: (sessionId: string) => {
         const { savedSessions } = get();
         const session = savedSessions.find(s => s.session_id === sessionId);
         if (session) {
           set({ currentSession: session });
         }
+      },
+
+      prepareSessionForScanning: (sessionId: string, phase: ScanPhase) => {
+        const { savedSessions, currentSession } = get();
+        const baseSession = savedSessions.find(s => s.session_id === sessionId)
+          || (currentSession?.session_id === sessionId ? currentSession : null);
+
+        if (!baseSession) return;
+
+        const prepared = prepareSessionForScanningPhase(baseSession, phase, generateUUID);
+        const newSavedSessions = savedSessions.some(s => s.session_id === sessionId)
+          ? savedSessions.map(s => s.session_id === sessionId ? prepared.session : s)
+          : [prepared.session, ...savedSessions];
+
+        set({
+          currentSession: prepared.session,
+          currentPhase: phase,
+          currentStudentIndex: prepared.studentIndex,
+          isScanning: true,
+          savedSessions: newSavedSessions,
+        });
       },
 
       updateSessionStatus: (sessionId, status, progress = 0, examId) => {
@@ -903,11 +1008,11 @@ export const useScanStore = create<ScanState>()(
           const token = useAuthStore.getState().sessionToken;
           const backendUrl = getBackendUrl();
 
-          const response = await fetch(`${backendUrl}/api/scan-sessions`, {
+          const response = await fetchWithTimeout(`${backendUrl}/api/scan-sessions`, {
             headers: {
               'Authorization': token ? `Bearer ${token}` : '',
             }
-          });
+          }, 2500);
 
           if (!response.ok) {
             throw new Error(`Failed to fetch sessions: ${response.status}`);
@@ -964,12 +1069,12 @@ export const useScanStore = create<ScanState>()(
           const token = useAuthStore.getState().sessionToken;
           const backendUrl = getBackendUrl();
 
-          const response = await fetch(`${backendUrl}/api/batches`, {
+          const response = await fetchWithTimeout(`${backendUrl}/api/batches`, {
             headers: {
               'Authorization': token ? `Bearer ${token}` : '',
               'Bypass-Tunnel-Reminder': 'true',
             }
-          });
+          }, 2500);
 
           if (!response.ok) {
             throw new Error(`Failed to fetch batches: ${response.status}`);
@@ -989,12 +1094,12 @@ export const useScanStore = create<ScanState>()(
           const token = useAuthStore.getState().sessionToken;
           const backendUrl = getBackendUrl();
 
-          const response = await fetch(`${backendUrl}/api/subjects`, {
+          const response = await fetchWithTimeout(`${backendUrl}/api/subjects`, {
             headers: {
               'Authorization': token ? `Bearer ${token}` : '',
               'Bypass-Tunnel-Reminder': 'true',
             }
-          });
+          }, 2500);
 
           if (!response.ok) {
             throw new Error(`Failed to fetch subjects: ${response.status}`);
@@ -1008,6 +1113,54 @@ export const useScanStore = create<ScanState>()(
         }
       },
 
+      createBatch: async (name: string, studentCount?: number) => {
+        const cleanName = name.trim();
+        if (!cleanName) {
+          throw new Error('Batch name is required');
+        }
+
+        const { useAuthStore } = await import('./authStore');
+        const token = useAuthStore.getState().sessionToken;
+        const backendUrl = getBackendUrl();
+
+        const response = await fetchWithTimeout(`${backendUrl}/api/batches`, {
+          method: 'POST',
+          headers: {
+            'Authorization': token ? `Bearer ${token}` : '',
+            'Bypass-Tunnel-Reminder': 'true',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ name: cleanName }),
+        }, 6000);
+
+        if (!response.ok) {
+          const body = await response.json().catch(() => null);
+          throw new Error(body?.detail || `Failed to create batch: ${response.status}`);
+        }
+
+        const data = await response.json();
+        const rawBatch = data.batch || data.data || data;
+        const batchId = rawBatch.batch_id || rawBatch.id;
+        if (!batchId) {
+          throw new Error('Batch creation response did not include an id');
+        }
+
+        const normalizedBatch: Batch = {
+          batch_id: batchId,
+          name: rawBatch.name || cleanName,
+          student_count: Number(rawBatch.student_count ?? rawBatch.studentCount ?? studentCount ?? 0),
+        };
+
+        set(state => ({
+          savedBatches: [
+            normalizedBatch,
+            ...state.savedBatches.filter(item => item.batch_id !== normalizedBatch.batch_id),
+          ],
+        }));
+
+        return normalizedBatch;
+      },
+
       createSubject: async (name: string, classStandard?: string) => {
         const cleanName = name.trim();
         if (!cleanName) {
@@ -1018,7 +1171,7 @@ export const useScanStore = create<ScanState>()(
         const token = useAuthStore.getState().sessionToken;
         const backendUrl = getBackendUrl();
 
-        const response = await fetch(`${backendUrl}/api/subjects`, {
+        const response = await fetchWithTimeout(`${backendUrl}/api/subjects`, {
           method: 'POST',
           headers: {
             'Authorization': token ? `Bearer ${token}` : '',
@@ -1029,7 +1182,7 @@ export const useScanStore = create<ScanState>()(
             name: cleanName,
             classStandard: classStandard?.trim() || null,
           }),
-        });
+        }, 6000);
 
         if (!response.ok) {
           const text = await response.text();
@@ -1093,11 +1246,11 @@ export const useScanStore = create<ScanState>()(
 
           console.log(`[TRACE] syncCurrentMetadata: start for ${currentPhase} at ${Date.now()}...`);
 
-          const response = await fetch(endpoint, {
+          const response = await fetchWithTimeout(endpoint, {
             method: 'POST',
             headers: authHeaders,
             body: JSON.stringify(body)
-          });
+          }, 3500);
 
           if (!response.ok) {
             throw new Error(`Sync failed with status ${response.status}`);
@@ -1394,7 +1547,7 @@ export const useScanStore = create<ScanState>()(
       })),
       partialize: (state) => {
         // HYDRATION ISOLATION: Do not persist hydration, transient UI flags, or retake context
-        const { hasHydrated, isScanning, pendingRetake, ...persistentState } = state;
+        const { hasHydrated, isScanning, pendingRetake, autoCropEnabled, ...persistentState } = state;
 
         // Deeply strip base64 from sessions before persisting
         const cleanupSession = (session: any) => {
@@ -1461,11 +1614,16 @@ export const useScanStore = create<ScanState>()(
             }
 
             // DERIVED-STATE NORMALIZATION: Recompute aggregate stats from nested data
+            session.settings = {
+              ...(session.settings || {}),
+              auto_crop: false,
+            };
             session.stats = recomputeStats(session);
           };
 
           state.savedSessions?.forEach(cleanupSession);
           cleanupSession(state.currentSession);
+          state.autoCropEnabled = false;
 
           // HYDRATION ISOLATION: Mark hydration complete without triggering setItem
           state.setHasHydrated(true);

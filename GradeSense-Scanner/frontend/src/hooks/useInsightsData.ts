@@ -1,9 +1,10 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { Alert } from 'react-native';
 import { getBackendUrl } from '../config';
 import { AIBrainRule, createAIBrainRule, fetchAIBrainRules } from '../api/aiBrain';
 import { fetchManagedExams, fetchManagePerformance } from '../api/manage';
 import { ManagedExam, ManagePerformance } from '../utils/manageData';
+import { fetchWithTimeout } from '../utils/fetchWithTimeout';
 
 export interface TeacherInsightsOverview {
   examsCount: number;
@@ -24,6 +25,9 @@ export function useInsightsData({ token }: UseInsightsDataParams) {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isOffline, setIsOffline] = useState(false);
   const [savingBrainRule, setSavingBrainRule] = useState(false);
+  const hasUsableDataRef = useRef(false);
+  const lastGoodOverviewRef = useRef<TeacherInsightsOverview | null>(null);
+  const lastGoodPerformanceRef = useRef<ManagePerformance | null>(null);
 
   const backendUrl = useMemo(() => getBackendUrl(), []);
 
@@ -33,15 +37,11 @@ export function useInsightsData({ token }: UseInsightsDataParams) {
       return;
     }
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
-
     try {
       const [apiOverview, exams] = await Promise.all([
-        fetch(`${backendUrl}/api/v1/analytics/overview`, {
+        fetchWithTimeout(`${backendUrl}/api/v1/analytics/overview`, {
           headers: { Authorization: `Bearer ${token}` },
-          signal: controller.signal,
-        })
+        }, 2500)
           .then(async res => {
             if (!res.ok) throw new Error(`Status ${res.status}`);
             const json = await res.json();
@@ -52,23 +52,43 @@ export function useInsightsData({ token }: UseInsightsDataParams) {
       ]);
 
       if (exams) {
-        setOverview(mergeOverviewWithExams(apiOverview, exams));
+        const nextOverview = mergeOverviewWithExams(apiOverview, exams);
+        if (hasOverviewSignal(nextOverview) || !lastGoodOverviewRef.current) {
+          lastGoodOverviewRef.current = nextOverview;
+          hasUsableDataRef.current = hasOverviewSignal(nextOverview) || hasUsableDataRef.current;
+          setOverview(nextOverview);
+        } else {
+          setOverview(lastGoodOverviewRef.current);
+        }
         setIsOffline(false);
       } else if (apiOverview) {
-        setOverview(apiOverview);
+        if (hasOverviewSignal(apiOverview) || !lastGoodOverviewRef.current) {
+          lastGoodOverviewRef.current = apiOverview;
+          hasUsableDataRef.current = hasOverviewSignal(apiOverview) || hasUsableDataRef.current;
+          setOverview(apiOverview);
+        } else {
+          setOverview(lastGoodOverviewRef.current);
+        }
         setIsOffline(false);
       } else {
         setIsOffline(true);
       }
-    } finally {
-      clearTimeout(timeout);
+    } catch {
+      setIsOffline(true);
     }
   }, [backendUrl, token]);
 
   const loadPerformance = useCallback(async () => {
     if (!token) return;
     try {
-      setPerformance(await fetchManagePerformance({ backendUrl, token }));
+      const nextPerformance = await fetchManagePerformance({ backendUrl, token });
+      if (hasPerformanceSignal(nextPerformance) || !lastGoodPerformanceRef.current) {
+        lastGoodPerformanceRef.current = nextPerformance;
+        hasUsableDataRef.current = hasPerformanceSignal(nextPerformance) || hasUsableDataRef.current;
+        setPerformance(nextPerformance);
+      } else {
+        setPerformance(lastGoodPerformanceRef.current);
+      }
     } catch (err) {
       console.error('Failed to load insights performance:', err);
     }
@@ -77,15 +97,18 @@ export function useInsightsData({ token }: UseInsightsDataParams) {
   const loadBrainRules = useCallback(async () => {
     if (!token) return;
     try {
-      setBrainRules(await fetchAIBrainRules({ backendUrl, token }));
+      const rules = await fetchAIBrainRules({ backendUrl, token });
+      if (rules.length > 0) {
+        hasUsableDataRef.current = true;
+      }
+      setBrainRules(rules);
     } catch (err) {
       console.error('Failed to load AI Brain rules:', err);
     }
   }, [backendUrl, token]);
 
   const refresh = useCallback(async (silent = false) => {
-    const hasUsableData = Boolean(overview || performance || brainRules.length);
-    if (!silent && !hasUsableData) {
+    if (!silent && !hasUsableDataRef.current) {
       setIsLoading(true);
     }
     setIsRefreshing(true);
@@ -95,7 +118,7 @@ export function useInsightsData({ token }: UseInsightsDataParams) {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, [brainRules.length, loadBrainRules, loadOverview, loadPerformance, overview, performance]);
+  }, [loadBrainRules, loadOverview, loadPerformance]);
 
   const saveBrainRule = useCallback(async (rule: string) => {
     if (!token || !rule.trim()) return false;
@@ -138,6 +161,26 @@ function normalizeOverview(value: unknown): TeacherInsightsOverview | null {
     reviewedCount: readNumber(item.reviewedCount),
     averagePercentage: readNumber(item.averagePercentage),
   };
+}
+
+function hasOverviewSignal(value: TeacherInsightsOverview | null): boolean {
+  if (!value) return false;
+  return (
+    value.examsCount > 0
+    || value.submissionsCount > 0
+    || value.reviewedCount > 0
+    || value.averagePercentage > 0
+  );
+}
+
+function hasPerformanceSignal(value: ManagePerformance | null): boolean {
+  if (!value) return false;
+  return (
+    value.subjectPerformance.length > 0
+    || value.studentRankings.length > 0
+    || value.weakStudents.length > 0
+    || value.weakQuestions.length > 0
+  );
 }
 
 function mergeOverviewWithExams(

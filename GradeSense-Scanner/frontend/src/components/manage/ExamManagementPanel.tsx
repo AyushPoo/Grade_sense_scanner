@@ -13,6 +13,8 @@ interface Props {
   onClose: (exam: ManagedExam) => void;
   onArchive: (exam: ManagedExam) => void;
   onCreateExam: () => void;
+  onRetry?: () => void;
+  errorMessage?: string | null;
 }
 
 function StatusBadge({ exam }: { exam: ManagedExam }) {
@@ -147,6 +149,8 @@ export function ExamManagementPanel({
   onClose,
   onArchive,
   onCreateExam,
+  onRetry,
+  errorMessage,
 }: Props) {
   if (isLoading) {
     return (
@@ -158,6 +162,20 @@ export function ExamManagementPanel({
   }
 
   if (exams.length === 0) {
+    if (errorMessage) {
+      return (
+        <View style={styles.emptyState}>
+          <Ionicons name="cloud-offline-outline" size={42} color={COLORS.warning} />
+          <Text style={styles.emptyTitle}>Could not load synced exams</Text>
+          <Text style={styles.errorText}>{errorMessage}</Text>
+          <TouchableOpacity style={styles.primaryButton} activeOpacity={0.82} onPress={onRetry}>
+            <Ionicons name="refresh" size={16} color="#fff" />
+            <Text style={styles.primaryButtonText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
     return (
       <View style={styles.emptyState}>
         <Ionicons name="school-outline" size={42} color={COLORS.textMuted} />
@@ -263,6 +281,14 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
     color: COLORS.textLight,
+  },
+  errorText: {
+    color: COLORS.textMuted,
+    fontSize: 12,
+    fontWeight: '600',
+    lineHeight: 17,
+    maxWidth: 260,
+    textAlign: 'center',
   },
   examCard: {
     backgroundColor: COLORS.surface,

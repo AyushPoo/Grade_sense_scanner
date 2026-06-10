@@ -2,6 +2,7 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system/legacy';
 import { File, Paths } from 'expo-file-system';
 import { OpenCV, ObjectType, DataTypes } from 'react-native-fast-opencv';
+import { evaluateAutoCropCandidate } from './cropQuality';
 
 export interface CVProcessingResult {
   isDocumentDetected: boolean;
@@ -544,7 +545,8 @@ export async function detectDocumentInFrame(
           console.log(`[ADAPTIVE-DP] epsilon=${epsilonRatio.toFixed(3)} vertices=4 ACCEPTED`);
         }
 
-        if (!passesDocumentPlausibility(orderedQuad, hullArea, width, height)) {
+        const cropGate = evaluateAutoCropCandidate(orderedQuad, { width, height });
+        if (!cropGate.accepted || !passesDocumentPlausibility(orderedQuad, hullArea, width, height)) {
           rejectionReasons.PLAUSIBILITY_FAIL++;
           break;
         }
@@ -601,7 +603,8 @@ export async function detectDocumentInFrame(
         const maxEdge = Math.max(topLen, rightLen, bottomLen, leftLen);
 
         if (minEdge >= 20 && maxEdge / minEdge <= 10) {
-          if (!passesDocumentPlausibility(orderedQuad, hullArea, width, height)) {
+          const cropGate = evaluateAutoCropCandidate(orderedQuad, { width, height });
+          if (!cropGate.accepted || !passesDocumentPlausibility(orderedQuad, hullArea, width, height)) {
             rejectionReasons.PLAUSIBILITY_FAIL++;
           } else {
             acceptedCount++;
@@ -1340,38 +1343,37 @@ export type FilterMode = 'original' | 'grayscale' | 'high_contrast' | 'adaptive_
  *
  * original           → No processing. Good lighting, clean background.
  * grayscale          → Removes color noise. Better for OCR than color on most engines.
- * high_contrast      → CLAHE-like boost: normalizes exposure + strong contrast. Best for
- *                      faded/uneven lighting, pencil writing, or low-quality prints.
+ * high_contrast      → Natural document cleanup: bright paper, darker ink,
+ *                      and preserved grayscale texture for long review sessions.
  * adaptive_threshold → Full binarization. Converts to pure black text on white.
  *                      Best for typed text, printed documents, and Tesseract/Google OCR.
  */
 export async function applyFilter(imageUri: string, mode: FilterMode): Promise<string> {
   if (mode === 'original') return imageUri;
 
-  // All non-original modes start from a grayscale base
-  const grayscaleUri = await convertToGrayscale(imageUri);
-
   if (mode === 'grayscale') {
-    return grayscaleUri;
+    return convertToGrayscale(imageUri);
   }
 
-  // high_contrast & adaptive_threshold need further processing
   let srcMat: any = null;   // 4-channel RGBA decoded from JPEG
   let grayMat: any = null;  // 1-channel gray
+  let blurMat: any = null;  // 1-channel blurred gray
   let dstMat: any = null;   // 1-channel output
+  let resizedUri: string | null = null;
 
   try {
     const tStart = performance.now();
     const resized = await ImageManipulator.manipulateAsync(
-      grayscaleUri,
+      imageUri,
       [{ resize: { width: 1200 } }],
-      { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG, base64: false }
+      { compress: 0.82, format: ImageManipulator.SaveFormat.JPEG, base64: false }
     );
     const tResize = performance.now() - tStart;
+    resizedUri = resized.uri;
 
     const tLoadStart = performance.now();
     // Read image as base64 and decode to Mat
-    const base64 = await FileSystem.readAsStringAsync(resized.uri, {
+    const base64 = await FileSystem.readAsStringAsync(resizedUri, {
       encoding: 'base64',
     });
 
@@ -1391,51 +1393,51 @@ export async function applyFilter(imageUri: string, mode: FilterMode): Promise<s
     dstMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
 
     if (mode === 'high_contrast') {
-      // Note: equalizeHist is not exported by react-native-fast-opencv,
-      // so we use convertScaleAbs with alpha > 1 to stretch contrast.
-      // alpha=1.5 boosts contrast by 50%. beta=-20 darkens the shadows slightly.
-      (OpenCV as any).invoke('convertScaleAbs', grayMat, dstMat, 1.5, -20);
+      // Comfortable review filter: lift the paper background and deepen ink
+      // without the hard black/white speckling of OCR binarization.
+      (OpenCV as any).invoke('convertScaleAbs', grayMat, dstMat, 1.28, -16);
     } else if (mode === 'adaptive_threshold') {
-      // Adaptive threshold: pure black/white binarization — optimal for printed text OCR
-      // blockSize=15, C=9: tuned for A4 paper at 1200px wide
+      // Adobe-like document cleanup: smooth small sensor noise, then create
+      // black text on a white page. The original file is stored separately.
+      blurMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
+      const blurSize = OpenCV.createObject(ObjectType.Size, 3, 3);
+      (OpenCV as any).invoke('GaussianBlur', grayMat, blurMat, blurSize, 0);
       (OpenCV as any).invoke(
         'adaptiveThreshold',
-        grayMat, dstMat,
+        blurMat, dstMat,
         255,          // maxValue
-        1,            // ADAPTIVE_THRESH_MEAN_C = 1
+        1,            // ADAPTIVE_THRESH_GAUSSIAN_C / native binding constant
         0,            // THRESH_BINARY = 0
-        15,           // blockSize (must be odd)
-        9,            // C constant (subtract from mean)
+        21,           // blockSize (must be odd)
+        10,           // C constant (subtract from mean)
       );
     }
 
     const destFilename = `ocr_${mode}_${Date.now()}.jpg`;
     const dest = new File(Paths.document, destFilename);
     const tSaveStart = performance.now();
-    OpenCV.saveMatToFile(dstMat, dest.uri, 'jpeg', 0.95);
+    OpenCV.saveMatToFile(dstMat, dest.uri, 'jpeg', mode === 'adaptive_threshold' ? 0.82 : 0.88);
     const tSave = performance.now() - tSaveStart;
 
     const tTotal = performance.now() - tStart;
     console.log(`[TIMING] applyFilter: Total=${tTotal.toFixed(1)}ms (resize=${tResize.toFixed(1)}ms, imread=${tImread.toFixed(1)}ms, save=${tSave.toFixed(1)}ms)`);
 
-    if (!dest.exists) return grayscaleUri;
+    if (!dest.exists) return convertToGrayscale(imageUri);
 
     // Clean up the intermediate resized file
     try {
-      new File(resized.uri).delete();
-    } catch (_) { }
-
-    // Clean up the intermediate grayscale file
-    try {
-      if (grayscaleUri !== imageUri) new File(grayscaleUri).delete();
+      if (resizedUri && resizedUri !== imageUri) new File(resizedUri).delete();
     } catch (_) { }
 
     return dest.uri;
   } catch (err) {
     console.warn(`[CV] applyFilter(${mode}) failed, falling back to grayscale:`, err);
-    return grayscaleUri;
+    return convertToGrayscale(imageUri);
   } finally {
-    cleanupMats([srcMat, grayMat, dstMat]);
+    cleanupMats([srcMat, grayMat, blurMat, dstMat]);
+    try {
+      if (resizedUri && resizedUri !== imageUri) new File(resizedUri).delete();
+    } catch (_) { }
     try { OpenCV.clearBuffers(); } catch (_) { }
   }
 }

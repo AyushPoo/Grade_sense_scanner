@@ -10,7 +10,8 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as Haptics from 'expo-haptics';
@@ -22,7 +23,7 @@ import { COLORS, getBackendUrl } from '../src/config';
 import { useAuthStore } from '../src/store/authStore';
 import { useScanStore } from '../src/store/scanStore';
 import { GradingControlPanel } from '../src/components/review/GradingControlPanel';
-import { PaperFileViewer } from '../src/components/review/PaperFileViewer';
+import { PaperFileViewer, PaperFileViewerState } from '../src/components/review/PaperFileViewer';
 import { RubricReviewPanel } from '../src/components/review/RubricReviewPanel';
 import { VoiceDictationModal } from '../src/components/review/VoiceDictationModal';
 import { ImproveAIModal } from '../src/components/review/ImproveAIModal';
@@ -33,6 +34,7 @@ import { DEFAULT_REVIEW_SETTINGS, ReviewSettings } from '../src/utils/reviewSett
 import { submitQuestionImprovement } from '../src/api/improveAI';
 import { fetchExamReviewSettings } from '../src/api/reviewSettings';
 import { useReviewDensityPreference } from '../src/hooks/useReviewDensityPreference';
+import { useKeyboardLift } from '../src/hooks/useKeyboardLift';
 
 interface SubmissionReviewDetail {
   files: ReviewFileItem[];
@@ -44,6 +46,8 @@ export default function ReviewGradingScreen() {
   const router = useRouter();
   const { examId, sessionName } = useLocalSearchParams<{ examId: string; sessionName?: string }>();
   const token = useAuthStore(state => state.sessionToken);
+  const insets = useSafeAreaInsets();
+  const keyboardLift = useKeyboardLift(insets.bottom);
   const savedSessions = useScanStore(state => state.savedSessions);
   const webappUrl = getBackendUrl();
   const [isReevaluating, setIsReevaluating] = useState(false);
@@ -105,6 +109,10 @@ export default function ReviewGradingScreen() {
   const [activeScoreIndex, setActiveScoreIndex] = useState(0);
   const [activeFileIndex, setActiveFileIndex] = useState(0);
   const [failedImageIds, setFailedImageIds] = useState<Record<string, boolean>>({});
+  const [paperViewerState, setPaperViewerState] = useState<PaperFileViewerState>({
+    compareMode: false,
+    scrollOffsets: {},
+  });
   const detailCacheRef = useRef<Map<string, SubmissionReviewDetail>>(new Map());
   const detailRequestRef = useRef<Map<string, Promise<SubmissionReviewDetail>>>(new Map());
   const detailSequenceRef = useRef(0);
@@ -135,6 +143,13 @@ export default function ReviewGradingScreen() {
   );
   const activeTotalScore = Number(activeSub?.totalScore ?? 0);
   const activeTotalMarks = Number(activeSub?.totalMarks ?? 0);
+  const reviewedCount = useMemo(
+    () => submissions.filter(submission => String(submission.status || '').toLowerCase() === 'reviewed').length,
+    [submissions]
+  );
+  const reviewProgressPercent = submissions.length > 0
+    ? Math.round((reviewedCount / submissions.length) * 100)
+    : 0;
 
   // Voice dictation pulsing animation
   useEffect(() => {
@@ -341,7 +356,20 @@ export default function ReviewGradingScreen() {
         const list: SubmissionListItem[] = json.data || [];
         setSubmissions(list);
         if (list.length > 0) {
-          setCurrentSubIndex(0);
+          const savedIndexRaw = await AsyncStorage.getItem(`gradesense.reviewProgress.${examId}`);
+          const savedIndex = savedIndexRaw ? Number(savedIndexRaw) : Number.NaN;
+          const firstUnreviewedIndex = list.findIndex(item => String(item.status || '').toLowerCase() !== 'reviewed');
+          const validSavedIndex = Number.isInteger(savedIndex) && savedIndex >= 0 && savedIndex < list.length
+            ? savedIndex
+            : -1;
+
+          setCurrentSubIndex(
+            validSavedIndex >= 0 && String(list[validSavedIndex]?.status || '').toLowerCase() !== 'reviewed'
+              ? validSavedIndex
+              : firstUnreviewedIndex >= 0
+                ? firstUnreviewedIndex
+                : 0
+          );
         }
       } catch (err: any) {
         console.error('Failed to fetch submissions list:', err);
@@ -443,6 +471,7 @@ export default function ReviewGradingScreen() {
     if (submissions.length === 0) return;
     setActiveFileIndex(0);
     setFailedImageIds({});
+    setPaperViewerState({ compareMode: false, scrollOffsets: {} });
     fetchActiveSubmissionDetail();
   }, [fetchActiveSubmissionDetail, submissions.length]);
 
@@ -544,6 +573,10 @@ export default function ReviewGradingScreen() {
         status: 'reviewed',
       };
       setSubmissions(updatedList);
+      AsyncStorage.setItem(
+        `gradesense.reviewProgress.${examId}`,
+        JSON.stringify(currentSubIndex < submissions.length - 1 ? currentSubIndex + 1 : currentSubIndex)
+      ).catch(() => {});
       detailCacheRef.current.set(activeSub.id, {
         files,
         scores,
@@ -657,6 +690,18 @@ export default function ReviewGradingScreen() {
         </TouchableOpacity>
       </View>
 
+      <View style={styles.reviewProgressCard}>
+        <View style={styles.reviewProgressTop}>
+          <Text style={styles.reviewProgressLabel}>Review progress</Text>
+          <Text style={styles.reviewProgressValue}>
+            {reviewedCount}/{submissions.length} papers - {reviewProgressPercent}%
+          </Text>
+        </View>
+        <View style={styles.reviewProgressTrack}>
+          <View style={[styles.reviewProgressFill, { width: `${reviewProgressPercent}%` }]} />
+        </View>
+      </View>
+
       {/* Tabs */}
       <View style={styles.tabContainer}>
         <TouchableOpacity
@@ -683,19 +728,29 @@ export default function ReviewGradingScreen() {
           <Text style={styles.detailLoadingText}>Fetching student paper files...</Text>
         </View>
       ) : (
-        <View style={{ flex: 1 }}>
-          {activeTab === 'sheet' ? (
+        <View style={styles.contentPager}>
+          <View
+            style={[styles.contentPane, activeTab === 'sheet' ? styles.activeContentPane : styles.inactiveContentPane]}
+            pointerEvents={activeTab === 'sheet' ? 'auto' : 'none'}
+          >
             <View style={styles.paperFilesContainer}>
               <PaperFileViewer
                 slides={fileSlides}
                 activeIndex={activeFileIndex}
                 failedImageIds={failedImageIds}
+                viewerState={paperViewerState}
                 onSelectIndex={setActiveFileIndex}
                 onImageError={handleImageError}
                 onRetry={handleRetryPaperFiles}
+                onViewerStateChange={patch => setPaperViewerState(prev => ({ ...prev, ...patch }))}
               />
             </View>
-          ) : (
+          </View>
+
+          <View
+            style={[styles.contentPane, activeTab === 'rubric' ? styles.activeContentPane : styles.inactiveContentPane]}
+            pointerEvents={activeTab === 'rubric' ? 'auto' : 'none'}
+          >
             <RubricReviewPanel
               scores={scores}
               activeScoreIndex={activeScoreIndex}
@@ -707,20 +762,22 @@ export default function ReviewGradingScreen() {
               onImproveAI={() => setShowImproveAIModal(true)}
               isImprovingAI={isSubmittingImprovement}
             />
-          )}
 
-          {activeTab === 'rubric' && activeScore && (
-            <GradingControlPanel
-              activeScore={activeScore}
-              isSaving={isSaving}
-              isLastSubmission={currentSubIndex === submissions.length - 1}
-              density={reviewDensity}
-              onScoreChange={handleScoreChange}
-              onCommentChange={handleCommentChange}
-              onOpenDictation={startVoiceDictation}
-              onSaveAndNext={handleSaveAndNext}
-            />
-          )}
+            {activeScore && (
+              <GradingControlPanel
+                activeScore={activeScore}
+                isSaving={isSaving}
+                isLastSubmission={currentSubIndex === submissions.length - 1}
+                density={reviewDensity}
+                keyboardLift={keyboardLift}
+                bottomInset={insets.bottom}
+                onScoreChange={handleScoreChange}
+                onCommentChange={handleCommentChange}
+                onOpenDictation={startVoiceDictation}
+                onSaveAndNext={handleSaveAndNext}
+              />
+            )}
+          </View>
         </View>
       )}
 
@@ -892,6 +949,41 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     marginTop: 2,
   },
+  reviewProgressCard: {
+    backgroundColor: COLORS.surface,
+    borderBottomColor: COLORS.borderLight,
+    borderBottomWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  reviewProgressTop: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  reviewProgressLabel: {
+    color: COLORS.textLight,
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  reviewProgressValue: {
+    color: COLORS.primary,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  reviewProgressTrack: {
+    backgroundColor: COLORS.primaryXLight,
+    borderRadius: 999,
+    height: 6,
+    overflow: 'hidden',
+  },
+  reviewProgressFill: {
+    backgroundColor: COLORS.success,
+    borderRadius: 999,
+    height: '100%',
+  },
   // Tabs
   tabContainer: {
     flexDirection: 'row',
@@ -933,6 +1025,22 @@ const styles = StyleSheet.create({
     marginTop: 12,
     fontSize: 14,
     color: COLORS.textLight,
+  },
+  contentPager: {
+    flex: 1,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  contentPane: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  activeContentPane: {
+    opacity: 1,
+    zIndex: 2,
+  },
+  inactiveContentPane: {
+    opacity: 0,
+    zIndex: 1,
   },
   paperFilesContainer: {
     flex: 1,

@@ -25,6 +25,11 @@ import {
   normalizeJobProgress,
   shouldShowGradingStatus,
 } from '../../src/utils/gradingLifecycle';
+import {
+  ensureGradingNotificationReady,
+  notifyGradingCompleteOnce,
+  notifyGradingProgress,
+} from '../../src/services/gradingNotifications';
 
 // ─── Sub-components ───────────────────────────────────────────────────
 
@@ -425,6 +430,7 @@ export default function HomeScreen() {
   const [dismissedExamIds, setDismissedExamIds] = useState<string[]>([]);
   const [retryingExamIds, setRetryingExamIds] = useState<string[]>([]);
   const fadeAnim = useRef(new Animated.Value(0)).current;
+  const completedJobRefreshRef = useRef<Set<string>>(new Set());
   const sessions = useMemo(
     () => (Array.isArray(savedSessions) ? savedSessions : []),
     [savedSessions]
@@ -456,6 +462,7 @@ export default function HomeScreen() {
     Animated.timing(fadeAnim, { toValue: 1, duration: 350, useNativeDriver: true }).start();
     fetchSessions().catch(err => console.error('Initial fetch failed:', err));
     fetchExams().catch(err => console.error('Failed to load exams:', err));
+    ensureGradingNotificationReady().catch(() => {});
     AsyncStorage.getItem('gradesense.dismissedReviewExamIds')
       .then(value => {
         if (value) setDismissedExamIds(JSON.parse(value));
@@ -516,10 +523,39 @@ export default function HomeScreen() {
         });
         return next;
       });
+
+      validUpdates.forEach(update => {
+        const session = pollingSessions.find(item => item.session_id === update.sessionId);
+        if (!session?.exam_id) return;
+
+        const examId = String(session.exam_id);
+        if (
+          isActualGradingJob(update.progress)
+          && !isCompletedGradingJob(update.progress)
+          && !isFailedGradingJob(update.progress)
+        ) {
+          notifyGradingProgress(
+            examId,
+            session.session_name,
+            update.progress.processed,
+            update.progress.total,
+            update.progress.progress,
+          ).catch(() => {});
+          return;
+        }
+
+        if (!isCompletedGradingJob(update.progress)) return;
+        if (completedJobRefreshRef.current.has(examId)) return;
+        completedJobRefreshRef.current.add(examId);
+
+        notifyGradingCompleteOnce(examId, session.session_name).catch(() => {});
+        fetchExams().catch(() => {});
+        fetchSessions().catch(() => {});
+      });
     };
 
     pollJobs();
-    const interval = setInterval(pollJobs, 5000);
+    const interval = setInterval(pollJobs, 2000);
     return () => { active = false; clearInterval(interval); };
   }, [pollingSessions]);
 

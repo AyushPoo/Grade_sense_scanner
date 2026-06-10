@@ -2,14 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
 from typing import Any, Callable, Optional
 
 
 class GoogleInviteAuthError(RuntimeError):
-    def __init__(self, status_code: int, detail: str):
+    def __init__(self, status_code: int, detail: str, code: str | None = None):
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -18,6 +20,18 @@ class GoogleProfile:
     name: str
     picture_url: str = ""
     subject: str = ""
+
+
+@dataclass(frozen=True)
+class AccessRequest:
+    email: str
+    name: str = ""
+    picture_url: str = ""
+    subject: str = ""
+    source: str = "mobile"
+    app_version: str = ""
+    build_version: str = ""
+    device_info: dict[str, Any] | None = None
 
 
 def normalize_email(email: str) -> str:
@@ -116,6 +130,7 @@ async def resolve_or_claim_teacher_invite(
             raise GoogleInviteAuthError(
                 403,
                 "This email has not been invited to GradeSense. Ask your administrator to invite this exact Google email.",
+                code="INVITE_REQUIRED",
             )
 
         invite = dict(invite)
@@ -192,3 +207,101 @@ async def accept_pending_teacher_invite(conn: Any, email: str, user_id: str, now
         user_id,
         now,
     )
+
+
+async def upsert_access_request(
+    conn: Any,
+    access_request: AccessRequest,
+    *,
+    id_factory: Callable[[], str],
+    now_factory: Callable[[], str] = utc_now_text,
+) -> dict[str, Any]:
+    """Record interest from an uninvited Google user without creating an account."""
+    email = normalize_email(access_request.email)
+    if not email:
+        raise GoogleInviteAuthError(401, "Google token missing email")
+
+    now = now_factory()
+    subject = (access_request.subject or "").strip()
+    device_info_json = json.dumps(access_request.device_info or {}, separators=(",", ":"))
+
+    async with conn.transaction():
+        existing = await conn.fetchrow(
+            """
+            SELECT id, email, attempt_count
+            FROM access_requests
+            WHERE lower(email) = $1
+               OR (NULLIF($2, '') IS NOT NULL AND google_subject = $2)
+            ORDER BY created_at ASC
+            FOR UPDATE
+            LIMIT 1
+            """,
+            email,
+            subject,
+        )
+
+        if existing:
+            row = dict(existing)
+            await conn.execute(
+                """
+                UPDATE access_requests
+                SET email = $2,
+                    name = COALESCE(NULLIF($3, ''), name),
+                    google_subject = COALESCE(NULLIF($4, ''), google_subject),
+                    picture_url = COALESCE(NULLIF($5, ''), picture_url),
+                    source = COALESCE(NULLIF($6, ''), source),
+                    app_version = COALESCE(NULLIF($7, ''), app_version),
+                    build_version = COALESCE(NULLIF($8, ''), build_version),
+                    device_info_json = $9,
+                    attempt_count = attempt_count + 1,
+                    last_attempted_at = $10,
+                    updated_at = $10
+                WHERE id = $1
+                """,
+                row["id"],
+                email,
+                (access_request.name or "").strip(),
+                subject,
+                (access_request.picture_url or "").strip(),
+                (access_request.source or "mobile").strip(),
+                (access_request.app_version or "").strip(),
+                (access_request.build_version or "").strip(),
+                device_info_json,
+                now,
+            )
+            return {
+                "id": row["id"],
+                "email": email,
+                "created": False,
+                "attempt_count": int(row.get("attempt_count") or 0) + 1,
+            }
+
+        request_id = id_factory()
+        await conn.execute(
+            """
+            INSERT INTO access_requests (
+                id, email, name, google_subject, picture_url, source,
+                app_version, build_version, device_info_json, status,
+                attempt_count, last_attempted_at, created_at, updated_at
+            )
+            VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), $6,
+                    NULLIF($7, ''), NULLIF($8, ''), $9, 'new',
+                    1, $10, $10, $10)
+            """,
+            request_id,
+            email,
+            (access_request.name or "").strip(),
+            subject,
+            (access_request.picture_url or "").strip(),
+            (access_request.source or "mobile").strip(),
+            (access_request.app_version or "").strip(),
+            (access_request.build_version or "").strip(),
+            device_info_json,
+            now,
+        )
+        return {
+            "id": request_id,
+            "email": email,
+            "created": True,
+            "attempt_count": 1,
+        }

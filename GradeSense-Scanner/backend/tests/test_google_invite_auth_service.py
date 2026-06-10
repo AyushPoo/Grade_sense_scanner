@@ -1,9 +1,11 @@
 import unittest
 
 from google_invite_auth_service import (
+    AccessRequest,
     GoogleInviteAuthError,
     GoogleProfile,
     resolve_or_claim_teacher_invite,
+    upsert_access_request,
 )
 
 
@@ -101,6 +103,7 @@ class GoogleInviteAuthServiceTest(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(ctx.exception.status_code, 403)
+        self.assertEqual(ctx.exception.code, "INVITE_REQUIRED")
         self.assertIn("not been invited", ctx.exception.detail)
         self.assertFalse(any("INSERT INTO users" in query for _, query, _ in conn.executed))
 
@@ -125,6 +128,51 @@ class GoogleInviteAuthServiceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(ctx.exception.status_code, 403)
         self.assertEqual(ctx.exception.detail, "Account is not active")
+
+    async def test_access_request_is_created_for_new_uninvited_google_user(self):
+        conn = FakeConn([None])
+
+        stored = await upsert_access_request(
+            conn,
+            AccessRequest(
+                email="Interested@Example.com",
+                name="Interested Teacher",
+                picture_url="https://img.test/i.png",
+                subject="google-subject-1",
+                source="mobile",
+                app_version="1.0.0",
+                build_version="8",
+                device_info={"platform": "android"},
+            ),
+            id_factory=lambda: "arq_newrequest123",
+            now_factory=lambda: "2026-06-07T12:00:00+00:00",
+        )
+
+        self.assertEqual(stored["id"], "arq_newrequest123")
+        self.assertEqual(stored["email"], "interested@example.com")
+        self.assertTrue(stored["created"])
+        self.assertTrue(any("INSERT INTO access_requests" in query for _, query, _ in conn.executed))
+
+    async def test_access_request_is_deduplicated_by_email_or_google_subject(self):
+        conn = FakeConn([
+            {
+                "id": "arq_existing123",
+                "email": "interested@example.com",
+                "attempt_count": 2,
+            }
+        ])
+
+        stored = await upsert_access_request(
+            conn,
+            AccessRequest(email="Interested@Example.com", subject="google-subject-1"),
+            id_factory=lambda: "arq_unused",
+            now_factory=lambda: "2026-06-07T12:00:00+00:00",
+        )
+
+        self.assertEqual(stored["id"], "arq_existing123")
+        self.assertFalse(stored["created"])
+        self.assertEqual(stored["attempt_count"], 3)
+        self.assertTrue(any("UPDATE access_requests" in query for _, query, _ in conn.executed))
 
 
 if __name__ == "__main__":

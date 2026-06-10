@@ -63,7 +63,7 @@ export function shouldShowGradingStatus(session: MaybeSession, job: MaybeJob | n
     return true;
   }
   if (isCompletedGradingJob(job)) {
-    return false;
+    return true;
   }
   return ACTIVE_SESSION_STATUSES.has(session.status || '') || (isActualGradingJob(job) && job?.status !== 'completed');
 }
