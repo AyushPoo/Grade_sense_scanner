@@ -9,6 +9,7 @@ import {
   TextInput,
   Dimensions,
   Alert,
+  BackHandler,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -369,6 +370,15 @@ export default function ReviewScreen() {
   const [isApplyingGlobalFilter, setIsApplyingGlobalFilter] = useState(false);
   const [cropTarget, setCropTarget] = useState<{ student: ScannedStudent, page: ScannedPage, pageIndex: number } | null>(null);
   const [isProcessingCrop, setIsProcessingCrop] = useState(false);
+
+  React.useEffect(() => {
+    if (!cropTarget) return;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      setCropTarget(null);
+      return true;
+    });
+    return () => subscription.remove();
+  }, [cropTarget]);
 
   const [expandedStudents, setExpandedStudents] = useState<Set<number>>(() => {
     // Auto-expand students/sections that have quality issues

@@ -27,6 +27,7 @@ import {
   fetchManagedExams,
   fetchManagePerformance,
   publishManagedExam,
+  updateManagedBatch,
   updateBatchStudent,
 } from '../../src/api/manage';
 import { AnalyticsPerformancePanel } from '../../src/components/manage/AnalyticsPerformancePanel';
@@ -204,6 +205,9 @@ export default function ManageScreen() {
   // Modals
   const [showAddBatchModal, setShowAddBatchModal] = useState(false);
   const [newBatchName, setNewBatchName] = useState('');
+  const [editingBatch, setEditingBatch] = useState<Batch | null>(null);
+  const [editBatchName, setEditBatchName] = useState('');
+  const [isSavingBatch, setIsSavingBatch] = useState(false);
   
   const [showAddStudentModal, setShowAddStudentModal] = useState(false);
   const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
@@ -550,6 +554,39 @@ export default function ManageScreen() {
     }
   };
 
+  const openEditBatch = (batch: Batch) => {
+    setEditingBatch(batch);
+    setEditBatchName(batch.name);
+  };
+
+  const handleUpdateBatch = async () => {
+    if (!token || !editingBatch) return;
+    const cleanName = editBatchName.trim();
+    if (!cleanName) {
+      Alert.alert('Name required', 'Enter a class name before saving.');
+      return;
+    }
+
+    setIsSavingBatch(true);
+    try {
+      const updated = await updateManagedBatch({
+        backendUrl: getBackendUrl(),
+        token,
+        batchId: editingBatch.batch_id,
+      }, { name: cleanName });
+      setBatches(prev => prev.map(batch => (
+        batch.batch_id === updated.batch_id ? { ...batch, ...updated } : batch
+      )));
+      setEditingBatch(null);
+      setEditBatchName('');
+      await fetchBatches();
+    } catch (err: any) {
+      Alert.alert('Batch not saved', err.message || 'Could not update this batch.');
+    } finally {
+      setIsSavingBatch(false);
+    }
+  };
+
   const handleDeleteBatch = async (batchId: string, name: string) => {
     Alert.alert(
       'Delete Class Batch?',
@@ -720,9 +757,7 @@ export default function ManageScreen() {
     } else {
       setSelectedBatchId(batchId);
       setExpandedBatchId(batchId);
-      if (!studentsByBatch[batchId]) {
-        fetchStudents(batchId);
-      }
+      fetchStudents(batchId);
     }
   };
 
@@ -979,6 +1014,12 @@ export default function ManageScreen() {
                         </View>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                           <TouchableOpacity
+                            onPress={() => openEditBatch(batch)}
+                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          >
+                            <Ionicons name="create-outline" size={18} color={COLORS.primary} />
+                          </TouchableOpacity>
+                          <TouchableOpacity
                             onPress={() => handleArchiveBatch(batch.batch_id, batch.name)}
                             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                           >
@@ -1232,6 +1273,47 @@ export default function ManageScreen() {
               </TouchableOpacity>
               <TouchableOpacity style={[modalStyles.btn, modalStyles.saveBtn]} onPress={handleAddBatch}>
                 <Text style={modalStyles.saveText}>Create</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Edit Batch Modal */}
+      <Modal visible={Boolean(editingBatch)} transparent animationType="slide" onRequestClose={() => setEditingBatch(null)}>
+        <View style={modalStyles.backdrop}>
+          <View style={modalStyles.sheet}>
+            <View style={modalStyles.handle} />
+            <Text style={modalStyles.sheetTitle}>Edit Class Batch</Text>
+            <Text style={modalStyles.sheetSub}>Update the class name. Changes sync with the webapp.</Text>
+            <TextInput
+              style={modalStyles.input}
+              value={editBatchName}
+              onChangeText={setEditBatchName}
+              placeholder="Class name"
+              placeholderTextColor={COLORS.textMuted}
+              autoFocus
+              returnKeyType="done"
+              onSubmitEditing={handleUpdateBatch}
+            />
+            <View style={modalStyles.buttons}>
+              <TouchableOpacity
+                style={[modalStyles.btn, modalStyles.cancelBtn]}
+                onPress={() => setEditingBatch(null)}
+                disabled={isSavingBatch}
+              >
+                <Text style={modalStyles.cancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[modalStyles.btn, modalStyles.saveBtn, isSavingBatch && { opacity: 0.7 }]}
+                onPress={handleUpdateBatch}
+                disabled={isSavingBatch}
+              >
+                {isSavingBatch ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={modalStyles.saveText}>Save</Text>
+                )}
               </TouchableOpacity>
             </View>
           </View>

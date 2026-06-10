@@ -38,7 +38,7 @@ export default function SessionSetupScreen() {
   );
   const [selectedBatch, setSelectedBatch] = useState<Batch | null>(null);
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
-  const [totalMarks, setTotalMarks] = useState('100');
+  const [totalMarks, setTotalMarks] = useState('');
   const [examDate, setExamDate] = useState(new Date().toISOString().split('T')[0]);
   const [isStartingSession, setIsStartingSession] = useState(false);
   const isStartingSessionRef = useRef(false);
@@ -88,7 +88,7 @@ export default function SessionSetupScreen() {
           setSelectedSubject({ id: existing.subject_id, name: 'Loaded Subject' });
         }
         
-        setTotalMarks(existing.total_marks?.toString() || '100');
+        setTotalMarks(existing.total_marks?.toString() || '');
         setExamDate(existing.exam_date || new Date().toISOString().split('T')[0]);
         setSettings({
           ...existing.settings,

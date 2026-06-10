@@ -1290,6 +1290,99 @@ async def delete_batch(batch_id: str, authorization: Optional[str] = Header(None
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@api_router.patch("/batches/{batch_id}")
+async def update_batch(batch_id: str, data: dict, authorization: Optional[str] = Header(None)):
+    """Update batch settings from mobile and keep the webapp/local cache in sync."""
+    user = await get_current_user(authorization)
+    clean_name = (data.get("name") or "").strip() if isinstance(data.get("name"), str) else None
+    if not clean_name:
+        raise HTTPException(status_code=400, detail="Batch name is required")
+
+    now = utc_now_text()
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if webapp_db_url:
+        conn = None
+        try:
+            conn = await asyncpg.connect(webapp_db_url)
+            row = await conn.fetchrow(
+                '''
+                UPDATE batches
+                SET name = $3, updated_at = $4
+                WHERE id = $1 AND teacher_id = $2
+                RETURNING id, name, status
+                ''',
+                batch_id,
+                user.user_id,
+                clean_name,
+                now,
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="Batch not found")
+
+            batch = {
+                "batch_id": row["id"],
+                "id": row["id"],
+                "name": row["name"],
+                "status": row["status"] or "active",
+                "org_id": user.org_id,
+                "user_id": user.user_id,
+            }
+            await db.batches.update_one(
+                {"batch_id": batch_id},
+                {"$set": batch},
+                upsert=True,
+            )
+            return {"success": True, "batch": batch}
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error updating batch in Neon: {e}")
+            raise HTTPException(status_code=500, detail="Failed to update batch")
+        finally:
+            if conn:
+                await conn.close()
+
+    webapp_url = os.environ.get("WEBAPP_URL")
+    token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
+    if webapp_url:
+        try:
+            async with httpx.AsyncClient() as client_http:
+                response = await client_http.patch(
+                    f"{webapp_url.rstrip('/')}/api/v1/batches/{batch_id}",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"name": clean_name},
+                    timeout=15.0,
+                )
+                if response.status_code in [200, 204]:
+                    payload = response.json() if response.content else {}
+                    raw_batch = payload.get("data") or payload.get("batch") or payload or {}
+                    batch = {
+                        "batch_id": raw_batch.get("id") or raw_batch.get("batch_id") or batch_id,
+                        "id": raw_batch.get("id") or raw_batch.get("batch_id") or batch_id,
+                        "name": raw_batch.get("name") or clean_name,
+                        "status": raw_batch.get("status") or "active",
+                        "org_id": user.org_id,
+                        "user_id": user.user_id,
+                    }
+                    await db.batches.update_one({"batch_id": batch_id}, {"$set": batch}, upsert=True)
+                    return {"success": True, "batch": batch}
+                raise HTTPException(status_code=response.status_code, detail=response.text)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    await db.batches.update_one(
+        {"batch_id": batch_id},
+        {"$set": {"name": clean_name, "updated_at": now}},
+        upsert=False,
+    )
+    batch = await db.batches.find_one({"batch_id": batch_id}, {"_id": 0})
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    return {"success": True, "batch": batch}
+
+
 @api_router.post("/batches/{batch_id}/archive")
 async def archive_batch(batch_id: str, authorization: Optional[str] = Header(None)):
     """Archive a webapp batch while preserving its historical exam/student records."""
@@ -1540,14 +1633,24 @@ async def get_batch_students(batch_id: str, authorization: Optional[str] = Heade
             )
             if response.status_code == 200:
                 res_data = response.json()
-                webapp_students = res_data.get("data", [])
+                raw_data = res_data.get("data", [])
+                if isinstance(raw_data, dict):
+                    webapp_students = raw_data.get("students") or raw_data.get("rows") or raw_data.get("items") or []
+                else:
+                    webapp_students = raw_data
                 
                 mapped_students = []
                 for s in webapp_students:
+                    if not isinstance(s, dict):
+                        continue
                     mapped_students.append({
-                        "student_id": s.get("id"),
+                        "student_id": s.get("id") or s.get("student_id") or s.get("studentId"),
                         "roll_number": s.get("rollNumber") or "",
+                        "rollNumber": s.get("rollNumber") or "",
                         "name": s.get("name") or "Unnamed Student",
+                        "email": s.get("email") or "",
+                        "mobile_number": s.get("mobileNumber") or s.get("mobile_number") or "",
+                        "mobileNumber": s.get("mobileNumber") or s.get("mobile_number") or "",
                         "batch_id": batch_id
                     })
                     

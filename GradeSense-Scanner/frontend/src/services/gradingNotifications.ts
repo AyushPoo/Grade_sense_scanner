@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
-import { AppState, Platform } from 'react-native';
+import { Platform } from 'react-native';
 
 const NOTIFIED_KEY = 'gradesense.notifiedCompletedExamIds';
 const ACTIVE_PROGRESS_KEY = 'gradesense.activeGradingProgressNotifications';
@@ -142,11 +142,6 @@ export async function notifyGradingProgress(
   const normalizedExamId = String(examId);
   const progress = normalizeProgress(processed, total, percent);
   if (progress.total > 0 && progress.processed >= progress.total) {
-    await clearGradingProgressNotification(normalizedExamId);
-    return;
-  }
-
-  if (AppState.currentState === 'active') {
     await clearGradingProgressNotification(normalizedExamId);
     return;
   }

@@ -28,6 +28,7 @@ export function useInsightsData({ token }: UseInsightsDataParams) {
   const hasUsableDataRef = useRef(false);
   const lastGoodOverviewRef = useRef<TeacherInsightsOverview | null>(null);
   const lastGoodPerformanceRef = useRef<ManagePerformance | null>(null);
+  const refreshInFlightRef = useRef(false);
 
   const backendUrl = useMemo(() => getBackendUrl(), []);
 
@@ -108,6 +109,8 @@ export function useInsightsData({ token }: UseInsightsDataParams) {
   }, [backendUrl, token]);
 
   const refresh = useCallback(async (silent = false) => {
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
     if (!silent && !hasUsableDataRef.current) {
       setIsLoading(true);
     }
@@ -115,6 +118,7 @@ export function useInsightsData({ token }: UseInsightsDataParams) {
     try {
       await Promise.all([loadOverview(), loadPerformance(), loadBrainRules()]);
     } finally {
+      refreshInFlightRef.current = false;
       setIsLoading(false);
       setIsRefreshing(false);
     }

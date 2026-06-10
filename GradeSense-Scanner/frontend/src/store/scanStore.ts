@@ -1380,6 +1380,10 @@ export const useScanStore = create<ScanState>()(
           currentSession: updatedSession,
           savedSessions: newSavedSessions,
         });
+
+        get().syncCurrentMetadata('student', studentIndex).catch(err =>
+          console.error("[Persistence] Failed to sync student rename:", err)
+        );
       },
 
       // ── Delete a single page (for review screen "remove" action) ─────────────
@@ -1420,6 +1424,16 @@ export const useScanStore = create<ScanState>()(
           currentSession: updatedSession,
           savedSessions: newSavedSessions,
         });
+
+        if (phase === 'question_paper' || phase === 'model_answer') {
+          get().syncCurrentMetadata(phase).catch(err =>
+            console.error("[Persistence] Failed to sync page delete:", err)
+          );
+        } else if (phase === 'students') {
+          get().syncCurrentMetadata('student', studentIndex).catch(err =>
+            console.error("[Persistence] Failed to sync student page delete:", err)
+          );
+        }
       },
 
       updatePagePathAndFilter: (pageId, phase, studentIndex, newFilePath, filterMode) => {
@@ -1461,6 +1475,16 @@ export const useScanStore = create<ScanState>()(
           currentSession: updatedSession,
           savedSessions: newSavedSessions,
         });
+
+        if (phase === 'question_paper' || phase === 'model_answer') {
+          get().syncCurrentMetadata(phase).catch(err =>
+            console.error("[Persistence] Failed to sync page filter update:", err)
+          );
+        } else {
+          get().syncCurrentMetadata('student', studentIndex ?? get().currentStudentIndex).catch(err =>
+            console.error("[Persistence] Failed to sync student page filter update:", err)
+          );
+        }
       },
 
       rotatePage: (pageId, phase, studentIndex, newFilePath, newOriginalFilePath) => {
@@ -1506,6 +1530,16 @@ export const useScanStore = create<ScanState>()(
           currentSession: updatedSession,
           savedSessions: newSavedSessions,
         });
+
+        if (phase === 'question_paper' || phase === 'model_answer') {
+          get().syncCurrentMetadata(phase).catch(err =>
+            console.error("[Persistence] Failed to sync page rotation:", err)
+          );
+        } else {
+          get().syncCurrentMetadata('student', studentIndex ?? get().currentStudentIndex).catch(err =>
+            console.error("[Persistence] Failed to sync student page rotation:", err)
+          );
+        }
       },
     }),
     {

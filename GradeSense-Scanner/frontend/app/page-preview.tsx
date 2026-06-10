@@ -8,6 +8,7 @@ import {
   FlatList,
   Alert,
   ActivityIndicator,
+  BackHandler,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -16,13 +17,103 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { COLORS } from '../src/config';
 import { useScanStore } from '../src/store/scanStore';
 import { ScannedPage, ScanPhase } from '../src/types';
-import { applyFilter, FilterMode } from '../src/utils/cvProcessor';
+import { applyFilter, FilterMode, Quadrilateral } from '../src/utils/cvProcessor';
 import { File, Paths } from 'expo-file-system';
-import { ZoomModal } from '../src/components/ZoomModal';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { isPdfScannedPage } from '../src/utils/scannedPageAssets';
+import { CropOverlay } from '../src/components/CropOverlay';
+import { normalizeCapturedDocument } from '../src/utils/documentNormalizer';
+import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+
+function InlineZoomableImage({
+  uri,
+  onLoadStart,
+  onLoadEnd,
+}: {
+  uri: string;
+  onLoadStart?: () => void;
+  onLoadEnd?: () => void;
+}) {
+  const scale = useSharedValue(1);
+  const savedScale = useSharedValue(1);
+  const translateX = useSharedValue(0);
+  const translateY = useSharedValue(0);
+  const savedTranslateX = useSharedValue(0);
+  const savedTranslateY = useSharedValue(0);
+
+  const reset = () => {
+    scale.value = withTiming(1);
+    savedScale.value = 1;
+    translateX.value = withTiming(0);
+    translateY.value = withTiming(0);
+    savedTranslateX.value = 0;
+    savedTranslateY.value = 0;
+  };
+
+  const pinchGesture = Gesture.Pinch()
+    .onUpdate(event => {
+      scale.value = Math.max(1, Math.min(savedScale.value * event.scale, 5));
+    })
+    .onEnd(() => {
+      savedScale.value = scale.value;
+    });
+
+  const panGesture = Gesture.Pan()
+    .onUpdate(event => {
+      if (scale.value > 1) {
+        translateX.value = savedTranslateX.value + event.translationX;
+        translateY.value = savedTranslateY.value + event.translationY;
+      }
+    })
+    .onEnd(() => {
+      savedTranslateX.value = translateX.value;
+      savedTranslateY.value = translateY.value;
+    });
+
+  const doubleTapGesture = Gesture.Tap()
+    .numberOfTaps(2)
+    .onStart(() => {
+      if (scale.value > 1.1) {
+        reset();
+      } else {
+        scale.value = withTiming(2.4);
+        savedScale.value = 2.4;
+      }
+    });
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: translateX.value },
+      { translateY: translateY.value },
+      { scale: scale.value },
+    ],
+  }));
+
+  return (
+    <GestureHandlerRootView style={styles.imageTouchArea}>
+      <GestureDetector gesture={Gesture.Race(doubleTapGesture, Gesture.Simultaneous(pinchGesture, panGesture))}>
+        <Animated.View style={[styles.zoomableLayer, animatedStyle]}>
+          <Image
+            source={{ uri }}
+            style={styles.image}
+            contentFit="contain"
+            cachePolicy="none"
+            transition={150}
+            onLoadStart={onLoadStart}
+            onLoadEnd={onLoadEnd}
+          />
+        </Animated.View>
+      </GestureDetector>
+    </GestureHandlerRootView>
+  );
+}
 
 export default function PagePreviewScreen() {
   const router = useRouter();
@@ -37,8 +128,8 @@ export default function PagePreviewScreen() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isApplyingFilter, setIsApplyingFilter] = useState(false);
   const [isRotating, setIsRotating] = useState(false);
-  const [zoomModalVisible, setZoomModalVisible] = useState(false);
-  const [zoomImageUri, setZoomImageUri] = useState('');
+  const [cropTarget, setCropTarget] = useState<ScannedPage | null>(null);
+  const [isProcessingCrop, setIsProcessingCrop] = useState(false);
 
   const FILTERS: { id: FilterMode; label: string; icon: string }[] = [
     { id: 'original',           label: 'Original',    icon: 'image-outline' },
@@ -66,6 +157,15 @@ export default function PagePreviewScreen() {
   };
 
   const pages = getPages();
+
+  useEffect(() => {
+    if (!cropTarget) return;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      setCropTarget(null);
+      return true;
+    });
+    return () => subscription.remove();
+  }, [cropTarget]);
   
   // Find initial page index
   useEffect(() => {
@@ -252,7 +352,7 @@ export default function PagePreviewScreen() {
           const oldOrigFile = new File(currentPage.original_file_path);
           if (oldOrigFile.exists) oldOrigFile.delete();
         }
-      } catch (_) {
+      } catch {
         // ignore deletion errors
       }
 
@@ -261,6 +361,124 @@ export default function PagePreviewScreen() {
       Alert.alert('Error', 'Failed to rotate image.');
     } finally {
       setIsRotating(false);
+    }
+  };
+
+  const replaceCurrentPage = (updatedPage: ScannedPage) => {
+    const targetSessionId = currentSession?.session_id;
+    const phaseToUse = (phase || currentPhase) as ScanPhase;
+    const studentIdx = studentIndex ? parseInt(studentIndex) : currentStudentIndex;
+
+    useScanStore.setState(state => {
+      const updateSession = (session: typeof state.currentSession) => {
+        if (!session || session.session_id !== targetSessionId) return session;
+        if (phaseToUse === 'question_paper') {
+          const pages = [...session.question_paper.pages];
+          const idx = pages.findIndex(page => page.id === updatedPage.id);
+          if (idx < 0) return session;
+          pages[idx] = updatedPage;
+          return { ...session, question_paper: { ...session.question_paper, pages } };
+        }
+        if (phaseToUse === 'model_answer') {
+          const pages = [...session.model_answer.pages];
+          const idx = pages.findIndex(page => page.id === updatedPage.id);
+          if (idx < 0) return session;
+          pages[idx] = updatedPage;
+          return { ...session, model_answer: { ...session.model_answer, pages } };
+        }
+        const students = [...session.students];
+        const student = students[studentIdx];
+        if (!student) return session;
+        const pages = [...student.pages];
+        const idx = pages.findIndex(page => page.id === updatedPage.id);
+        if (idx < 0) return session;
+        pages[idx] = updatedPage;
+        students[studentIdx] = { ...student, pages };
+        return { ...session, students };
+      };
+
+      const savedSessions = state.savedSessions.map(session => updateSession(session) || session);
+      return {
+        savedSessions,
+        currentSession: updateSession(state.currentSession),
+      };
+    });
+
+    if (phaseToUse === 'question_paper' || phaseToUse === 'model_answer') {
+      useScanStore.getState().syncCurrentMetadata(phaseToUse).catch(err =>
+        console.error('[PagePreviewCrop] Failed to sync cropped page:', err)
+      );
+    } else {
+      useScanStore.getState().syncCurrentMetadata('student', studentIdx).catch(err =>
+        console.error('[PagePreviewCrop] Failed to sync cropped student page:', err)
+      );
+    }
+  };
+
+  const handleCrop = () => {
+    const currentPage = getPages()[currentIndex];
+    if (!currentPage || isPdfScannedPage(currentPage) || isApplyingFilter || isRotating) return;
+    setCropTarget(currentPage);
+  };
+
+  const handleCropComplete = async (quad: Quadrilateral) => {
+    if (!cropTarget) return;
+    setIsProcessingCrop(true);
+    try {
+      const rawUri = cropTarget.raw_file_path || cropTarget.original_file_path || cropTarget.file_path;
+      const baked = await ImageManipulator.manipulateAsync(
+        rawUri,
+        [{ rotate: 0 }],
+        { compress: 1, format: ImageManipulator.SaveFormat.JPEG }
+      );
+
+      const norm = await normalizeCapturedDocument(
+        baked.uri,
+        quad,
+        { width: baked.width, height: baked.height },
+        { isManualCrop: true }
+      );
+      try { new File(baked.uri).delete(); } catch {}
+
+      const origFilename = `orig_${Date.now()}.jpg`;
+      const destOrig = new File(Paths.document, origFilename);
+      new File(norm.uri).copy(destOrig);
+
+      let origVerified = false;
+      for (let i = 0; i < 10; i++) {
+        if (destOrig.exists) { origVerified = true; break; }
+        await new Promise(r => setTimeout(r, 50));
+      }
+      if (!origVerified) throw new Error('Failed to save cropped original');
+
+      const filterToApply = cropTarget.filter_mode || 'grayscale';
+      const filteredUri = await applyFilter(destOrig.uri, filterToApply);
+      const finalFilename = `scanned_crop_${Date.now()}.jpg`;
+      const dest = new File(Paths.document, finalFilename);
+      new File(filteredUri).copy(dest);
+
+      let verified = false;
+      for (let i = 0; i < 10; i++) {
+        if (dest.exists) { verified = true; break; }
+        await new Promise(r => setTimeout(r, 50));
+      }
+      if (!verified) throw new Error('Failed to save cropped image');
+
+      replaceCurrentPage({
+        ...cropTarget,
+        file_path: dest.uri,
+        original_file_path: destOrig.uri,
+        crop_quad: quad,
+        crop_applied: true,
+        crop_confidence: undefined,
+        filter_mode: filterToApply,
+      });
+      setCropTarget(null);
+    } catch (e) {
+      console.warn('[PagePreviewCrop]', e);
+      Alert.alert('Error', 'Failed to process crop.');
+    } finally {
+      setIsProcessingCrop(false);
     }
   };
 
@@ -283,20 +501,9 @@ export default function PagePreviewScreen() {
             <Text style={styles.pdfPreviewBody}>PDF document selected for this paper.</Text>
           </View>
         ) : item.file_path ? (
-        <TouchableOpacity
-          activeOpacity={0.9}
-          onPress={() => {
-            setZoomImageUri(item.file_path);
-            setZoomModalVisible(true);
-          }}
-          style={styles.imageTouchArea}
-        >
-          <Image
-            source={{ uri: item.file_path }}
-            style={styles.image}
-            contentFit="contain"
-            cachePolicy="none"
-            transition={150}
+        <View style={styles.imageTouchArea}>
+          <InlineZoomableImage
+            uri={item.file_path}
             onLoadStart={() => {
               // TASK 2C: Bind loading to specific page ID
               setLoadingPages(prev => new Set(prev).add(item.id));
@@ -314,7 +521,7 @@ export default function PagePreviewScreen() {
               <ActivityIndicator size="large" color={COLORS.primary} />
             </View>
           )}
-        </TouchableOpacity>
+        </View>
         ) : (
         <View style={styles.noImage}>
           <Ionicons name="image-outline" size={64} color={COLORS.textMuted} />
@@ -471,6 +678,15 @@ export default function PagePreviewScreen() {
           </TouchableOpacity>
 
           <TouchableOpacity
+            style={styles.actionButton}
+            onPress={handleCrop}
+            disabled={currentPageIsPdf || isApplyingFilter || isRotating}
+          >
+            <Ionicons name="crop-outline" size={20} color={COLORS.text} />
+            <Text style={styles.actionText}>Crop</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
             style={[styles.actionButton, styles.deleteButton]}
             onPress={handleDelete}
             disabled={isApplyingFilter || isRotating}
@@ -481,17 +697,33 @@ export default function PagePreviewScreen() {
         </View>
       </View>
 
-      <ZoomModal
-        visible={zoomModalVisible}
-        imageUri={zoomImageUri}
-        onClose={() => setZoomModalVisible(false)}
-      />
+      {cropTarget && (
+        <View style={StyleSheet.absoluteFill}>
+          <CropOverlay
+            imageUri={cropTarget.raw_file_path || cropTarget.original_file_path || cropTarget.file_path}
+            initialQuad={cropTarget.crop_quad}
+            onCancel={() => setCropTarget(null)}
+            onCropComplete={handleCropComplete}
+          />
+          {isProcessingCrop && (
+            <View style={styles.loadingOverlay}>
+              <ActivityIndicator size="large" color={COLORS.primary} />
+            </View>
+          )}
+        </View>
+      )}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   imageTouchArea: {
+    width: SCREEN_WIDTH,
+    height: SCREEN_HEIGHT * 0.6,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  zoomableLayer: {
     width: SCREEN_WIDTH,
     height: SCREEN_HEIGHT * 0.6,
     justifyContent: 'center',
@@ -655,15 +887,16 @@ const styles = StyleSheet.create({
   },
   actions: {
     flexDirection: 'row',
-    gap: 12,
+    gap: 8,
   },
   actionButton: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 14,
+    gap: 5,
+    paddingVertical: 13,
+    paddingHorizontal: 4,
     backgroundColor: COLORS.backgroundDark,
     borderRadius: 12,
   },
@@ -671,7 +904,7 @@ const styles = StyleSheet.create({
     backgroundColor: `${COLORS.error}15`,
   },
   actionText: {
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: '600',
     color: COLORS.text,
   },

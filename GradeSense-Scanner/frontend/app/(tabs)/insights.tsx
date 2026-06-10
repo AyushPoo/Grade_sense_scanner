@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   RefreshControl,
@@ -45,6 +45,7 @@ function MetricCard({
 
 export default function InsightsScreen() {
   const token = useAuthStore(state => state.sessionToken);
+  const loadedTokenRef = useRef<string | null>(null);
   const [activeTab, setActiveTab] = useState<InsightsTab>('performance');
   const [brainDraft, setBrainDraft] = useState('');
   const {
@@ -60,8 +61,10 @@ export default function InsightsScreen() {
   } = useInsightsData({ token });
 
   useEffect(() => {
+    if (loadedTokenRef.current === token) return;
+    loadedTokenRef.current = token || null;
     refresh();
-  }, [refresh]);
+  }, [refresh, token]);
 
   const handleSaveBrainRule = async () => {
     const saved = await saveBrainRule(brainDraft);

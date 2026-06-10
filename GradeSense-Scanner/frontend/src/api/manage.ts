@@ -29,6 +29,10 @@ interface BatchStudentsApiOptions extends ManageApiOptions {
   batchId: string;
 }
 
+interface BatchApiOptions extends ManageApiOptions {
+  batchId: string;
+}
+
 export interface UpdateManagedExamInput {
   name?: string;
   examDate?: string | null;
@@ -41,6 +45,10 @@ export interface UpdateBatchStudentInput {
   rollNumber?: string;
   email?: string;
   mobileNumber?: string;
+}
+
+export interface UpdateManagedBatchInput {
+  name?: string;
 }
 
 function authHeaders(token: string) {
@@ -82,6 +90,26 @@ export async function fetchManagedBatches({ backendUrl, token, timeoutMs = 8000 
   }, timeoutMs);
 
   return parseJsonResponse(res, normalizeManagedBatches);
+}
+
+export async function updateManagedBatch(
+  { backendUrl, token, batchId }: BatchApiOptions,
+  input: UpdateManagedBatchInput
+): Promise<ManagedBatch> {
+  const res = await fetchWithTimeout(`${backendUrl}/api/batches/${batchId}`, {
+    method: 'PATCH',
+    headers: {
+      ...authHeaders(token),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(input),
+  }, 8000);
+
+  const batch = await parseJsonResponse(res, normalizeManagedBatches);
+  if (!batch[0]) {
+    throw new Error('Batch response was empty.');
+  }
+  return batch[0];
 }
 
 export async function fetchBatchStudents({
