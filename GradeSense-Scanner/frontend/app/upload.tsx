@@ -196,6 +196,19 @@ export default function UploadScreen() {
     );
   };
 
+  const openScanner = (phase: ScanPhase, mode: 'camera' | 'native' = 'camera') => {
+    if (!session) return;
+    prepareSessionForScanning(session.session_id, phase);
+    router.push({
+      pathname: '/scanner',
+      params: {
+        sessionId: session.session_id,
+        returnToUpload: '1',
+        ...(mode === 'native' ? { mode: 'native' } : {}),
+      },
+    });
+  };
+
   const handleScanDocument = (phase: ScanPhase) => {
     if (!session) return;
 
@@ -215,14 +228,15 @@ export default function UploadScreen() {
       return;
     }
 
-    prepareSessionForScanning(session.session_id, phase);
-    router.push({
-      pathname: '/scanner',
-      params: {
-        sessionId: session.session_id,
-        returnToUpload: '1',
-      },
-    });
+    Alert.alert(
+      'Choose scan mode',
+      'Camera Scan keeps the existing auto-capture flow. Smart Scan uses the native document scanner for stronger crop detection.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Camera Scan', onPress: () => openScanner(phase, 'camera') },
+        { text: 'Smart Scan', onPress: () => openScanner(phase, 'native') },
+      ]
+    );
   };
 
   const pickDocuments = async (kind: 'question' | 'model' | 'students') => {

@@ -20,6 +20,7 @@ interface ScannerBottomBarProps {
   onTogglePause: () => void;
   onManualCapture: () => void;
   onPickPdf: () => void;
+  onSmartScan: () => void;
   onNextStudent: () => void;
   onUndo: () => void;
   onFinishPhase: () => void;
@@ -36,6 +37,7 @@ const ScannerBottomBarBase: React.FC<ScannerBottomBarProps> = ({
   stabilityProgress,
   onTogglePause,
   onManualCapture,
+  onSmartScan,
   onNextStudent,
   onUndo,
   onFinishPhase,
@@ -102,6 +104,10 @@ const ScannerBottomBarBase: React.FC<ScannerBottomBarProps> = ({
       <View style={styles.secondaryRow}>
         {currentPhase !== 'students' ? (
           <View style={styles.documentActionsRow}>
+            <TouchableOpacity style={styles.smartScanBtn} onPress={onSmartScan}>
+              <Ionicons name="scan" size={16} color={COLORS.primary} />
+              <Text style={styles.smartScanBtnText}>SMART SCAN</Text>
+            </TouchableOpacity>
             <TouchableOpacity style={styles.donePhaseBtn} onPress={onFinishPhase}>
               <Text style={styles.donePhaseBtnText}>
                 FINISH {currentPhase === 'question_paper' ? 'QP' : 'MODEL'}
@@ -113,11 +119,20 @@ const ScannerBottomBarBase: React.FC<ScannerBottomBarProps> = ({
           <View style={styles.studentActionsRow}>
             <TouchableOpacity
               style={styles.undoStudentBtn}
+              onPress={onSmartScan}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Ionicons name="scan" size={16} color={COLORS.primary} />
+              <Text style={[styles.undoStudentBtnText, styles.smartStudentText]}>Smart Scan</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.undoStudentBtn}
               onPress={onUndo}
               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
             >
               <Ionicons name="arrow-undo" size={16} color="rgba(255,255,255,0.6)" />
-              <Text style={styles.undoStudentBtnText}>Undo Last Page</Text>
+              <Text style={styles.undoStudentBtnText}>Undo</Text>
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.finishSessionBtn} onPress={onFinishSession}>
@@ -205,6 +220,23 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     gap: 10,
   },
+  smartScanBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(235,87,34,0.12)',
+    borderColor: 'rgba(235,87,34,0.45)',
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderRadius: 24,
+    gap: 8,
+  },
+  smartScanBtnText: {
+    color: COLORS.primary,
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 0.4,
+  },
   donePhaseBtnText: {
     color: '#fff',
     fontSize: 13,
@@ -227,6 +259,10 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.6)',
     fontSize: 12,
     fontWeight: '600',
+  },
+  smartStudentText: {
+    color: COLORS.primary,
+    fontWeight: '800',
   },
   finishSessionBtn: {
     flexDirection: 'row',

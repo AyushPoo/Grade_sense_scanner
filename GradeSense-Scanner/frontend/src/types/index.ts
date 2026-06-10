@@ -34,6 +34,7 @@ export interface ScannedPage {
   page_number: number;
   file_path: string;
   source_type?: 'camera' | 'pdf' | 'image';
+  scanner_engine?: 'camera' | 'native_document_scanner' | 'import';
   content_type?: string;
   original_name?: string;
   original_file_path?: string; // pristine colored crop

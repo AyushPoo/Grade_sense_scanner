@@ -14,6 +14,7 @@ import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as DocumentPicker from 'expo-document-picker';
+import DocumentScanner, { ResponseType, ScanDocumentResponseStatus } from 'react-native-document-scanner-plugin';
 import { detectDocumentInFrame, FilterMode, applyFilter, resetScannerState } from '../src/utils/cvProcessor';
 import { normalizeCapturedDocument } from '../src/utils/documentNormalizer';
 import { generateUUID, useScanStore } from '../src/store/scanStore';
@@ -33,7 +34,7 @@ import { ScannerBottomBar } from '../src/components/ScannerBottomBar';
 import { detectBlur, BlurDetectionResult } from '../src/utils/blurDetection';
 import { Ionicons } from '@expo/vector-icons';
 import { useMotionStability } from '../src/hooks/useMotionStability';
-import { createImportedPdfPage, isPdfScannedPage } from '../src/utils/scannedPageAssets';
+import { createImportedPdfPage, createNativeScannedImagePage, isPdfScannedPage } from '../src/utils/scannedPageAssets';
 import { useLocalSearchParams } from 'expo-router';
 import { evaluateAutoCropCandidate } from '../src/utils/cropQuality';
 
@@ -99,8 +100,9 @@ function phaseToLiveStatus(phase: ScannerPhase): LiveScanStatus {
 
 export default function ScannerScreen() {
     const router = useRouter();
-    const { returnToUpload, sessionId } = useLocalSearchParams<{ returnToUpload?: string; sessionId?: string }>();
+    const { returnToUpload, sessionId, mode } = useLocalSearchParams<{ returnToUpload?: string; sessionId?: string; mode?: string }>();
     const shouldReturnToUpload = returnToUpload === '1';
+    const shouldLaunchNativeScanner = mode === 'native';
     const insets = useSafeAreaInsets();
     const cameraRef = useRef<CameraView>(null);
     const isMounted = useRef(true);
@@ -153,6 +155,7 @@ export default function ScannerScreen() {
     const autoCaptureRef = useRef(autoCaptureEnabled);
     const addPageRef = useRef(addPage);
     const isPausedRef = useRef(false);
+    const nativeScannerLaunchedRef = useRef(false);
 
     const scannerPhaseRef = useRef<ScannerPhase>('SEARCHING');
     const cooldownEndRef = useRef(0);
@@ -161,6 +164,7 @@ export default function ScannerScreen() {
     const [isCameraReady, setIsCameraReady] = useState(false);
     const [isPaused, setIsPaused] = useState(false);
     const [isCapturing, setIsCapturing] = useState(false);
+    const [isNativeScanning, setIsNativeScanning] = useState(false);
     const [liveScanStatus, setLiveScanStatus] = useState<LiveScanStatus>('searching');
     const [stabilityProgress, setStabilityProgress] = useState(0);
     const [liveFlashMode, setLiveFlashMode] = useState<'off' | 'on' | 'auto'>('off');
@@ -583,6 +587,67 @@ export default function ScannerScreen() {
         }
     }, [router, saveSession, sessionId]);
 
+    const handleSmartScan = useCallback(async () => {
+        if (isNativeScanning) return;
+
+        try {
+            setIsNativeScanning(true);
+            setIsPaused(true);
+            isPausedRef.current = true;
+            resetScannerState();
+
+            const response = await DocumentScanner.scanDocument({
+                croppedImageQuality: 100,
+                responseType: ResponseType.ImageFilePath,
+                ...(currentPhase !== 'students' ? { maxNumDocuments: 1 } : {}),
+            });
+
+            const scannedImages = response.scannedImages || [];
+            if (response.status === ScanDocumentResponseStatus.Cancel || scannedImages.length === 0) {
+                return;
+            }
+
+            const selectedImages = currentPhase === 'students' ? scannedImages : scannedImages.slice(0, 1);
+            if (currentPhase !== 'students' && scannedImages.length > 1) {
+                Alert.alert('One page added', 'This step accepts one document. The first scanned page was added.');
+            }
+
+            for (let index = 0; index < selectedImages.length; index += 1) {
+                const store = useScanStore.getState();
+                if (currentPhase === 'students') {
+                    const activeStudent = store.currentSession?.students[store.currentStudentIndex];
+                    const activeStudentHasPages = Boolean(activeStudent?.pages?.length);
+                    if (index > 0 || activeStudentHasPages) {
+                        store.silentNextStudent();
+                    }
+                }
+                const page = await createNativeScannedImagePage(selectedImages[index], generateUUID, index);
+                useScanStore.getState().addPage(page);
+            }
+
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+            if (shouldLaunchNativeScanner && shouldReturnToUpload) {
+                returnToUploadScreen();
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Native document scanner could not finish this scan.';
+            Alert.alert('Smart Scan unavailable', `${message}\n\nYou can continue with the camera scanner.`);
+        } finally {
+            if (isMounted.current) {
+                setIsNativeScanning(false);
+                setIsPaused(false);
+            }
+            isPausedRef.current = false;
+        }
+    }, [currentPhase, isNativeScanning, returnToUploadScreen, shouldLaunchNativeScanner, shouldReturnToUpload]);
+
+    useEffect(() => {
+        if (!shouldLaunchNativeScanner || nativeScannerLaunchedRef.current || !permission?.granted) return;
+        nativeScannerLaunchedRef.current = true;
+        handleSmartScan();
+    }, [handleSmartScan, permission?.granted, shouldLaunchNativeScanner]);
+
     const handleFinishPhase = useCallback(() => {
         const session = useScanStore.getState().currentSession;
         if (!session) return;
@@ -785,6 +850,7 @@ export default function ScannerScreen() {
                 onTogglePause={handleTogglePause}
                 onManualCapture={handleManualCapture}
                 onPickPdf={handlePickPdf}
+                onSmartScan={handleSmartScan}
                 onNextStudent={handleNextStudent}
                 onUndo={undoLastPage}
                 onFinishPhase={handleFinishPhase}
