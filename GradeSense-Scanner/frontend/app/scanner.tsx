@@ -37,6 +37,7 @@ import { useMotionStability } from '../src/hooks/useMotionStability';
 import { createImportedPdfPage, createNativeScannedImagePage, isPdfScannedPage } from '../src/utils/scannedPageAssets';
 import { useLocalSearchParams } from 'expo-router';
 import { evaluateAutoCropCandidate } from '../src/utils/cropQuality';
+import { detectDocumentWithDocQuad } from '../src/utils/docQuadDetector';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const CAPTURE_COOLDOWN_MS = 2500;
@@ -308,9 +309,9 @@ export default function ScannerScreen() {
             }
 
             // Step 1: Post-Capture Auto-Crop Detection
-            let detectionQuad = null;
+            let detectionQuad: Quadrilateral | null = null;
             let detectionDims = pending.dims;
-            let finalScaledQuad = null;
+            let finalScaledQuad: Quadrilateral | null = null;
             let cropConfidence: number | undefined;
 
             // Save raw un-warped camera image
@@ -325,6 +326,39 @@ export default function ScannerScreen() {
 
             try {
                 if (useScanStore.getState().autoCropEnabled) {
+                    try {
+                        const docQuadResult = await detectDocumentWithDocQuad(canonicalUri);
+                        if (docQuadResult?.quadrilateral) {
+                            const docQuadGate = evaluateAutoCropCandidate(
+                                docQuadResult.quadrilateral,
+                                docQuadResult.dimensions,
+                                { confidence: docQuadResult.confidence }
+                            );
+                            if (docQuadGate.accepted) {
+                                detectionQuad = docQuadResult.quadrilateral;
+                                detectionDims = docQuadResult.dimensions;
+                                cropConfidence = docQuadResult.confidence;
+                                console.log('[commitCapture] DocQuad detection SUCCESS', {
+                                    confidence: docQuadResult.confidence,
+                                    metrics: docQuadGate.metrics,
+                                });
+                            } else {
+                                console.warn('[commitCapture] DocQuad rejected. Falling back to OpenCV detector.', {
+                                    reason: docQuadGate.reason,
+                                    confidence: docQuadResult.confidence,
+                                    metrics: docQuadGate.metrics,
+                                });
+                            }
+                        } else {
+                            console.log('[commitCapture] DocQuad did not find a document. Trying OpenCV fallback.');
+                        }
+                    } catch (docQuadErr) {
+                        console.warn('[commitCapture] DocQuad detection error. Trying OpenCV fallback:', docQuadErr);
+                    }
+
+                    if (detectionQuad) {
+                        console.log('[commitCapture] Skipping OpenCV fallback because DocQuad produced an accepted crop.');
+                    } else {
                     // Downscale the EXIF-resolved canonical image (NOT raw sensor image)
                     const downscaled = await ImageManipulator.manipulateAsync(
                         canonicalUri,
@@ -376,6 +410,7 @@ export default function ScannerScreen() {
                         try {
                             new File(downscaled.uri).delete();
                         } catch (_) {}
+                    }
                     }
                 } else {
                     console.log('[commitCapture] Auto-crop disabled. Skipping post-capture detection.');
