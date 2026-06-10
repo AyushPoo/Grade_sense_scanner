@@ -26,7 +26,7 @@ function loadTsModule(relativePath) {
   return module.exports;
 }
 
-const { normalizeManagedExams, normalizeManagePerformance } = loadTsModule('src/utils/manageData.ts');
+const { normalizeManagedExams, normalizeManagedRosterStudents, normalizeManagePerformance } = loadTsModule('src/utils/manageData.ts');
 
 test('normalizeManagedExams maps API rows into display-ready exam records', () => {
   const exams = normalizeManagedExams([
@@ -61,4 +61,23 @@ test('normalizeManagePerformance returns stable empty arrays for partial payload
   assert.deepEqual(JSON.parse(JSON.stringify(performance.studentRankings)), []);
   assert.deepEqual(JSON.parse(JSON.stringify(performance.weakStudents)), []);
   assert.deepEqual(JSON.parse(JSON.stringify(performance.weakQuestions)), []);
+});
+
+test('normalizeManagedRosterStudents accepts wrapped roster rows', () => {
+  const students = normalizeManagedRosterStudents({
+    data: {
+      rows: [
+        {
+          id: 'student_1',
+          name: 'Ayush Sudhakar',
+          rollNumber: '24012',
+          email: 'ayush.24012@ssb.scaler.com',
+        },
+      ],
+    },
+  });
+
+  assert.equal(students.length, 1);
+  assert.equal(students[0].student_id, 'student_1');
+  assert.equal(students[0].rollNumber, '24012');
 });

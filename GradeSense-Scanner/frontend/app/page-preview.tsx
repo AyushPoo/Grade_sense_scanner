@@ -25,6 +25,7 @@ import { CropOverlay } from '../src/components/CropOverlay';
 import { normalizeCapturedDocument } from '../src/utils/documentNormalizer';
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import Animated, {
+  runOnJS,
   useAnimatedStyle,
   useSharedValue,
   withTiming,
@@ -34,10 +35,14 @@ const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 function InlineZoomableImage({
   uri,
+  isZoomed,
+  onZoomChange,
   onLoadStart,
   onLoadEnd,
 }: {
   uri: string;
+  isZoomed: boolean;
+  onZoomChange: (zoomed: boolean) => void;
   onLoadStart?: () => void;
   onLoadEnd?: () => void;
 }) {
@@ -55,6 +60,7 @@ function InlineZoomableImage({
     translateY.value = withTiming(0);
     savedTranslateX.value = 0;
     savedTranslateY.value = 0;
+    runOnJS(onZoomChange)(false);
   };
 
   const pinchGesture = Gesture.Pinch()
@@ -63,9 +69,11 @@ function InlineZoomableImage({
     })
     .onEnd(() => {
       savedScale.value = scale.value;
+      runOnJS(onZoomChange)(scale.value > 1.05);
     });
 
   const panGesture = Gesture.Pan()
+    .enabled(isZoomed)
     .onUpdate(event => {
       if (scale.value > 1) {
         translateX.value = savedTranslateX.value + event.translationX;
@@ -85,6 +93,7 @@ function InlineZoomableImage({
       } else {
         scale.value = withTiming(2.4);
         savedScale.value = 2.4;
+        runOnJS(onZoomChange)(true);
       }
     });
 
@@ -98,7 +107,7 @@ function InlineZoomableImage({
 
   return (
     <GestureHandlerRootView style={styles.imageTouchArea}>
-      <GestureDetector gesture={Gesture.Race(doubleTapGesture, Gesture.Simultaneous(pinchGesture, panGesture))}>
+      <GestureDetector gesture={isZoomed ? Gesture.Race(doubleTapGesture, Gesture.Simultaneous(pinchGesture, panGesture)) : Gesture.Simultaneous(doubleTapGesture, pinchGesture)}>
         <Animated.View style={[styles.zoomableLayer, animatedStyle]}>
           <Image
             source={{ uri }}
@@ -130,6 +139,7 @@ export default function PagePreviewScreen() {
   const [isRotating, setIsRotating] = useState(false);
   const [cropTarget, setCropTarget] = useState<ScannedPage | null>(null);
   const [isProcessingCrop, setIsProcessingCrop] = useState(false);
+  const [zoomedPageId, setZoomedPageId] = useState<string | null>(null);
 
   const FILTERS: { id: FilterMode; label: string; icon: string }[] = [
     { id: 'original',           label: 'Original',    icon: 'image-outline' },
@@ -488,6 +498,7 @@ export default function PagePreviewScreen() {
     if (viewableItems.length > 0) {
       // TASK 2B: Only update current index, do NOT reset loading globally
       setCurrentIndex(viewableItems[0].index);
+      setZoomedPageId(null);
     }
   }).current;
 
@@ -506,6 +517,8 @@ export default function PagePreviewScreen() {
         <View style={styles.imageTouchArea}>
           <InlineZoomableImage
             uri={item.file_path}
+            isZoomed={zoomedPageId === item.id}
+            onZoomChange={(zoomed) => setZoomedPageId(zoomed ? item.id : null)}
             onLoadStart={() => {
               // TASK 2C: Bind loading to specific page ID
               setLoadingPages(prev => new Set(prev).add(item.id));
@@ -593,6 +606,7 @@ export default function PagePreviewScreen() {
         keyExtractor={(item) => item.id}
         horizontal
         pagingEnabled
+        scrollEnabled={!zoomedPageId}
         showsHorizontalScrollIndicator={false}
         onViewableItemsChanged={onViewableItemsChanged}
         viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}

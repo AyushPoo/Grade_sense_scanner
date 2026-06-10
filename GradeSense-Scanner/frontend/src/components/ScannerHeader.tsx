@@ -13,6 +13,7 @@ interface ScannerHeaderProps {
   isLandscape: boolean;
   onBack: () => void;
   isPaused?: boolean;
+  onTogglePageMode?: () => void;
   onTogglePause?: () => void;
 }
 
@@ -25,6 +26,7 @@ const ScannerHeaderBase: React.FC<ScannerHeaderProps> = ({
   isLandscape,
   onBack,
   isPaused,
+  onTogglePageMode,
   onTogglePause,
 }) => {
   // ── RENDER INSTRUMENTATION (Phase 2) ──────────────────────────────────────
@@ -46,7 +48,11 @@ const ScannerHeaderBase: React.FC<ScannerHeaderProps> = ({
             {showStudentCount && ` • Students: ${studentsWithPagesCount}`}
           </Text>
         </View>
-        <View style={styles.pageModeBadge}>
+        <TouchableOpacity
+          onPress={onTogglePageMode}
+          disabled={!onTogglePageMode}
+          style={[styles.pageModeBadge, onTogglePageMode && styles.pageModeBadgeInteractive]}
+        >
           <Ionicons
             name={pageMode === 'double' ? 'documents' : 'document'}
             size={14}
@@ -55,7 +61,7 @@ const ScannerHeaderBase: React.FC<ScannerHeaderProps> = ({
           <Text style={styles.pageModeBadgeText}>
             {pageMode === 'double' ? '2PG' : '1PG'}
           </Text>
-        </View>
+        </TouchableOpacity>
         <View style={styles.orientationBadge}>
           <Ionicons
             name={isLandscape ? 'phone-landscape' : 'phone-portrait'}
@@ -122,6 +128,10 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 6,
     gap: 4,
+  },
+  pageModeBadgeInteractive: {
+    borderWidth: 1,
+    borderColor: COLORS.primary,
   },
   pageModeBadgeText: {
     color: '#fff',

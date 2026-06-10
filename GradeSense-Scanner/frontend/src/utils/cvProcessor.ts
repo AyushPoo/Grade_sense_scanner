@@ -1457,30 +1457,18 @@ export async function applyFilter(imageUri: string, mode: FilterMode): Promise<s
     dstMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
 
     if (mode === 'high_contrast') {
-      // Scanner-style review filter: build a soft text mask, lift the paper
-      // background, then blend them so handwriting pops without pure OCR binary.
+      // Scanner-style review filter: lift the page and sharpen ink without
+      // turning the image into an OCR-style black/white mask.
       try {
         blurMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
         sharpMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
-        binaryMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
-        paperMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
-        const blurSize = OpenCV.createObject(ObjectType.Size, 3, 3);
+        const blurSize = OpenCV.createObject(ObjectType.Size, 5, 5);
         (OpenCV as any).invoke('GaussianBlur', grayMat, blurMat, blurSize, 0);
-        (OpenCV as any).invoke('addWeighted', grayMat, 1.55, blurMat, -0.55, 0, sharpMat);
-        (OpenCV as any).invoke('convertScaleAbs', sharpMat, paperMat, 1.18, 18);
-        (OpenCV as any).invoke(
-          'adaptiveThreshold',
-          blurMat, binaryMat,
-          255,
-          1,
-          0,
-          35,
-          12,
-        );
-        (OpenCV as any).invoke('addWeighted', paperMat, 0.34, binaryMat, 0.66, 0, dstMat);
+        (OpenCV as any).invoke('addWeighted', grayMat, 1.42, blurMat, -0.42, 0, sharpMat);
+        (OpenCV as any).invoke('convertScaleAbs', sharpMat, dstMat, 1.18, -8);
       } catch (enhanceErr) {
         console.warn('[CV] high_contrast enhancement fallback:', enhanceErr);
-        (OpenCV as any).invoke('convertScaleAbs', grayMat, dstMat, 1.45, -35);
+        (OpenCV as any).invoke('convertScaleAbs', grayMat, dstMat, 1.18, -8);
       }
     } else if (mode === 'adaptive_threshold') {
       // Adobe-like document cleanup: smooth small sensor noise, then create

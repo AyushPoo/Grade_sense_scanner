@@ -1579,30 +1579,32 @@ async def get_batch_students(batch_id: str, authorization: Optional[str] = Heade
             try:
                 conn = await asyncpg.connect(webapp_db_url)
                 students = await fetch_batch_roster(conn, user.user_id, batch_id)
-                student_ids = [student["student_id"] for student in students]
-                await db.students.delete_many({
-                    "batch_id": batch_id,
-                    "student_id": {"$nin": student_ids},
-                })
-                for student in students:
-                    await db.students.update_one(
-                        {"batch_id": batch_id, "student_id": student["student_id"]},
-                        {"$set": student},
-                        upsert=True,
+                if students:
+                    student_ids = [student["student_id"] for student in students]
+                    await db.students.delete_many({
+                        "batch_id": batch_id,
+                        "student_id": {"$nin": student_ids},
+                    })
+                    for student in students:
+                        await db.students.update_one(
+                            {"batch_id": batch_id, "student_id": student["student_id"]},
+                            {"$set": student},
+                            upsert=True,
+                        )
+                    await db.batches.update_one(
+                        {"batch_id": batch_id},
+                        {"$set": {"student_count": len(students), "studentCount": len(students)}},
                     )
-                await db.batches.update_one(
-                    {"batch_id": batch_id},
-                    {"$set": {"student_count": len(students), "studentCount": len(students)}},
-                )
-                strong_students, weak_students = split_students_by_strength(students)
-                return {
-                    "students": students,
-                    "strongStudents": strong_students,
-                    "weakStudents": weak_students,
-                }
+                    strong_students, weak_students = split_students_by_strength(students)
+                    return {
+                        "students": students,
+                        "strongStudents": strong_students,
+                        "weakStudents": weak_students,
+                    }
+                logger.warning(f"Neon returned empty roster for batch {batch_id}; falling back to webapp API/local cache")
             except Exception as e:
                 logger.error(f"Error querying Neon for batch roster: {e}")
-                raise HTTPException(status_code=503, detail="Roster sync is unavailable. Please retry.")
+                logger.warning("Continuing with webapp API/local roster fallback")
             finally:
                 if conn:
                     await conn.close()
@@ -1625,19 +1627,57 @@ async def get_batch_students(batch_id: str, authorization: Optional[str] = Heade
         
     try:
         async with httpx.AsyncClient() as client_http:
+            headers = {"Authorization": f"Bearer {token}"}
+            students_url = f"{webapp_url.rstrip('/')}/api/v1/students"
             response = await client_http.get(
-                f"{webapp_url.rstrip('/')}/api/v1/students",
+                students_url,
                 params={"batchId": batch_id},
-                headers={"Authorization": f"Bearer {token}"},
+                headers=headers,
                 timeout=15.0
             )
             if response.status_code == 200:
                 res_data = response.json()
                 raw_data = res_data.get("data", [])
                 if isinstance(raw_data, dict):
-                    webapp_students = raw_data.get("students") or raw_data.get("rows") or raw_data.get("items") or []
+                    webapp_students = (
+                        raw_data.get("students")
+                        or raw_data.get("rows")
+                        or raw_data.get("items")
+                        or raw_data.get("results")
+                        or []
+                    )
                 else:
                     webapp_students = raw_data
+
+                if not webapp_students:
+                    all_students_response = await client_http.get(
+                        students_url,
+                        headers=headers,
+                        timeout=15.0
+                    )
+                    if all_students_response.status_code == 200:
+                        all_students_data = all_students_response.json()
+                        raw_all = all_students_data.get("data", [])
+                        if isinstance(raw_all, dict):
+                            raw_all = (
+                                raw_all.get("students")
+                                or raw_all.get("rows")
+                                or raw_all.get("items")
+                                or raw_all.get("results")
+                                or []
+                            )
+                        batch_doc = await db.batches.find_one({"batch_id": batch_id}, {"_id": 0}) or {}
+                        batch_name = str(batch_doc.get("name") or batch_doc.get("batch_name") or "").strip().lower()
+                        webapp_students = [
+                            s for s in raw_all
+                            if isinstance(s, dict) and (
+                                str(s.get("batchId") or s.get("batch_id") or s.get("classId") or s.get("class_id") or "") == batch_id
+                                or (
+                                    batch_name
+                                    and str(s.get("batchName") or s.get("batch_name") or s.get("className") or s.get("class_name") or "").strip().lower() == batch_name
+                                )
+                            )
+                        ]
                 
                 mapped_students = []
                 for s in webapp_students:

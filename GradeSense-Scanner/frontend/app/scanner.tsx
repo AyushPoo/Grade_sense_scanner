@@ -117,6 +117,10 @@ function isAmbiguousOrientation(width: number, height: number): boolean {
     return ratio > 0.88 && ratio <= 1.08;
 }
 
+function shouldSplitAsDoublePage(width: number, height: number): boolean {
+    return width >= height * 1.22;
+}
+
 async function autoOrientPageImage(
     uri: string,
     width: number,
@@ -151,47 +155,29 @@ async function splitDoublePageImage(
     width: number,
     height: number,
 ): Promise<PreparedImagePart[]> {
-    const splitVertically = width >= height * 0.9;
-    const overlap = Math.round((splitVertically ? width : height) * 0.018);
-
-    if (splitVertically) {
-        const mid = Math.floor(width / 2);
-        const leftWidth = Math.min(width, mid + overlap);
-        const rightX = Math.max(0, mid - overlap);
-        const rightWidth = width - rightX;
-        const left = await ImageManipulator.manipulateAsync(
-            uri,
-            [{ crop: { originX: 0, originY: 0, width: leftWidth, height } }],
-            { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG }
-        );
-        const right = await ImageManipulator.manipulateAsync(
-            uri,
-            [{ crop: { originX: rightX, originY: 0, width: rightWidth, height } }],
-            { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG }
-        );
-        return [
-            { uri: left.uri, width: left.width, height: left.height, splitPart: 'left' },
-            { uri: right.uri, width: right.width, height: right.height, splitPart: 'right' },
-        ];
+    if (!shouldSplitAsDoublePage(width, height)) {
+        return [{ uri, width, height }];
     }
 
-    const mid = Math.floor(height / 2);
-    const topHeight = Math.min(height, mid + overlap);
-    const bottomY = Math.max(0, mid - overlap);
-    const bottomHeight = height - bottomY;
-    const top = await ImageManipulator.manipulateAsync(
+    const overlap = Math.round(width * 0.018);
+
+    const mid = Math.floor(width / 2);
+    const leftWidth = Math.min(width, mid + overlap);
+    const rightX = Math.max(0, mid - overlap);
+    const rightWidth = width - rightX;
+    const left = await ImageManipulator.manipulateAsync(
         uri,
-        [{ crop: { originX: 0, originY: 0, width, height: topHeight } }],
+        [{ crop: { originX: 0, originY: 0, width: leftWidth, height } }],
         { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG }
     );
-    const bottom = await ImageManipulator.manipulateAsync(
+    const right = await ImageManipulator.manipulateAsync(
         uri,
-        [{ crop: { originX: 0, originY: bottomY, width, height: bottomHeight } }],
+        [{ crop: { originX: rightX, originY: 0, width: rightWidth, height } }],
         { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG }
     );
     return [
-        { uri: top.uri, width: top.width, height: top.height, splitPart: 'top' },
-        { uri: bottom.uri, width: bottom.width, height: bottom.height, splitPart: 'bottom' },
+        { uri: left.uri, width: left.width, height: left.height, splitPart: 'left' },
+        { uri: right.uri, width: right.width, height: right.height, splitPart: 'right' },
     ];
 }
 
@@ -221,6 +207,7 @@ export default function ScannerScreen() {
     const autoCaptureEnabled = useScanStore(s => s.autoCaptureEnabled);
     const flashMode = useScanStore(s => s.flashMode);
     const pendingRetake = useScanStore(s => s.pendingRetake);
+    const pageMode = useScanStore(s => s.currentSession?.settings.page_mode ?? 'single');
 
     const currentPages = useScanStore(useShallow(state => {
         if (!state.currentSession) return [];
@@ -604,10 +591,11 @@ export default function ScannerScreen() {
             const shouldSplitDoublePage =
                 stateAtSave.currentSession?.settings.page_mode === 'double' &&
                 !stateAtSave.pendingRetake;
-            const splitSourcePageId = shouldSplitDoublePage ? generateUUID() : undefined;
             const imageParts: PreparedImagePart[] = shouldSplitDoublePage
                 ? await splitDoublePageImage(finalUri, finalDims.width, finalDims.height)
                 : [{ uri: finalUri, width: finalDims.width, height: finalDims.height }];
+            const didSplitDoublePage = imageParts.length > 1;
+            const splitSourcePageId = didSplitDoublePage ? generateUUID() : undefined;
 
             const persistPagePart = async (part: PreparedImagePart, index: number) => {
                 const oriented = await autoOrientPageImage(part.uri, part.width, part.height);
@@ -647,10 +635,10 @@ export default function ScannerScreen() {
                     page_number: 0,
                     file_path: dest.uri,
                     original_file_path: destOrig.uri,
-                    raw_file_path: shouldSplitDoublePage ? undefined : (rawVerified ? destRaw.uri : undefined),
-                    crop_quad: shouldSplitDoublePage ? undefined : (finalScaledQuad || undefined),
-                    crop_applied: shouldSplitDoublePage ? true : !!finalScaledQuad,
-                    crop_confidence: shouldSplitDoublePage ? cropConfidence : (finalScaledQuad ? cropConfidence : undefined),
+                    raw_file_path: didSplitDoublePage ? undefined : (rawVerified ? destRaw.uri : undefined),
+                    crop_quad: didSplitDoublePage ? undefined : (finalScaledQuad || undefined),
+                    crop_applied: didSplitDoublePage ? true : !!finalScaledQuad,
+                    crop_confidence: didSplitDoublePage ? cropConfidence : (finalScaledQuad ? cropConfidence : undefined),
                     orientation_degrees: oriented.orientationDegrees,
                     needs_orientation_review: oriented.needsReview,
                     split_source_page_id: splitSourcePageId,
@@ -690,6 +678,29 @@ export default function ScannerScreen() {
             if (!prev) resetScannerState();
             return !prev;
         });
+    }, []);
+
+    const handleTogglePageMode = useCallback(() => {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+        useScanStore.setState(state => {
+            const session = state.currentSession;
+            if (!session) return {};
+            const nextMode: 'single' | 'double' = session.settings.page_mode === 'double' ? 'single' : 'double';
+            const updatedSession = {
+                ...session,
+                settings: {
+                    ...session.settings,
+                    page_mode: nextMode,
+                },
+            };
+            return {
+                currentSession: updatedSession,
+                savedSessions: state.savedSessions.map(saved =>
+                    saved.session_id === updatedSession.session_id ? updatedSession : saved
+                ),
+            };
+        });
+        resetScannerState();
     }, []);
 
     const handleNextStudent = useCallback(() => {
@@ -914,8 +925,9 @@ export default function ScannerScreen() {
                 pageCount={currentPages.length}
                 studentsWithPagesCount={studentsCount}
                 showStudentCount={studentsCount > 0}
-                pageMode="single"
+                pageMode={pageMode}
                 isLandscape={false}
+                onTogglePageMode={handleTogglePageMode}
                 onBack={() => router.back()}
                 isPaused={isPaused}
                 onTogglePause={handleTogglePause}

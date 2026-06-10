@@ -187,7 +187,7 @@ export function normalizeManagedExams(rows: unknown): ManagedExam[] {
 }
 
 export function normalizeManagedRosterStudents(rows: unknown): ManagedRosterStudent[] {
-  return readRows(rows, ['students'])
+  return readRows(rows, ['students', 'data', 'rows', 'items', 'results'])
     .map<ManagedRosterStudent | null>(row => {
       if (!row || typeof row !== 'object') return null;
       const item = row as Record<string, unknown>;
