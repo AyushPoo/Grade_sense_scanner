@@ -134,13 +134,14 @@ export async function detectDocumentInFrame(
   let closedEdgeMat: any = null;
   let edgeKernel5: any = null;
   let edgeKernel9: any = null;
+  let maskCtrData: any = null;
 
   const safeCleanup = () => {
     cleanupMats([
       srcMat, normalizedMat, grayMat, lapMat, meanMat, stddevMat,
       blurMat, ksizeMat, edgeMat, ctrData,
       hsvMat, maskMat, kernelMat, maskedEdgeMat, lowerBound, upperBound,
-      dilatedEdgeMat, closedEdgeMat, edgeKernel5, edgeKernel9
+      dilatedEdgeMat, closedEdgeMat, edgeKernel5, edgeKernel9, maskCtrData
     ]);
     try { OpenCV.clearBuffers(); } catch { /* ignore */ }
   };
@@ -416,6 +417,7 @@ export async function detectDocumentInFrame(
   // NOTE: toJSValue(PointVectorOfVectors) returns plain JS {x,y} arrays — NOT
   // native Mat handles. All subsequent contour processing must be pure JS.
   let rawContours: Point[][] = [];
+  let rawMaskContours: Point[][] = [];
   const tContourStart = performance.now();
   try {
     ctrData = OpenCV.createObject(ObjectType.PointVectorOfVectors);
@@ -433,8 +435,22 @@ export async function detectDocumentInFrame(
     return { ...SAFE_NO_DETECT_RESULT };
   }
 
+  try {
+    maskCtrData = OpenCV.createObject(ObjectType.PointVectorOfVectors);
+    (OpenCV as any).invoke(FIND_CONTOURS, maskMat, maskCtrData, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+    const maskCtrRaw: any = OpenCV.toJSValue(maskCtrData);
+    const raw = maskCtrRaw?.array || maskCtrRaw || [];
+    rawMaskContours = Array.isArray(raw) ? raw : [];
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn('[CV][STAGE:whiteMaskContours]', msg);
+    rawMaskContours = [];
+  }
+
+  rawContours = [...rawContours, ...rawMaskContours];
+
   // ── Contour array guard ───────────────────────────────────────────────────
-  console.log(`[DEBUG-AUTOCROP] Stage 6 output: found ${rawContours.length} contours`);
+  console.log(`[DEBUG-AUTOCROP] Stage 6 output: found ${rawContours.length} contours (${rawMaskContours.length} from white-page mask)`);
   if (rawContours.length === 0) {
     safeCleanup();
     return {
@@ -622,6 +638,27 @@ export async function detectDocumentInFrame(
           }
         } else {
           sweepRejectedForRatio = true;
+        }
+      }
+    }
+
+    if (!sweepSuccess) {
+      const extremaQuad = quadFromExtrema(hull);
+      if (extremaQuad) {
+        const refinedQuad = refineQuadWithBoundaryPoints(extremaQuad, hull, { width, height });
+        const cropGate = evaluateAutoCropCandidate(refinedQuad, { width, height });
+        if (!cropGate.accepted || !passesDocumentPlausibility(refinedQuad, hullArea, width, height)) {
+          rejectionReasons.PLAUSIBILITY_FAIL++;
+        } else {
+          acceptedCount++;
+          sweepSuccess = true;
+          const { finalScore, telemetry } = calculateSemanticScore(contour, hull, hull, refinedQuad, width, height);
+          candidates.push({
+            quad: refinedQuad,
+            score: finalScore * 0.94,
+            telemetry: `Score=${(finalScore * 0.94).toFixed(4)} ExtremaFallback | ${telemetry}`,
+            area: hullArea
+          });
         }
       }
     }
@@ -843,6 +880,27 @@ function orderPoints(points: Point[]): Quadrilateral {
     bottomRight: bottomPoints[1],
     bottomLeft: bottomPoints[0],
   };
+}
+
+function quadFromExtrema(points: Point[]): Quadrilateral | null {
+  if (points.length < 4) return null;
+
+  const topLeft = points.reduce((best, point) => (point.x + point.y < best.x + best.y ? point : best), points[0]);
+  const bottomRight = points.reduce((best, point) => (point.x + point.y > best.x + best.y ? point : best), points[0]);
+  const topRight = points.reduce((best, point) => (point.x - point.y > best.x - best.y ? point : best), points[0]);
+  const bottomLeft = points.reduce((best, point) => (point.x - point.y < best.x - best.y ? point : best), points[0]);
+  const quad = { topLeft, topRight, bottomRight, bottomLeft };
+  const ordered = [quad.topLeft, quad.topRight, quad.bottomRight, quad.bottomLeft];
+
+  for (let i = 0; i < ordered.length; i += 1) {
+    for (let j = i + 1; j < ordered.length; j += 1) {
+      if (Math.hypot(ordered[i].x - ordered[j].x, ordered[i].y - ordered[j].y) < 24) {
+        return null;
+      }
+    }
+  }
+
+  return quad;
 }
 
 /**
