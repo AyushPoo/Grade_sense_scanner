@@ -1419,6 +1419,7 @@ export async function applyFilter(imageUri: string, mode: FilterMode): Promise<s
   let srcMat: any = null;   // 4-channel RGBA decoded from JPEG
   let grayMat: any = null;  // 1-channel gray
   let blurMat: any = null;  // 1-channel blurred gray
+  let sharpMat: any = null; // 1-channel sharpened gray
   let dstMat: any = null;   // 1-channel output
   let resizedUri: string | null = null;
 
@@ -1456,7 +1457,17 @@ export async function applyFilter(imageUri: string, mode: FilterMode): Promise<s
     if (mode === 'high_contrast') {
       // Comfortable review filter: lift the paper background and deepen ink
       // without the hard black/white speckling of OCR binarization.
-      (OpenCV as any).invoke('convertScaleAbs', grayMat, dstMat, 1.28, -16);
+      try {
+        blurMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
+        sharpMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
+        const blurSize = OpenCV.createObject(ObjectType.Size, 3, 3);
+        (OpenCV as any).invoke('GaussianBlur', grayMat, blurMat, blurSize, 0);
+        (OpenCV as any).invoke('addWeighted', grayMat, 1.65, blurMat, -0.65, 0, sharpMat);
+        (OpenCV as any).invoke('convertScaleAbs', sharpMat, dstMat, 1.34, -30);
+      } catch (enhanceErr) {
+        console.warn('[CV] high_contrast enhancement fallback:', enhanceErr);
+        (OpenCV as any).invoke('convertScaleAbs', grayMat, dstMat, 1.32, -22);
+      }
     } else if (mode === 'adaptive_threshold') {
       // Adobe-like document cleanup: smooth small sensor noise, then create
       // black text on a white page. The original file is stored separately.
@@ -1477,7 +1488,7 @@ export async function applyFilter(imageUri: string, mode: FilterMode): Promise<s
     const destFilename = `ocr_${mode}_${Date.now()}.jpg`;
     const dest = new File(Paths.document, destFilename);
     const tSaveStart = performance.now();
-    OpenCV.saveMatToFile(dstMat, dest.uri, 'jpeg', mode === 'adaptive_threshold' ? 0.82 : 0.88);
+    OpenCV.saveMatToFile(dstMat, dest.uri, 'jpeg', mode === 'adaptive_threshold' ? 0.82 : 0.92);
     const tSave = performance.now() - tSaveStart;
 
     const tTotal = performance.now() - tStart;
@@ -1495,7 +1506,7 @@ export async function applyFilter(imageUri: string, mode: FilterMode): Promise<s
     console.warn(`[CV] applyFilter(${mode}) failed, falling back to grayscale:`, err);
     return convertToGrayscale(imageUri);
   } finally {
-    cleanupMats([srcMat, grayMat, blurMat, dstMat]);
+    cleanupMats([srcMat, grayMat, blurMat, sharpMat, dstMat]);
     try {
       if (resizedUri && resizedUri !== imageUri) new File(resizedUri).delete();
     } catch (_) { }

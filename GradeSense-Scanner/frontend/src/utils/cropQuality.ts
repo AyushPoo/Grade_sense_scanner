@@ -31,6 +31,7 @@ export interface CropQualityMetrics {
 export interface CropQualityInput {
   confidence?: number;
   areaScore?: number;
+  profile?: 'standard' | 'docquad';
 }
 
 export interface CropQualityResult {
@@ -65,6 +66,18 @@ const MIN_CORNER_ANGLE = 42;
 const MAX_CORNER_ANGLE = 138;
 const MIN_CONFIDENCE = 0.58;
 const MIN_AREA_SCORE = 0.3;
+
+const DOCQUAD_BOUNDS_TOLERANCE_RATIO = 0.12;
+const DOCQUAD_MIN_AREA_RATIO = 0.08;
+const DOCQUAD_MIN_BBOX_WIDTH_RATIO = 0.28;
+const DOCQUAD_MIN_BBOX_HEIGHT_RATIO = 0.28;
+const DOCQUAD_MIN_RECTANGULARITY = 0.42;
+const DOCQUAD_MAX_EDGE_RATIO = 4.25;
+const DOCQUAD_MAX_OPPOSITE_EDGE_RATIO = 2.6;
+const DOCQUAD_MAX_DIAGONAL_RATIO = 2.05;
+const DOCQUAD_MIN_CORNER_ANGLE = 28;
+const DOCQUAD_MAX_CORNER_ANGLE = 152;
+const DOCQUAD_MIN_CONFIDENCE = 0.48;
 
 function pointsOf(q: Quadrilateral) {
   return [q.topLeft, q.topRight, q.bottomRight, q.bottomLeft];
@@ -132,8 +145,21 @@ export function evaluateAutoCropCandidate(
     return { accepted: false, reason: 'non_finite_point', metrics: DEFAULT_METRICS };
   }
 
-  const toleranceX = dimensions.width * BOUNDS_TOLERANCE_RATIO;
-  const toleranceY = dimensions.height * BOUNDS_TOLERANCE_RATIO;
+  const isDocQuad = detection.profile === 'docquad';
+  const boundsToleranceRatio = isDocQuad ? DOCQUAD_BOUNDS_TOLERANCE_RATIO : BOUNDS_TOLERANCE_RATIO;
+  const minAreaRatio = isDocQuad ? DOCQUAD_MIN_AREA_RATIO : MIN_AREA_RATIO;
+  const minBboxWidthRatio = isDocQuad ? DOCQUAD_MIN_BBOX_WIDTH_RATIO : MIN_BBOX_WIDTH_RATIO;
+  const minBboxHeightRatio = isDocQuad ? DOCQUAD_MIN_BBOX_HEIGHT_RATIO : MIN_BBOX_HEIGHT_RATIO;
+  const minRectangularity = isDocQuad ? DOCQUAD_MIN_RECTANGULARITY : MIN_RECTANGULARITY;
+  const maxEdgeRatio = isDocQuad ? DOCQUAD_MAX_EDGE_RATIO : MAX_EDGE_RATIO;
+  const maxOppositeEdgeRatio = isDocQuad ? DOCQUAD_MAX_OPPOSITE_EDGE_RATIO : MAX_OPPOSITE_EDGE_RATIO;
+  const maxDiagonalRatio = isDocQuad ? DOCQUAD_MAX_DIAGONAL_RATIO : MAX_DIAGONAL_RATIO;
+  const minCornerAngle = isDocQuad ? DOCQUAD_MIN_CORNER_ANGLE : MIN_CORNER_ANGLE;
+  const maxCornerAngle = isDocQuad ? DOCQUAD_MAX_CORNER_ANGLE : MAX_CORNER_ANGLE;
+  const minConfidence = isDocQuad ? DOCQUAD_MIN_CONFIDENCE : MIN_CONFIDENCE;
+
+  const toleranceX = dimensions.width * boundsToleranceRatio;
+  const toleranceY = dimensions.height * boundsToleranceRatio;
   if (pts.some(p => p.x < -toleranceX || p.x > dimensions.width + toleranceX || p.y < -toleranceY || p.y > dimensions.height + toleranceY)) {
     return { accepted: false, reason: 'out_of_bounds', metrics: DEFAULT_METRICS };
   }
@@ -178,19 +204,19 @@ export function evaluateAutoCropCandidate(
     borderPointCount,
   };
 
-  if (metrics.borderPointCount >= 3) return { accepted: false, reason: 'border_hugging', metrics };
-  if (metrics.areaRatio < MIN_AREA_RATIO) return { accepted: false, reason: 'area_too_small', metrics };
-  if (metrics.bboxWidthRatio < MIN_BBOX_WIDTH_RATIO || metrics.bboxHeightRatio < MIN_BBOX_HEIGHT_RATIO) {
+  if (metrics.borderPointCount >= (isDocQuad ? 4 : 3)) return { accepted: false, reason: 'border_hugging', metrics };
+  if (metrics.areaRatio < minAreaRatio) return { accepted: false, reason: 'area_too_small', metrics };
+  if (metrics.bboxWidthRatio < minBboxWidthRatio || metrics.bboxHeightRatio < minBboxHeightRatio) {
     return { accepted: false, reason: 'bbox_too_small', metrics };
   }
-  if (metrics.rectangularity < MIN_RECTANGULARITY) return { accepted: false, reason: 'low_rectangularity', metrics };
-  if (metrics.maxEdgeRatio > MAX_EDGE_RATIO) return { accepted: false, reason: 'edge_ratio', metrics };
-  if (metrics.oppositeEdgeRatio > MAX_OPPOSITE_EDGE_RATIO) return { accepted: false, reason: 'edge_ratio', metrics };
-  if (metrics.diagonalRatio > MAX_DIAGONAL_RATIO) return { accepted: false, reason: 'diagonal_ratio', metrics };
-  if (metrics.minAngle < MIN_CORNER_ANGLE || metrics.maxAngle > MAX_CORNER_ANGLE) {
+  if (metrics.rectangularity < minRectangularity) return { accepted: false, reason: 'low_rectangularity', metrics };
+  if (metrics.maxEdgeRatio > maxEdgeRatio) return { accepted: false, reason: 'edge_ratio', metrics };
+  if (metrics.oppositeEdgeRatio > maxOppositeEdgeRatio) return { accepted: false, reason: 'edge_ratio', metrics };
+  if (metrics.diagonalRatio > maxDiagonalRatio) return { accepted: false, reason: 'diagonal_ratio', metrics };
+  if (metrics.minAngle < minCornerAngle || metrics.maxAngle > maxCornerAngle) {
     return { accepted: false, reason: 'angle_outlier', metrics };
   }
-  if (detection.confidence !== undefined && detection.confidence < MIN_CONFIDENCE) {
+  if (detection.confidence !== undefined && detection.confidence < minConfidence) {
     return { accepted: false, reason: 'low_confidence', metrics };
   }
   if (detection.areaScore !== undefined && detection.areaScore < MIN_AREA_SCORE) {

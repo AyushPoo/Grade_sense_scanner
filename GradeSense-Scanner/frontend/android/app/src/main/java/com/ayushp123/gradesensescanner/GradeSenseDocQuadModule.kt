@@ -303,12 +303,12 @@ class GradeSenseDocQuadModule(
       if (points.size != 4) return false
       for (point in points) {
         if (!point.x.isFinite() || !point.y.isFinite()) return false
-        if (point.x < -width * 0.08 || point.x > width * 1.08) return false
-        if (point.y < -height * 0.08 || point.y > height * 1.08) return false
+        if (point.x < -width * 0.18 || point.x > width * 1.18) return false
+        if (point.y < -height * 0.18 || point.y > height * 1.18) return false
       }
       if (!isConvex(points)) return false
       val areaRatio = polygonArea(points) / max(1.0, width.toDouble() * height.toDouble())
-      return areaRatio >= 0.12 && areaRatio <= 1.1
+      return areaRatio >= 0.08 && areaRatio <= 1.18
     }
 
     private fun isConvex(points: Array<Point>): Boolean {

@@ -8,6 +8,7 @@ export interface NormalizationOptions {
   enhancementMode?: 'original' | 'enhanced_color' | 'grayscale';
   debugMode?: boolean;
   isManualCrop?: boolean;
+  cropProfile?: 'standard' | 'docquad';
 }
 
 const ENABLE_MANUAL_CROP_EXACT_EXPORT = true;
@@ -209,7 +210,9 @@ export async function normalizeCapturedDocument(
     ]);
 
     if (!options.isManualCrop) {
-      const cropGate = evaluateAutoCropCandidate(orderedQuad, { width: targetWidth, height: targetHeight });
+      const cropGate = evaluateAutoCropCandidate(orderedQuad, { width: targetWidth, height: targetHeight }, {
+        profile: options.cropProfile,
+      });
       if (!cropGate.accepted) {
         throw new Error(`[normalizeCapturedDocument] Unsafe auto-crop geometry: ${cropGate.reason}`);
       }

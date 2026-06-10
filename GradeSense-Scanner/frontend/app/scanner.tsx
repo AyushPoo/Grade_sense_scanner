@@ -313,6 +313,7 @@ export default function ScannerScreen() {
             let detectionDims = pending.dims;
             let finalScaledQuad: Quadrilateral | null = null;
             let cropConfidence: number | undefined;
+            let cropProfile: 'standard' | 'docquad' = 'standard';
 
             // Save raw un-warped camera image
             const rawFilename = `raw_${Date.now()}.jpg`;
@@ -332,12 +333,13 @@ export default function ScannerScreen() {
                             const docQuadGate = evaluateAutoCropCandidate(
                                 docQuadResult.quadrilateral,
                                 docQuadResult.dimensions,
-                                { confidence: docQuadResult.confidence }
+                                { confidence: docQuadResult.confidence, profile: 'docquad' }
                             );
                             if (docQuadGate.accepted) {
                                 detectionQuad = docQuadResult.quadrilateral;
                                 detectionDims = docQuadResult.dimensions;
                                 cropConfidence = docQuadResult.confidence;
+                                cropProfile = 'docquad';
                                 console.log('[commitCapture] DocQuad detection SUCCESS', {
                                     confidence: docQuadResult.confidence,
                                     metrics: docQuadGate.metrics,
@@ -400,6 +402,7 @@ export default function ScannerScreen() {
                                 detectionQuad = cvResult.quadrilateral;
                                 detectionDims = { width: downscaled.width, height: downscaled.height };
                                 cropConfidence = cvResult.confidence;
+                                cropProfile = 'standard';
                                 console.log('[commitCapture] Post-capture detection SUCCESS');
                             }
                         } else {
@@ -444,7 +447,9 @@ export default function ScannerScreen() {
                         bottomRight: { x: detectionQuad.bottomRight.x * scaleX, y: detectionQuad.bottomRight.y * scaleY },
                         bottomLeft: { x: detectionQuad.bottomLeft.x * scaleX, y: detectionQuad.bottomLeft.y * scaleY },
                     };
-                    const scaledCropGate = evaluateAutoCropCandidate(scaledQuad, canonicalDims);
+                    const scaledCropGate = evaluateAutoCropCandidate(scaledQuad, canonicalDims, {
+                        profile: cropProfile,
+                    });
                     if (!scaledCropGate.accepted) {
                         console.warn('[commitCapture] Scaled auto-crop rejected before warp. Falling back to full image.', {
                             reason: scaledCropGate.reason,
@@ -460,6 +465,7 @@ export default function ScannerScreen() {
                         canonicalUri,
                         scaledQuad,
                         canonicalDims,
+                        { cropProfile },
                     );
                     finalUri = norm.uri;
                     finalScaledQuad = scaledQuad;
