@@ -1498,7 +1498,9 @@ export const useScanStore = create<ScanState>()(
             pages[idx] = { 
               ...pages[idx], 
               file_path: newFilePath, 
-              ...(newOriginalFilePath ? { original_file_path: newOriginalFilePath } : {})
+              ...(newOriginalFilePath ? { original_file_path: newOriginalFilePath } : {}),
+              orientation_degrees: (((pages[idx].orientation_degrees || 0) + 90) % 360) as 0 | 90 | 180 | 270,
+              needs_orientation_review: false,
             };
           }
         };

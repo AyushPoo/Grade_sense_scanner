@@ -1420,6 +1420,8 @@ export async function applyFilter(imageUri: string, mode: FilterMode): Promise<s
   let grayMat: any = null;  // 1-channel gray
   let blurMat: any = null;  // 1-channel blurred gray
   let sharpMat: any = null; // 1-channel sharpened gray
+  let binaryMat: any = null; // 1-channel adaptive text mask
+  let paperMat: any = null; // 1-channel lifted paper base
   let dstMat: any = null;   // 1-channel output
   let resizedUri: string | null = null;
 
@@ -1455,18 +1457,30 @@ export async function applyFilter(imageUri: string, mode: FilterMode): Promise<s
     dstMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
 
     if (mode === 'high_contrast') {
-      // Comfortable review filter: lift the paper background and deepen ink
-      // without the hard black/white speckling of OCR binarization.
+      // Scanner-style review filter: build a soft text mask, lift the paper
+      // background, then blend them so handwriting pops without pure OCR binary.
       try {
         blurMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
         sharpMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
+        binaryMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
+        paperMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
         const blurSize = OpenCV.createObject(ObjectType.Size, 3, 3);
         (OpenCV as any).invoke('GaussianBlur', grayMat, blurMat, blurSize, 0);
-        (OpenCV as any).invoke('addWeighted', grayMat, 1.65, blurMat, -0.65, 0, sharpMat);
-        (OpenCV as any).invoke('convertScaleAbs', sharpMat, dstMat, 1.34, -30);
+        (OpenCV as any).invoke('addWeighted', grayMat, 1.55, blurMat, -0.55, 0, sharpMat);
+        (OpenCV as any).invoke('convertScaleAbs', sharpMat, paperMat, 1.18, 18);
+        (OpenCV as any).invoke(
+          'adaptiveThreshold',
+          blurMat, binaryMat,
+          255,
+          1,
+          0,
+          35,
+          12,
+        );
+        (OpenCV as any).invoke('addWeighted', paperMat, 0.34, binaryMat, 0.66, 0, dstMat);
       } catch (enhanceErr) {
         console.warn('[CV] high_contrast enhancement fallback:', enhanceErr);
-        (OpenCV as any).invoke('convertScaleAbs', grayMat, dstMat, 1.32, -22);
+        (OpenCV as any).invoke('convertScaleAbs', grayMat, dstMat, 1.45, -35);
       }
     } else if (mode === 'adaptive_threshold') {
       // Adobe-like document cleanup: smooth small sensor noise, then create
@@ -1506,7 +1520,7 @@ export async function applyFilter(imageUri: string, mode: FilterMode): Promise<s
     console.warn(`[CV] applyFilter(${mode}) failed, falling back to grayscale:`, err);
     return convertToGrayscale(imageUri);
   } finally {
-    cleanupMats([srcMat, grayMat, blurMat, sharpMat, dstMat]);
+    cleanupMats([srcMat, grayMat, blurMat, sharpMat, binaryMat, paperMat, dstMat]);
     try {
       if (resizedUri && resizedUri !== imageUri) new File(resizedUri).delete();
     } catch (_) { }

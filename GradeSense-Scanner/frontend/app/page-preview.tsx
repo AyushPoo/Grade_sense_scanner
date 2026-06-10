@@ -471,6 +471,8 @@ export default function PagePreviewScreen() {
         crop_quad: quad,
         crop_applied: true,
         crop_confidence: undefined,
+        orientation_degrees: 0 as const,
+        needs_orientation_review: false,
         filter_mode: filterToApply,
       });
       setCropTarget(null);
@@ -617,12 +619,12 @@ export default function PagePreviewScreen() {
         <View style={styles.infoRow}>
           <View style={styles.infoItem}>
             <Ionicons
-              name={currentPageIsPdf ? 'document-text' : currentPage?.is_blurry ? 'warning' : 'checkmark-circle'}
+              name={currentPageIsPdf ? 'document-text' : currentPage?.needs_orientation_review || currentPage?.is_blurry ? 'warning' : 'checkmark-circle'}
               size={18}
-              color={currentPageIsPdf ? COLORS.primary : currentPage?.is_blurry ? COLORS.warning : COLORS.success}
+              color={currentPageIsPdf ? COLORS.primary : currentPage?.needs_orientation_review || currentPage?.is_blurry ? COLORS.warning : COLORS.success}
             />
             <Text style={styles.infoText}>
-              {currentPageIsPdf ? 'PDF' : currentPage?.is_blurry ? 'Blurry' : 'Sharp'}
+              {currentPageIsPdf ? 'PDF' : currentPage?.needs_orientation_review ? 'Check rotation' : currentPage?.is_blurry ? 'Blurry' : 'Sharp'}
             </Text>
           </View>
         </View>

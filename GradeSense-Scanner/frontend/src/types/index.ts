@@ -47,6 +47,10 @@ export interface ScannedPage {
   }; // the detected points used for the crop
   crop_applied?: boolean;
   crop_confidence?: number;
+  orientation_degrees?: 0 | 90 | 180 | 270;
+  needs_orientation_review?: boolean;
+  split_source_page_id?: string;
+  split_part?: 'left' | 'right' | 'top' | 'bottom';
   filter_mode?: 'original' | 'grayscale' | 'high_contrast' | 'adaptive_threshold';
   file_size: number;
   is_blurry: boolean;

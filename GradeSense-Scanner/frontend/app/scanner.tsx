@@ -38,6 +38,7 @@ import { createImportedPdfPage, createNativeScannedImagePage, isPdfScannedPage }
 import { useLocalSearchParams } from 'expo-router';
 import { evaluateAutoCropCandidate } from '../src/utils/cropQuality';
 import { detectDocumentWithDocQuad } from '../src/utils/docQuadDetector';
+import type { ScannedPage } from '../src/types';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const CAPTURE_COOLDOWN_MS = 2500;
@@ -88,6 +89,110 @@ interface PendingCapture {
     quad: Quadrilateral | null;
     dims: { width: number; height: number };
     rawDims: { width: number; height: number };
+}
+
+type PageSplitPart = 'left' | 'right' | 'top' | 'bottom';
+
+interface PreparedImagePart {
+    uri: string;
+    width: number;
+    height: number;
+    splitPart?: PageSplitPart;
+}
+
+interface OrientationResult {
+    uri: string;
+    width: number;
+    height: number;
+    orientationDegrees: 0 | 90 | 180 | 270;
+    needsReview: boolean;
+}
+
+function shouldAutoPortraitRotate(width: number, height: number): boolean {
+    return width > height * 1.08;
+}
+
+function isAmbiguousOrientation(width: number, height: number): boolean {
+    const ratio = width / Math.max(1, height);
+    return ratio > 0.88 && ratio <= 1.08;
+}
+
+async function autoOrientPageImage(
+    uri: string,
+    width: number,
+    height: number,
+): Promise<OrientationResult> {
+    if (shouldAutoPortraitRotate(width, height)) {
+        const rotated = await ImageManipulator.manipulateAsync(
+            uri,
+            [{ rotate: 90 }],
+            { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG }
+        );
+        return {
+            uri: rotated.uri,
+            width: rotated.width,
+            height: rotated.height,
+            orientationDegrees: 90,
+            needsReview: false,
+        };
+    }
+
+    return {
+        uri,
+        width,
+        height,
+        orientationDegrees: 0,
+        needsReview: isAmbiguousOrientation(width, height),
+    };
+}
+
+async function splitDoublePageImage(
+    uri: string,
+    width: number,
+    height: number,
+): Promise<PreparedImagePart[]> {
+    const splitVertically = width >= height * 0.9;
+    const overlap = Math.round((splitVertically ? width : height) * 0.018);
+
+    if (splitVertically) {
+        const mid = Math.floor(width / 2);
+        const leftWidth = Math.min(width, mid + overlap);
+        const rightX = Math.max(0, mid - overlap);
+        const rightWidth = width - rightX;
+        const left = await ImageManipulator.manipulateAsync(
+            uri,
+            [{ crop: { originX: 0, originY: 0, width: leftWidth, height } }],
+            { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG }
+        );
+        const right = await ImageManipulator.manipulateAsync(
+            uri,
+            [{ crop: { originX: rightX, originY: 0, width: rightWidth, height } }],
+            { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG }
+        );
+        return [
+            { uri: left.uri, width: left.width, height: left.height, splitPart: 'left' },
+            { uri: right.uri, width: right.width, height: right.height, splitPart: 'right' },
+        ];
+    }
+
+    const mid = Math.floor(height / 2);
+    const topHeight = Math.min(height, mid + overlap);
+    const bottomY = Math.max(0, mid - overlap);
+    const bottomHeight = height - bottomY;
+    const top = await ImageManipulator.manipulateAsync(
+        uri,
+        [{ crop: { originX: 0, originY: 0, width, height: topHeight } }],
+        { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG }
+    );
+    const bottom = await ImageManipulator.manipulateAsync(
+        uri,
+        [{ crop: { originX: 0, originY: bottomY, width, height: bottomHeight } }],
+        { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG }
+    );
+    return [
+        { uri: top.uri, width: top.width, height: top.height, splitPart: 'top' },
+        { uri: bottom.uri, width: bottom.width, height: bottom.height, splitPart: 'bottom' },
+    ];
 }
 
 function phaseToLiveStatus(phase: ScannerPhase): LiveScanStatus {
@@ -291,6 +396,7 @@ export default function ScannerScreen() {
 
         try {
             let finalUri = pending.uri;
+            let finalDims = { width: pending.rawDims.width, height: pending.rawDims.height };
 
             // ── PHASE 1: Create EXIF-Resolved Canonical Image ──────────────
             // ImageManipulator applies EXIF rotation, producing a physically
@@ -303,6 +409,7 @@ export default function ScannerScreen() {
             );
             const canonicalUri = canonical.uri;
             const canonicalDims = { width: canonical.width, height: canonical.height };
+            finalDims = canonicalDims;
 
             if (__DEV__) {
                 console.log(`[EXIF-AUDIT] canonicalDims=${canonical.width}x${canonical.height} rawDims=${pending.rawDims.width}x${pending.rawDims.height}`);
@@ -468,6 +575,7 @@ export default function ScannerScreen() {
                         { cropProfile },
                     );
                     finalUri = norm.uri;
+                    finalDims = { width: norm.width, height: norm.height };
                     finalScaledQuad = scaledQuad;
                 } catch (e) {
                     finalScaledQuad = null;
@@ -484,6 +592,7 @@ export default function ScannerScreen() {
                     { compress: 0.88, format: ImageManipulator.SaveFormat.JPEG },
                 );
                 finalUri = resized.uri;
+                finalDims = { width: resized.width, height: resized.height };
             }
 
             // CLEANUP: delete temporary canonical image
@@ -491,53 +600,74 @@ export default function ScannerScreen() {
                 new File(canonicalUri).delete();
             } catch (_) {}
 
-            // Step 3: Save original un-filtered image
-            const origFilename = `orig_${Date.now()}.jpg`;
-            const destOrig = new File(Paths.document, origFilename);
-            new File(finalUri).copy(destOrig);
+            const stateAtSave = useScanStore.getState();
+            const shouldSplitDoublePage =
+                stateAtSave.currentSession?.settings.page_mode === 'double' &&
+                !stateAtSave.pendingRetake;
+            const splitSourcePageId = shouldSplitDoublePage ? generateUUID() : undefined;
+            const imageParts: PreparedImagePart[] = shouldSplitDoublePage
+                ? await splitDoublePageImage(finalUri, finalDims.width, finalDims.height)
+                : [{ uri: finalUri, width: finalDims.width, height: finalDims.height }];
 
-            // Poll for original
-            let origVerified = false;
-            for (let i = 0; i < 10; i++) {
-                if (destOrig.exists) { origVerified = true; break; }
-                await new Promise(r => setTimeout(r, 50));
+            const persistPagePart = async (part: PreparedImagePart, index: number) => {
+                const oriented = await autoOrientPageImage(part.uri, part.width, part.height);
+
+                const suffix = `${Date.now()}_${index}`;
+                const origFilename = `orig_${suffix}.jpg`;
+                const destOrig = new File(Paths.document, origFilename);
+                new File(oriented.uri).copy(destOrig);
+
+                let origVerified = false;
+                for (let i = 0; i < 10; i++) {
+                    if (destOrig.exists) { origVerified = true; break; }
+                    await new Promise(r => setTimeout(r, 50));
+                }
+                if (!origVerified) {
+                    throw new Error('Failed to save original page image');
+                }
+
+                const filteredUri = await applyFilter(destOrig.uri, filter);
+
+                const filename = `scanned_${suffix}.jpg`;
+                const dest = new File(Paths.document, filename);
+                new File(filteredUri).copy(dest);
+
+                let verified = false;
+                for (let i = 0; i < 10; i++) {
+                    if (dest.exists) { verified = true; break; }
+                    await new Promise(r => setTimeout(r, 50));
+                }
+                if (!verified) {
+                    throw new Error('Failed to save filtered page image');
+                }
+
+                const page: ScannedPage = {
+                    id: generateUUID(),
+                    ui_id: '',
+                    page_number: 0,
+                    file_path: dest.uri,
+                    original_file_path: destOrig.uri,
+                    raw_file_path: shouldSplitDoublePage ? undefined : (rawVerified ? destRaw.uri : undefined),
+                    crop_quad: shouldSplitDoublePage ? undefined : (finalScaledQuad || undefined),
+                    crop_applied: shouldSplitDoublePage ? true : !!finalScaledQuad,
+                    crop_confidence: shouldSplitDoublePage ? cropConfidence : (finalScaledQuad ? cropConfidence : undefined),
+                    orientation_degrees: oriented.orientationDegrees,
+                    needs_orientation_review: oriented.needsReview,
+                    split_source_page_id: splitSourcePageId,
+                    split_part: part.splitPart,
+                    filter_mode: filter,
+                    file_size: dest.size || 0,
+                    is_blurry: pending.blur.isBlurry,
+                    sharpness_score: pending.blur.sharpnessScore,
+                    captured_at: new Date().toISOString(),
+                };
+
+                addPageRef.current(page);
+            };
+
+            for (let i = 0; i < imageParts.length; i++) {
+                await persistPagePart(imageParts[i], i);
             }
-
-            // Step 4: Apply requested OCR filter
-            const filteredUri = await applyFilter(destOrig.uri, filter);
-
-            // Step 5: Copy to permanent filtered storage
-            const filename = `scanned_${Date.now()}.jpg`;
-            const dest = new File(Paths.document, filename);
-            new File(filteredUri).copy(dest);
-
-            let verified = false;
-            for (let i = 0; i < 10; i++) {
-                if (dest.exists) { verified = true; break; }
-                await new Promise(r => setTimeout(r, 50));
-            }
-            if (!verified) {
-                console.warn('[commitCapture] file not found after copy');
-                return;
-            }
-
-            // Step 6: Persist to store
-            addPageRef.current({
-                id: generateUUID(),
-                ui_id: '',
-                page_number: 0,
-                file_path: dest.uri,
-                original_file_path: destOrig.uri,
-                raw_file_path: rawVerified ? destRaw.uri : undefined,
-                crop_quad: finalScaledQuad || undefined,
-                crop_applied: !!finalScaledQuad,
-                crop_confidence: finalScaledQuad ? cropConfidence : undefined,
-                filter_mode: filter,
-                file_size: dest.size || 0,
-                is_blurry: pending.blur.isBlurry,
-                sharpness_score: pending.blur.sharpnessScore,
-                captured_at: new Date().toISOString(),
-            });
         } catch (e) {
             console.warn('[commitCapture] error:', e);
         } finally {

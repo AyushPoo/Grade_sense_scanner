@@ -83,8 +83,14 @@ const PageThumb = memo(({
 
         {/* Quality badge */}
         <View style={[styles.qualityBadge, { backgroundColor: isPdf ? COLORS.primary : qc.bg }]}>
-          <Text style={[styles.qualityText, { color: '#fff' }]}>{isPdf ? 'PDF' : qc.label}</Text>
+          <Text style={[styles.qualityText, { color: '#fff' }]}>{isPdf ? 'PDF' : page.needs_orientation_review ? 'ROTATE?' : qc.label}</Text>
         </View>
+
+        {page.split_part && (
+          <View style={styles.splitBadge}>
+            <Text style={styles.splitBadgeText}>{page.split_part.toUpperCase()}</Text>
+          </View>
+        )}
       </TouchableOpacity>
 
       {/* Actions row */}
@@ -745,6 +751,8 @@ export default function ReviewScreen() {
                         crop_quad: quad,
                         crop_applied: true,
                         crop_confidence: undefined,
+                        orientation_degrees: 0 as const,
+                        needs_orientation_review: false,
                     };
                     // Fully immutable Zustand update — new references at every nesting level
                     // Previous code mutated in-place, so useShallow selector never detected changes
@@ -875,6 +883,8 @@ const styles = StyleSheet.create({
   pageNumText:      { color: '#fff', fontSize: 10, fontWeight: '600' },
   qualityBadge:     { position: 'absolute', bottom: 4, left: 4, right: 4, borderRadius: 4, paddingVertical: 2, alignItems: 'center' },
   qualityText:      { fontSize: 10, fontWeight: '700' },
+  splitBadge:       { position: 'absolute', top: 4, right: 4, backgroundColor: 'rgba(0,0,0,0.58)', borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1 },
+  splitBadgeText:   { color: '#fff', fontSize: 9, fontWeight: '800' },
   thumbActions:     { flexDirection: 'row', justifyContent: 'space-between', width: THUMB_W, marginTop: 4 },
   thumbActionBtn:   { flexDirection: 'row', alignItems: 'center', gap: 2, padding: 4 },
   thumbActionDisabled: { opacity: 0.25 },

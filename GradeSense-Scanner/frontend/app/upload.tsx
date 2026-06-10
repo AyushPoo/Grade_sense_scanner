@@ -33,6 +33,22 @@ const ProgressBar = ({ progress }: { progress: number }) => (
   </View>
 );
 
+function getOrientationReviewLabels(session: ScanSession): string[] {
+  const labels: string[] = [];
+  session.question_paper.pages.forEach(page => {
+    if (page.needs_orientation_review) labels.push(`Question Paper page ${page.page_number}`);
+  });
+  session.model_answer.pages.forEach(page => {
+    if (page.needs_orientation_review) labels.push(`Model Answer page ${page.page_number}`);
+  });
+  session.students.forEach(student => {
+    student.pages.forEach(page => {
+      if (page.needs_orientation_review) labels.push(`${student.label} page ${page.page_number}`);
+    });
+  });
+  return labels;
+}
+
 const progressStyles = StyleSheet.create({
   container: {
     width: '100%',
@@ -183,6 +199,21 @@ export default function UploadScreen() {
 
     if (!session.subject_id) {
       setShowSubjectSelector(true);
+      return;
+    }
+
+    const orientationReviewPages = getOrientationReviewLabels(session);
+    if (orientationReviewPages.length > 0) {
+      const preview = orientationReviewPages.slice(0, 6).join('\n');
+      const remaining = orientationReviewPages.length > 6 ? `\n+${orientationReviewPages.length - 6} more` : '';
+      Alert.alert(
+        'Check page rotation',
+        `${orientationReviewPages.length} page${orientationReviewPages.length === 1 ? '' : 's'} may be sideways or square-ish:\n\n${preview}${remaining}`,
+        [
+          { text: 'Review', style: 'cancel' },
+          { text: 'Upload Anyway', onPress: simulateUpload },
+        ]
+      );
       return;
     }
 
