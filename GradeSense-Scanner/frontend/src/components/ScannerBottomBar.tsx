@@ -16,8 +16,10 @@ interface ScannerBottomBarProps {
   isCameraReady: boolean;
   currentPagesCount: number;
   autoCaptureEnabled: boolean;
+  pageMode: 'single' | 'double';
   stabilityProgress: number;
   onTogglePause: () => void;
+  onTogglePageMode: () => void;
   onManualCapture: () => void;
   onPickPdf: () => void;
   onSmartScan: () => void;
@@ -34,8 +36,10 @@ const ScannerBottomBarBase: React.FC<ScannerBottomBarProps> = ({
   isCameraReady,
   currentPagesCount,
   autoCaptureEnabled,
+  pageMode,
   stabilityProgress,
   onTogglePause,
+  onTogglePageMode,
   onManualCapture,
   onSmartScan,
   onNextStudent,
@@ -104,6 +108,10 @@ const ScannerBottomBarBase: React.FC<ScannerBottomBarProps> = ({
       <View style={styles.secondaryRow}>
         {currentPhase !== 'students' ? (
           <View style={styles.documentActionsRow}>
+            <TouchableOpacity style={styles.pageModeBtn} onPress={onTogglePageMode}>
+              <Ionicons name={pageMode === 'double' ? 'documents' : 'document'} size={16} color="#fff" />
+              <Text style={styles.pageModeBtnText}>{pageMode === 'double' ? '2 pages' : '1 page'}</Text>
+            </TouchableOpacity>
             <TouchableOpacity style={styles.smartScanBtn} onPress={onSmartScan}>
               <Ionicons name="scan" size={16} color={COLORS.primary} />
               <Text style={styles.smartScanBtnText}>SMART SCAN</Text>
@@ -117,6 +125,15 @@ const ScannerBottomBarBase: React.FC<ScannerBottomBarProps> = ({
           </View>
         ) : (
           <View style={styles.studentActionsRow}>
+            <TouchableOpacity
+              style={styles.undoStudentBtn}
+              onPress={onTogglePageMode}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Ionicons name={pageMode === 'double' ? 'documents' : 'document'} size={16} color="#fff" />
+              <Text style={styles.undoStudentBtnText}>{pageMode === 'double' ? '2 pages' : '1 page'}</Text>
+            </TouchableOpacity>
+
             <TouchableOpacity
               style={styles.undoStudentBtn}
               onPress={onSmartScan}
@@ -210,6 +227,22 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+  },
+  pageModeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    borderColor: 'rgba(255,255,255,0.22)',
+    borderWidth: 1,
+    paddingHorizontal: 13,
+    paddingVertical: 11,
+    borderRadius: 24,
+    gap: 7,
+  },
+  pageModeBtnText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '900',
   },
   donePhaseBtn: {
     flexDirection: 'row',

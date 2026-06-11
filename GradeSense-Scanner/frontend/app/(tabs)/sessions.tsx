@@ -8,9 +8,6 @@ import {
   Alert,
   RefreshControl,
   ActivityIndicator,
-  LayoutAnimation,
-  Platform,
-  UIManager,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -23,11 +20,6 @@ import { fetchManagedExams } from '../../src/api/manage';
 import { ManagedExam } from '../../src/utils/manageData';
 import { isReviewReadyExam } from '../../src/utils/gradingLifecycle';
 
-// Enable layout animation for Android
-if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
-  UIManager.setLayoutAnimationEnabledExperimental(true);
-}
-
 const STATUS_MAP: Record<string, { icon: React.ComponentProps<typeof Ionicons>['name']; color: string; bg: string; label: string }> = {
   uploaded:  { icon: 'checkmark-circle', color: COLORS.success,  bg: COLORS.successLight,  label: 'Uploaded'    },
   completed: { icon: 'checkmark-circle', color: COLORS.success,  bg: COLORS.successLight,  label: 'Uploaded'    },
@@ -36,7 +28,7 @@ const STATUS_MAP: Record<string, { icon: React.ComponentProps<typeof Ionicons>['
   syncing:   { icon: 'sync',             color: COLORS.primary,  bg: COLORS.primaryXLight, label: 'Syncing'     },
   sync_failed: { icon: 'alert-circle',   color: COLORS.error,    bg: COLORS.errorLight,    label: 'Sync failed' },
   ready:     { icon: 'time',             color: COLORS.warning,  bg: COLORS.warningLight,  label: 'Pending'     },
-  uploading: { icon: 'cloud-upload',     color: COLORS.info,     bg: COLORS.infoLight,     label: 'Uploading…'  },
+  uploading: { icon: 'cloud-upload',     color: COLORS.info,     bg: COLORS.infoLight,     label: 'Uploading...'  },
   failed:    { icon: 'alert-circle',     color: COLORS.error,    bg: COLORS.errorLight,    label: 'Failed'      },
   scanning:  { icon: 'document',         color: COLORS.textMuted,bg: COLORS.surfaceElevated, label: 'Scanning'  },
 };
@@ -47,37 +39,15 @@ function formatDate(dateStr: string) {
   } catch { return ''; }
 }
 
-interface Batch {
-  batch_id: string;
-  name: string;
-  student_count: number;
-}
-
-interface Exam {
-  id: string;
-  name: string;
-  subjectId: string;
-  totalMarks: number;
-  examDate: string | null;
-  status: string;
-}
-
 export default function SessionsScreen() {
   const router = useRouter();
   const token = useAuthStore(s => s.sessionToken);
   const { savedSessions, deleteSession, fetchSessions } = useScanStore();
 
-  const [activeTab, setActiveTab] = useState<'drafts' | 'review' | 'batches'>('review');
+  const [activeTab, setActiveTab] = useState<'drafts' | 'review'>('review');
   const [refreshing, setRefreshing] = useState(false);
   const [reviewExams, setReviewExams] = useState<ManagedExam[]>([]);
   const [loadingReviewExams, setLoadingReviewExams] = useState(false);
-  
-  // Batches state
-  const [batches, setBatches] = useState<Batch[]>([]);
-  const [loadingBatches, setLoadingBatches] = useState(false);
-  const [expandedBatchId, setExpandedBatchId] = useState<string | null>(null);
-  const [examsByBatch, setExamsByBatch] = useState<Record<string, Exam[]>>({});
-  const [loadingExams, setLoadingExams] = useState<string | null>(null);
 
   const sessions = Array.isArray(savedSessions) ? savedSessions : [];
 
@@ -95,27 +65,6 @@ export default function SessionsScreen() {
     }
   }, [token]);
 
-  const loadBatches = useCallback(async () => {
-    if (!token) return;
-    setLoadingBatches(true);
-    try {
-      const res = await fetch(`${getBackendUrl()}/api/batches`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const json = await res.json();
-        setBatches(json.batches || []);
-      } else {
-        console.warn('Failed to load batches');
-      }
-    } catch (err) {
-      console.error('Error fetching batches:', err);
-    } finally {
-      setLoadingBatches(false);
-      setRefreshing(false);
-    }
-  }, [token]);
-
   useEffect(() => {
     fetchSessions().catch(() => {});
   }, [fetchSessions]);
@@ -123,52 +72,15 @@ export default function SessionsScreen() {
   useEffect(() => {
     if (activeTab === 'review' && reviewExams.length === 0) {
       loadReviewExams();
-    } else if (activeTab === 'batches' && batches.length === 0) {
-      loadBatches();
     }
-  }, [activeTab, batches.length, loadBatches, loadReviewExams, reviewExams.length]);
-
-  const loadExamsForBatch = async (batchId: string) => {
-    if (!token) return;
-    setLoadingExams(batchId);
-    try {
-      const res = await fetch(`${getBackendUrl()}/api/batches/${batchId}/exams`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const json = await res.json();
-        setExamsByBatch(prev => ({ ...prev, [batchId]: json.exams || [] }));
-      }
-    } catch (err) {
-      console.error('Error fetching exams for batch:', err);
-    } finally {
-      setLoadingExams(null);
-    }
-  };
-
-  const toggleBatchExpand = (batchId: string) => {
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    if (expandedBatchId === batchId) {
-      setExpandedBatchId(null);
-    } else {
-      setExpandedBatchId(batchId);
-      if (!examsByBatch[batchId]) {
-        loadExamsForBatch(batchId);
-      }
-    }
-  };
+  }, [activeTab, loadReviewExams, reviewExams.length]);
 
   const onRefresh = async () => {
     setRefreshing(true);
     if (activeTab === 'drafts') {
       try { await fetchSessions(); } catch { /* silent */ } finally { setRefreshing(false); }
-    } else if (activeTab === 'review') {
-      await loadReviewExams();
     } else {
-      await loadBatches();
-      if (expandedBatchId) {
-        await loadExamsForBatch(expandedBatchId);
-      }
+      await loadReviewExams();
     }
   };
 
@@ -254,69 +166,6 @@ export default function SessionsScreen() {
     );
   };
 
-  const renderBatchItem = ({ item }: { item: Batch }) => {
-    const isExpanded = expandedBatchId === item.batch_id;
-    const exams = examsByBatch[item.batch_id] || [];
-
-    return (
-      <View style={styles.batchCard}>
-        <TouchableOpacity
-          style={styles.batchHeader}
-          onPress={() => toggleBatchExpand(item.batch_id)}
-          activeOpacity={0.7}
-        >
-          <View style={[styles.batchIconWrap, { backgroundColor: COLORS.primaryXLight }]}>
-            <Ionicons name="people-circle" size={24} color={COLORS.primary} />
-          </View>
-          <View style={{ flex: 1, marginLeft: 12 }}>
-            <Text style={styles.batchName}>{item.name}</Text>
-            <Text style={styles.batchSubtitle}>{item.student_count || 0} enrolled students</Text>
-          </View>
-          <Ionicons
-            name={isExpanded ? 'chevron-up' : 'chevron-down'}
-            size={20}
-            color={COLORS.textLight}
-          />
-        </TouchableOpacity>
-
-        {isExpanded && (
-          <View style={styles.examsList}>
-            <View style={styles.examsListHeader}>
-              <Text style={styles.examsListTitle}>Class Exams</Text>
-              {loadingExams === item.batch_id && <ActivityIndicator size="small" color={COLORS.primary} />}
-            </View>
-
-            {exams.length === 0 && loadingExams !== item.batch_id && (
-              <Text style={styles.noExamsText}>No exams synced for this batch yet.</Text>
-            )}
-
-            {exams.map(exam => (
-              <TouchableOpacity
-                key={exam.id}
-                style={styles.examItem}
-                onPress={() => router.push({ pathname: '/review-grading' as any, params: { examId: exam.id, sessionName: exam.name } })}
-              >
-                <View style={styles.examIconCircle}>
-                  <Ionicons name="document-text" size={16} color={COLORS.info} />
-                </View>
-                <View style={{ flex: 1, marginLeft: 10 }}>
-                  <Text style={styles.examNameText}>{exam.name}</Text>
-                  <Text style={styles.examMetaText}>
-                    Marks: {exam.totalMarks} • Date: {exam.examDate ? formatDate(exam.examDate) : 'N/A'}
-                  </Text>
-                </View>
-                <View style={styles.examReviewButton}>
-                  <Text style={styles.examReviewBtnText}>Review</Text>
-                  <Ionicons name="arrow-forward" size={12} color="#fff" />
-                </View>
-              </TouchableOpacity>
-            ))}
-          </View>
-        )}
-      </View>
-    );
-  };
-
   const renderReviewExamItem = ({ item }: { item: ManagedExam }) => (
     <TouchableOpacity
       style={styles.reviewExamCard}
@@ -329,7 +178,7 @@ export default function SessionsScreen() {
       <View style={styles.reviewExamBody}>
         <Text style={styles.reviewExamTitle} numberOfLines={1}>{item.name}</Text>
         <Text style={styles.reviewExamMeta}>
-          {item.submissionCount} papers · {item.averagePercentage ? `${item.averagePercentage}% avg` : `${item.totalMarks || 0} marks`}
+          {item.submissionCount} papers - {item.averagePercentage ? `${item.averagePercentage}% avg` : `${item.totalMarks || 0} marks`}
         </Text>
       </View>
       <View style={styles.reviewExamCTA}>
@@ -348,9 +197,7 @@ export default function SessionsScreen() {
           <Text style={styles.headerSub}>
             {activeTab === 'drafts'
               ? `${sessions.length} local draft${sessions.length !== 1 ? 's' : ''}`
-              : activeTab === 'review'
-                ? `${reviewExams.length} exam${reviewExams.length !== 1 ? 's' : ''} ready`
-                : `${batches.length} active class${batches.length !== 1 ? 'es' : ''}`}
+              : `${reviewExams.length} exam${reviewExams.length !== 1 ? 's' : ''} ready`}
           </Text>
         </View>
         <TouchableOpacity style={styles.newBtn} onPress={() => router.push('/session-setup')} activeOpacity={0.82}>
@@ -392,22 +239,6 @@ export default function SessionsScreen() {
             Review
           </Text>
         </TouchableOpacity>
-        
-        <TouchableOpacity
-          style={[styles.segmentBtn, activeTab === 'batches' && styles.segmentBtnActive]}
-          onPress={() => setActiveTab('batches')}
-          activeOpacity={0.8}
-        >
-          <Ionicons 
-            name={activeTab === 'batches' ? 'people' : 'people-outline'} 
-            size={16} 
-            color={activeTab === 'batches' ? '#fff' : COLORS.textLight} 
-            style={{ marginRight: 6 }}
-          />
-          <Text style={[styles.segmentText, activeTab === 'batches' && styles.segmentTextActive]}>
-            Class Batches
-          </Text>
-        </TouchableOpacity>
       </View>
 
       {activeTab === 'drafts' ? (
@@ -436,7 +267,7 @@ export default function SessionsScreen() {
             }
           />
         )
-      ) : activeTab === 'review' ? (
+      ) : (
         loadingReviewExams && reviewExams.length === 0 ? (
           <View style={styles.loader}>
             <ActivityIndicator size="large" color={COLORS.primary} />
@@ -459,33 +290,6 @@ export default function SessionsScreen() {
             data={reviewExams}
             keyExtractor={item => item.id}
             renderItem={renderReviewExamItem}
-            contentContainerStyle={styles.listPad}
-            showsVerticalScrollIndicator={false}
-            ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
-            refreshControl={
-              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} />
-            }
-          />
-        )
-      ) : (
-        loadingBatches && batches.length === 0 ? (
-          <View style={styles.loader}>
-            <ActivityIndicator size="large" color={COLORS.primary} />
-            <Text style={styles.loaderText}>Loading class batches...</Text>
-          </View>
-        ) : batches.length === 0 ? (
-          <View style={styles.empty}>
-            <View style={styles.emptyIcon}>
-              <Ionicons name="people-outline" size={52} color={COLORS.textMuted} />
-            </View>
-            <Text style={styles.emptyTitle}>No batches found</Text>
-            <Text style={styles.emptySub}>Add class batches and students in the Analytics & Manage tab first.</Text>
-          </View>
-        ) : (
-          <FlatList
-            data={batches}
-            keyExtractor={item => item.batch_id}
-            renderItem={renderBatchItem}
             contentContainerStyle={styles.listPad}
             showsVerticalScrollIndicator={false}
             ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
@@ -702,108 +506,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '800',
   },
-
-  // Batches list items
-  batchCard: {
-    backgroundColor: COLORS.surface,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: COLORS.borderLight,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 5,
-    elevation: 1,
-    overflow: 'hidden',
-  },
-  batchHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 16,
-  },
-  batchIconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  batchName: { fontSize: 16, fontWeight: '700', color: COLORS.text },
-  batchSubtitle: { fontSize: 12, color: COLORS.textMuted, marginTop: 2 },
-  
-  examsList: {
-    backgroundColor: COLORS.backgroundDark,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.borderLight,
-    padding: 14,
-    gap: 8,
-  },
-  examsListHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 4,
-    paddingHorizontal: 4,
-  },
-  examsListTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: COLORS.textLight,
-    letterSpacing: 0.5,
-  },
-  noExamsText: {
-    fontSize: 13,
-    color: COLORS.textMuted,
-    paddingVertical: 8,
-    textAlign: 'center',
-  },
-  examItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: COLORS.surface,
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: COLORS.borderLight,
-  },
-  examIconCircle: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: COLORS.infoLight,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  examNameText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: COLORS.text,
-  },
-  examMetaText: {
-    fontSize: 11,
-    color: COLORS.textMuted,
-    marginTop: 2,
-  },
-  examReviewButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: COLORS.primary,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 16,
-    shadowColor: COLORS.primary,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 3,
-    elevation: 2,
-  },
-  examReviewBtnText: {
-    color: '#fff',
-    fontSize: 11,
-    fontWeight: '700',
-  },
-
   // Empty state
   empty: {
     flex: 1,

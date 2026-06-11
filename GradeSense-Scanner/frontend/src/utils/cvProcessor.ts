@@ -1462,13 +1462,25 @@ export async function applyFilter(imageUri: string, mode: FilterMode): Promise<s
       try {
         blurMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
         sharpMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
+        binaryMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
+        paperMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
         const blurSize = OpenCV.createObject(ObjectType.Size, 5, 5);
         (OpenCV as any).invoke('GaussianBlur', grayMat, blurMat, blurSize, 0);
-        (OpenCV as any).invoke('addWeighted', grayMat, 1.42, blurMat, -0.42, 0, sharpMat);
-        (OpenCV as any).invoke('convertScaleAbs', sharpMat, dstMat, 1.18, -8);
+        (OpenCV as any).invoke('addWeighted', grayMat, 1.45, blurMat, -0.45, 0, sharpMat);
+        (OpenCV as any).invoke('convertScaleAbs', sharpMat, paperMat, 1.28, -18);
+        (OpenCV as any).invoke(
+          'adaptiveThreshold',
+          blurMat, binaryMat,
+          255,
+          1,
+          0,
+          31,
+          10,
+        );
+        (OpenCV as any).invoke('addWeighted', paperMat, 0.78, binaryMat, 0.22, 0, dstMat);
       } catch (enhanceErr) {
         console.warn('[CV] high_contrast enhancement fallback:', enhanceErr);
-        (OpenCV as any).invoke('convertScaleAbs', grayMat, dstMat, 1.18, -8);
+        (OpenCV as any).invoke('convertScaleAbs', grayMat, dstMat, 1.28, -18);
       }
     } else if (mode === 'adaptive_threshold') {
       // Adobe-like document cleanup: smooth small sensor noise, then create

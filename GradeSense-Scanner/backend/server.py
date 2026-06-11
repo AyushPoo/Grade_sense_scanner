@@ -1668,6 +1668,7 @@ async def get_batch_students(batch_id: str, authorization: Optional[str] = Heade
                             )
                         batch_doc = await db.batches.find_one({"batch_id": batch_id}, {"_id": 0}) or {}
                         batch_name = str(batch_doc.get("name") or batch_doc.get("batch_name") or "").strip().lower()
+                        batch_student_count = int(batch_doc.get("student_count") or batch_doc.get("studentCount") or 0)
                         webapp_students = [
                             s for s in raw_all
                             if isinstance(s, dict) and (
@@ -1678,13 +1679,28 @@ async def get_batch_students(batch_id: str, authorization: Optional[str] = Heade
                                 )
                             )
                         ]
+                        if not webapp_students and batch_student_count > 0:
+                            untagged_students = [
+                                s for s in raw_all
+                                if isinstance(s, dict)
+                                and not (s.get("batchId") or s.get("batch_id") or s.get("classId") or s.get("class_id"))
+                            ]
+                            if len(untagged_students) == batch_student_count:
+                                logger.warning(
+                                    f"Using untagged webapp roster fallback for batch {batch_id}; "
+                                    f"matched expected count {batch_student_count}"
+                                )
+                                webapp_students = untagged_students
                 
                 mapped_students = []
                 for s in webapp_students:
                     if not isinstance(s, dict):
                         continue
+                    student_id = s.get("id") or s.get("student_id") or s.get("studentId") or s.get("email")
+                    if not student_id:
+                        continue
                     mapped_students.append({
-                        "student_id": s.get("id") or s.get("student_id") or s.get("studentId"),
+                        "student_id": student_id,
                         "roll_number": s.get("rollNumber") or "",
                         "rollNumber": s.get("rollNumber") or "",
                         "name": s.get("name") or "Unnamed Student",

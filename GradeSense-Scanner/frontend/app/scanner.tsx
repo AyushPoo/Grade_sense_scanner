@@ -118,7 +118,7 @@ function isAmbiguousOrientation(width: number, height: number): boolean {
 }
 
 function shouldSplitAsDoublePage(width: number, height: number): boolean {
-    return width >= height * 1.22;
+    return width >= height * 1.55;
 }
 
 async function autoOrientPageImage(
@@ -419,8 +419,16 @@ export default function ScannerScreen() {
                 await new Promise(r => setTimeout(r, 50));
             }
 
+            const scanStateForCrop = useScanStore.getState();
+            const isDoublePageCapture =
+                scanStateForCrop.currentSession?.settings.page_mode === 'double' &&
+                !scanStateForCrop.pendingRetake;
+            if (scanStateForCrop.autoCropEnabled && isDoublePageCapture) {
+                console.log('[commitCapture] Skipping auto-crop in 2-page mode to avoid warping before split.');
+            }
+
             try {
-                if (useScanStore.getState().autoCropEnabled) {
+                if (scanStateForCrop.autoCropEnabled && !isDoublePageCapture) {
                     try {
                         const docQuadResult = await detectDocumentWithDocQuad(canonicalUri);
                         if (docQuadResult?.quadrilateral) {
@@ -509,8 +517,10 @@ export default function ScannerScreen() {
                         } catch (_) {}
                     }
                     }
-                } else {
+                } else if (!scanStateForCrop.autoCropEnabled) {
                     console.log('[commitCapture] Auto-crop disabled. Skipping post-capture detection.');
+                } else {
+                    console.log('[commitCapture] Auto-crop skipped for 2-page capture; splitting original image first.');
                 }
             } catch (detectErr) {
                 console.warn('[commitCapture] post-capture detection error:', detectErr);
@@ -1030,8 +1040,10 @@ export default function ScannerScreen() {
                 isCameraReady={isCameraReady}
                 currentPagesCount={currentPages.length}
                 autoCaptureEnabled={autoCaptureEnabled}
+                pageMode={pageMode}
                 stabilityProgress={stabilityProgress}
                 onTogglePause={handleTogglePause}
+                onTogglePageMode={handleTogglePageMode}
                 onManualCapture={handleManualCapture}
                 onPickPdf={handlePickPdf}
                 onSmartScan={handleSmartScan}
