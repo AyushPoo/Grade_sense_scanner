@@ -38,8 +38,6 @@ import {
   StudentProfileUpdateInput,
 } from '../../src/components/manage/StudentReportModal';
 import { ManagedBatch, ManagedExam, ManagePerformance } from '../../src/utils/manageData';
-import { AIBrainRule, createAIBrainRule, fetchAIBrainRules } from '../../src/api/aiBrain';
-import { fetchWithTimeout } from '../../src/utils/fetchWithTimeout';
 
 interface TeacherOverview {
   examsCount: number;
@@ -167,7 +165,7 @@ export default function ManageScreen() {
   const token = useAuthStore(s => s.sessionToken);
   const { savedSessions, fetchSessions } = useScanStore();
 
-  const [activeTab, setActiveTab] = useState<'analytics' | 'exams' | 'classroom' | 'brain' | 'reevaluation'>('exams');
+  const [activeTab, setActiveTab] = useState<'analytics' | 'exams' | 'classroom'>('exams');
   const [overview, setOverview] = useState<TeacherOverview | null>(null);
   const [performance, setPerformance] = useState<ManagePerformance | null>(null);
   const [managedExams, setManagedExams] = useState<ManagedExam[]>([]);
@@ -179,11 +177,6 @@ export default function ManageScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [isOffline, setIsOffline] = useState(false);
   const [processingExamId, setProcessingExamId] = useState<string | null>(null);
-  const [aiBrainRules, setAIBrainRules] = useState<AIBrainRule[]>([]);
-  const [loadingAIBrain, setLoadingAIBrain] = useState(false);
-  const [newBrainRule, setNewBrainRule] = useState('');
-  const [savingBrainRule, setSavingBrainRule] = useState(false);
-
   // Classroom Management States
   const [batches, setBatches] = useState<Batch[]>([]);
   const [loadingBatches, setLoadingBatches] = useState(false);
@@ -192,15 +185,6 @@ export default function ManageScreen() {
   const [loadingStudents, setLoadingStudents] = useState<string | null>(null);
   const [selectedStudentReport, setSelectedStudentReport] = useState<Student | null>(null);
   const [savingStudentId, setSavingStudentId] = useState<string | null>(null);
-
-  // Re-evaluation States
-  const [reevaluations, setReevaluations] = useState<any[]>([]);
-  const [loadingReevaluations, setLoadingReevaluations] = useState(false);
-  const [showResolveModal, setShowResolveModal] = useState(false);
-  const [activeReeval, setActiveReeval] = useState<any | null>(null);
-  const [resolveAction, setResolveAction] = useState<'approved' | 'rejected'>('approved');
-  const [teacherResponse, setTeacherResponse] = useState('');
-  const [isResolving, setIsResolving] = useState(false);
 
   // Modals
   const [showAddBatchModal, setShowAddBatchModal] = useState(false);
@@ -322,93 +306,6 @@ export default function ManageScreen() {
     }
   }, [token]);
 
-  const fetchReevaluations = useCallback(async () => {
-    if (!token) return;
-    setLoadingReevaluations(true);
-    try {
-      const res = await fetchWithTimeout(`${getBackendUrl()}/api/v1/re-evaluations`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      }, 2500);
-      if (res.ok) {
-        const json = await res.json();
-        setReevaluations(json.data || []);
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoadingReevaluations(false);
-      setRefreshing(false);
-    }
-  }, [token]);
-
-  const fetchAIBrain = useCallback(async () => {
-    if (!token) return;
-    setLoadingAIBrain(true);
-    try {
-      const data = await fetchAIBrainRules({ backendUrl: getBackendUrl(), token });
-      setAIBrainRules(data);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoadingAIBrain(false);
-      setRefreshing(false);
-    }
-  }, [token]);
-
-  const handleSaveBrainRule = async () => {
-    if (!token || !newBrainRule.trim()) return;
-    setSavingBrainRule(true);
-    try {
-      const created = await createAIBrainRule({
-        backendUrl: getBackendUrl(),
-        token,
-        rule: newBrainRule.trim(),
-      });
-      setAIBrainRules(prev => [created, ...prev]);
-      setNewBrainRule('');
-    } catch (err: any) {
-      Alert.alert('AI Brain not saved', err.message || 'Could not save this rule.');
-    } finally {
-      setSavingBrainRule(false);
-    }
-  };
-
-  const handleResolveReeval = async () => {
-    if (!activeReeval || !token) return;
-    if (!teacherResponse.trim()) {
-      Alert.alert('Error', 'Please enter a response/explanation for the student.');
-      return;
-    }
-    setIsResolving(true);
-    try {
-      const res = await fetch(`${getBackendUrl()}/api/v1/re-evaluations/${activeReeval.id}/resolve`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          status: resolveAction,
-          teacherResponse: teacherResponse.trim()
-        })
-      });
-      if (res.ok) {
-        Alert.alert('Success', `Re-evaluation request resolved successfully.`);
-        setShowResolveModal(false);
-        setTeacherResponse('');
-        setActiveReeval(null);
-        fetchReevaluations();
-      } else {
-        const txt = await res.text();
-        Alert.alert('Failed', `Could not resolve re-evaluation: ${txt}`);
-      }
-    } catch (err: any) {
-      Alert.alert('Error', err.message);
-    } finally {
-      setIsResolving(false);
-    }
-  };
-
   const replaceManagedExam = (exam: ManagedExam) => {
     setManagedExams(prev => prev.map(item => item.id === exam.id ? exam : item));
   };
@@ -500,12 +397,8 @@ export default function ManageScreen() {
       fetchExamManagement();
     } else if (activeTab === 'classroom') {
       fetchBatches();
-    } else if (activeTab === 'brain') {
-      fetchAIBrain();
-    } else if (activeTab === 'reevaluation') {
-      fetchReevaluations();
     }
-  }, [activeTab, fetchAIBrain, fetchBatches, fetchExamManagement, fetchOverview, fetchPerformanceInsights, fetchReevaluations]);
+  }, [activeTab, fetchBatches, fetchExamManagement, fetchOverview, fetchPerformanceInsights]);
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -519,10 +412,6 @@ export default function ManageScreen() {
       if (expandedBatchId) {
         fetchStudents(expandedBatchId);
       }
-    } else if (activeTab === 'brain') {
-      fetchAIBrain();
-    } else if (activeTab === 'reevaluation') {
-      fetchReevaluations();
     }
   };
 
@@ -772,9 +661,7 @@ export default function ManageScreen() {
                 ? 'Publish, close, and review exams'
                 : activeTab === 'classroom'
                   ? 'Manage batches and students'
-                  : activeTab === 'brain'
-                    ? 'Synced AI grading memory'
-                    : 'Student grade re-evaluation requests'}
+                  : 'Publish, close, and review exams'}
           </Text>
         </View>
         <TouchableOpacity style={styles.refreshBtn} onPress={onRefresh}>
@@ -813,22 +700,6 @@ export default function ManageScreen() {
           />
           <Text style={[styles.segmentText, activeTab === 'classroom' && styles.segmentTextActive]}>
             Roster
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.segmentBtn, activeTab === 'reevaluation' && styles.segmentBtnActive]}
-          onPress={() => setActiveTab('reevaluation')}
-          activeOpacity={0.8}
-        >
-          <Ionicons 
-            name={activeTab === 'reevaluation' ? 'alert-circle' : 'alert-circle-outline'} 
-            size={16} 
-            color={activeTab === 'reevaluation' ? '#fff' : COLORS.textLight} 
-            style={{ marginRight: 6 }}
-          />
-          <Text style={[styles.segmentText, activeTab === 'reevaluation' && styles.segmentTextActive]}>
-            Re-evals
           </Text>
         </TouchableOpacity>
       </View>
@@ -1104,147 +975,7 @@ export default function ManageScreen() {
                 })
               )}
             </View>
-          ) : activeTab === 'brain' ? (
-            <View>
-              <Text style={styles.sectionLabel}>GLOBAL GRADING MEMORY</Text>
-              <View style={styles.brainComposer}>
-                <TextInput
-                  value={newBrainRule}
-                  onChangeText={setNewBrainRule}
-                  placeholder="Example: Award method marks when the final answer is slightly off due to arithmetic."
-                  placeholderTextColor={COLORS.textMuted}
-                  multiline
-                  style={styles.brainInput}
-                  textAlignVertical="top"
-                />
-                <TouchableOpacity
-                  style={[styles.brainSaveBtn, (!newBrainRule.trim() || savingBrainRule) && styles.brainSaveBtnDisabled]}
-                  onPress={handleSaveBrainRule}
-                  disabled={!newBrainRule.trim() || savingBrainRule}
-                  activeOpacity={0.82}
-                >
-                  {savingBrainRule ? (
-                    <ActivityIndicator size="small" color="#fff" />
-                  ) : (
-                    <>
-                      <Ionicons name="save-outline" size={16} color="#fff" />
-                      <Text style={styles.brainSaveText}>Save Rule</Text>
-                    </>
-                  )}
-                </TouchableOpacity>
-              </View>
-
-              <Text style={styles.sectionLabel}>LEARNED RULES</Text>
-              {loadingAIBrain ? (
-                <ActivityIndicator size="small" color={COLORS.primary} style={{ marginVertical: 20 }} />
-              ) : aiBrainRules.length === 0 ? (
-                <View style={styles.emptyClassRoster}>
-                  <Ionicons name="bulb-outline" size={40} color={COLORS.textMuted} />
-                  <Text style={styles.noBatchesText}>No AI Brain rules saved yet.</Text>
-                </View>
-              ) : (
-                aiBrainRules.map(rule => (
-                  <View key={rule.id} style={styles.brainRuleCard}>
-                    <View style={styles.brainRuleTop}>
-                      <View style={[styles.reevalBadge, { backgroundColor: rule.scope === 'global' ? COLORS.infoLight : COLORS.primaryXLight }]}>
-                        <Text style={[styles.reevalBadgeText, { color: rule.scope === 'global' ? COLORS.info : COLORS.primary }]}>
-                          {rule.scope === 'global' ? 'Global' : `Q${rule.questionNumber || '-'}`}
-                        </Text>
-                      </View>
-                      <Text style={styles.brainRuleDate}>{rule.createdAt ? new Date(rule.createdAt).toLocaleDateString() : ''}</Text>
-                    </View>
-                    <Text style={styles.brainRuleText}>{rule.teacherCorrection}</Text>
-                  </View>
-                ))
-              )}
-            </View>
-          ) : (
-            // ==================== RE-EVALUATION VIEW ====================
-            <View>
-              <Text style={styles.sectionLabel}>RE-EVALUATION REQUESTS</Text>
-              {loadingReevaluations ? (
-                <ActivityIndicator size="small" color={COLORS.primary} style={{ marginVertical: 20 }} />
-              ) : reevaluations.length === 0 ? (
-                <View style={styles.emptyClassRoster}>
-                  <Ionicons name="alert-circle-outline" size={40} color={COLORS.textMuted} />
-                  <Text style={styles.noBatchesText}>No re-evaluations found.</Text>
-                </View>
-              ) : (
-                reevaluations.map(item => {
-                  const isPending = item.status === 'pending';
-                  const statusColor = isPending ? COLORS.warning : item.status === 'rejected' ? COLORS.error : COLORS.success;
-                  const statusBg = isPending ? COLORS.warningLight : item.status === 'rejected' ? COLORS.errorLight : COLORS.successLight;
-                  
-                  let qNumbers: string[] = [];
-                  try {
-                    qNumbers = typeof item.questionNumbersJson === 'string' 
-                      ? JSON.parse(item.questionNumbersJson) 
-                      : (Array.isArray(item.questionNumbersJson) ? item.questionNumbersJson : []);
-                  } catch {}
-
-                  return (
-                    <View key={item.id} style={styles.reevalCard}>
-                      <View style={styles.reevalHeader}>
-                        <View style={styles.reevalAvatar}>
-                          <Text style={styles.reevalAvatarText}>
-                            {item.studentName ? item.studentName[0].toUpperCase() : 'S'}
-                          </Text>
-                        </View>
-                        <View style={{ flex: 1, marginLeft: 12 }}>
-                          <Text style={styles.reevalStudentName}>{item.studentName}</Text>
-                          <Text style={styles.reevalExamName}>{item.examName || 'Exam Paper'}</Text>
-                        </View>
-                        <View style={[styles.reevalBadge, { backgroundColor: statusBg }]}>
-                          <Text style={[styles.reevalBadgeText, { color: statusColor }]}>
-                            {item.status.toUpperCase()}
-                          </Text>
-                        </View>
-                      </View>
-
-                      {/* Question tags */}
-                      {qNumbers.length > 0 && (
-                        <View style={styles.reevalQuestionsRow}>
-                          <Text style={styles.reevalQuestionsLabel}>Questions: </Text>
-                          {qNumbers.map((q: string) => (
-                            <View key={q} style={styles.reevalQuestionTag}>
-                              <Text style={styles.reevalQuestionTagText}>{q}</Text>
-                            </View>
-                          ))}
-                        </View>
-                      )}
-
-                      {/* Reason */}
-                      <View style={styles.reevalReasonBox}>
-                        <Text style={styles.reevalReasonText}>{item.reason}</Text>
-                      </View>
-
-                      {/* Footer actions / responses */}
-                      {isPending ? (
-                        <TouchableOpacity
-                          style={styles.reevalResolveBtn}
-                          onPress={() => {
-                            setActiveReeval(item);
-                            setResolveAction('approved');
-                            setTeacherResponse('');
-                            setShowResolveModal(true);
-                          }}
-                          activeOpacity={0.8}
-                        >
-                          <Ionicons name="checkmark-circle-outline" size={16} color="#fff" />
-                          <Text style={styles.reevalResolveBtnText}>Resolve Request</Text>
-                        </TouchableOpacity>
-                      ) : (
-                        <View style={styles.reevalResponseBox}>
-                          <Text style={styles.reevalResponseTitle}>Teacher Response:</Text>
-                          <Text style={styles.reevalResponseText}>{item.teacherResponse || 'Grade confirmed.'}</Text>
-                        </View>
-                      )}
-                    </View>
-                  );
-                })
-              )}
-            </View>
-          )}
+          ) : null}
 
           <View style={{ height: 40 }} />
         </ScrollView>
@@ -1374,66 +1105,6 @@ export default function ManageScreen() {
         isSavingProfile={savingStudentId === selectedStudentReport?.student_id}
       />
 
-      {/* Resolve Re-evaluation Modal */}
-      <Modal visible={showResolveModal} transparent animationType="slide" onRequestClose={() => setShowResolveModal(false)}>
-        <View style={modalStyles.backdrop}>
-          <View style={modalStyles.sheet}>
-            <View style={modalStyles.handle} />
-            <Text style={modalStyles.sheetTitle}>Resolve Re-evaluation</Text>
-            <Text style={modalStyles.sheetSub}>
-              Review student request and choose to approve marks update or reject it.
-            </Text>
-
-            <Text style={styles.fieldLabel}>DECISION</Text>
-            <View style={styles.selectOptions}>
-              <TouchableOpacity
-                style={[styles.selectOption, resolveAction === 'approved' && { backgroundColor: COLORS.success, borderColor: COLORS.success }]}
-                onPress={() => setResolveAction('approved')}
-              >
-                <Text style={[styles.selectOptionText, resolveAction === 'approved' && { color: '#fff' }]}>
-                  APPROVE CHANGES
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.selectOption, resolveAction === 'rejected' && { backgroundColor: COLORS.error, borderColor: COLORS.error }]}
-                onPress={() => setResolveAction('rejected')}
-              >
-                <Text style={[styles.selectOptionText, resolveAction === 'rejected' && { color: '#fff' }]}>
-                  REJECT / CONFIRM GRADE
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            <Text style={[styles.fieldLabel, { marginTop: 12 }]}>EXPLANATION FOR STUDENT</Text>
-            <TextInput
-              style={[modalStyles.input, { height: 100, textAlignVertical: 'top' }]}
-              value={teacherResponse}
-              onChangeText={setTeacherResponse}
-              placeholder="e.g. Recalculated total, updated marks. OR checked paper, grade stands because..."
-              placeholderTextColor={COLORS.textMuted}
-              multiline
-              numberOfLines={4}
-            />
-
-            <View style={modalStyles.buttons}>
-              <TouchableOpacity style={[modalStyles.btn, modalStyles.cancelBtn]} onPress={() => setShowResolveModal(false)}>
-                <Text style={modalStyles.cancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[modalStyles.btn, modalStyles.saveBtn, { backgroundColor: resolveAction === 'approved' ? COLORS.success : COLORS.error }]}
-                onPress={handleResolveReeval}
-                disabled={isResolving}
-              >
-                {isResolving ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Text style={modalStyles.saveText}>Submit Decision</Text>
-                )}
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
     </SafeAreaView>
   );
 }
@@ -1511,155 +1182,6 @@ const styles = StyleSheet.create({
   // Loader
   loader: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
   loaderText: { fontSize: 14, color: COLORS.textLight },
-
-  // Re-evaluations styles
-  reevalCard: {
-    backgroundColor: COLORS.surface,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: COLORS.borderLight,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 5,
-    elevation: 1,
-    padding: 16,
-    marginBottom: 12,
-  },
-  reevalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  reevalAvatar: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: COLORS.primaryXLight,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  reevalAvatarText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: COLORS.primary,
-  },
-  reevalStudentName: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: COLORS.text,
-  },
-  reevalExamName: {
-    fontSize: 12,
-    color: COLORS.textMuted,
-    marginTop: 1,
-  },
-  reevalBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  reevalBadgeText: {
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  reevalQuestionsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    marginTop: 12,
-    gap: 4,
-  },
-  reevalQuestionsLabel: {
-    fontSize: 12,
-    color: COLORS.textLight,
-    fontWeight: '600',
-  },
-  reevalQuestionTag: {
-    backgroundColor: COLORS.infoLight,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  reevalQuestionTagText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: COLORS.info,
-  },
-  reevalReasonBox: {
-    backgroundColor: COLORS.backgroundDark,
-    padding: 12,
-    borderRadius: 10,
-    marginTop: 10,
-    borderLeftWidth: 3,
-    borderLeftColor: COLORS.primary,
-  },
-  reevalReasonText: {
-    fontSize: 13,
-    color: COLORS.textLight,
-    fontStyle: 'italic',
-    lineHeight: 18,
-  },
-  reevalResolveBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    backgroundColor: COLORS.primary,
-    paddingVertical: 10,
-    borderRadius: 10,
-    marginTop: 12,
-  },
-  reevalResolveBtnText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  reevalResponseBox: {
-    backgroundColor: COLORS.successLight + '20',
-    borderWidth: 1,
-    borderColor: COLORS.success + '30',
-    padding: 12,
-    borderRadius: 10,
-    marginTop: 12,
-  },
-  reevalResponseTitle: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: COLORS.success,
-    marginBottom: 4,
-  },
-  reevalResponseText: {
-    fontSize: 12,
-    color: COLORS.textLight,
-    lineHeight: 16,
-  },
-  fieldLabel: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: COLORS.textLight,
-    letterSpacing: 0.5,
-    marginBottom: 6,
-    marginLeft: 2,
-  },
-  selectOptions: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 12,
-  },
-  selectOption: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    backgroundColor: COLORS.backgroundDark,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  selectOptionText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: COLORS.textLight,
-  },
 
   // Scroll
   scrollContent: { padding: 16 },
@@ -1882,64 +1404,6 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     paddingVertical: 8,
     textAlign: 'center',
-  },
-  brainComposer: {
-    backgroundColor: COLORS.surface,
-    borderColor: COLORS.borderLight,
-    borderRadius: 14,
-    borderWidth: 1,
-    marginBottom: 22,
-    padding: 14,
-  },
-  brainInput: {
-    color: COLORS.text,
-    fontSize: 14,
-    lineHeight: 20,
-    minHeight: 104,
-    padding: 0,
-  },
-  brainSaveBtn: {
-    alignItems: 'center',
-    alignSelf: 'flex-end',
-    backgroundColor: COLORS.primary,
-    borderRadius: 10,
-    flexDirection: 'row',
-    gap: 6,
-    marginTop: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 11,
-  },
-  brainSaveBtnDisabled: {
-    opacity: 0.5,
-  },
-  brainSaveText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  brainRuleCard: {
-    backgroundColor: COLORS.surface,
-    borderColor: COLORS.borderLight,
-    borderRadius: 14,
-    borderWidth: 1,
-    marginBottom: 10,
-    padding: 14,
-  },
-  brainRuleTop: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 10,
-  },
-  brainRuleDate: {
-    color: COLORS.textMuted,
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  brainRuleText: {
-    color: COLORS.text,
-    fontSize: 14,
-    lineHeight: 20,
   },
   studentItem: {
     flexDirection: 'row',

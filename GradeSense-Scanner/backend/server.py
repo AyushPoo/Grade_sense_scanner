@@ -1579,29 +1579,27 @@ async def get_batch_students(batch_id: str, authorization: Optional[str] = Heade
             try:
                 conn = await asyncpg.connect(webapp_db_url)
                 students = await fetch_batch_roster(conn, user.user_id, batch_id)
-                if students:
-                    student_ids = [student["student_id"] for student in students]
-                    await db.students.delete_many({
-                        "batch_id": batch_id,
-                        "student_id": {"$nin": student_ids},
-                    })
-                    for student in students:
-                        await db.students.update_one(
-                            {"batch_id": batch_id, "student_id": student["student_id"]},
-                            {"$set": student},
-                            upsert=True,
-                        )
-                    await db.batches.update_one(
-                        {"batch_id": batch_id},
-                        {"$set": {"student_count": len(students), "studentCount": len(students)}},
+                student_ids = [student["student_id"] for student in students]
+                delete_filter = {"batch_id": batch_id}
+                if student_ids:
+                    delete_filter["student_id"] = {"$nin": student_ids}
+                await db.students.delete_many(delete_filter)
+                for student in students:
+                    await db.students.update_one(
+                        {"batch_id": batch_id, "student_id": student["student_id"]},
+                        {"$set": student},
+                        upsert=True,
                     )
-                    strong_students, weak_students = split_students_by_strength(students)
-                    return {
-                        "students": students,
-                        "strongStudents": strong_students,
-                        "weakStudents": weak_students,
-                    }
-                logger.warning(f"Neon returned empty roster for batch {batch_id}; falling back to webapp API/local cache")
+                await db.batches.update_one(
+                    {"batch_id": batch_id},
+                    {"$set": {"student_count": len(students), "studentCount": len(students)}},
+                )
+                strong_students, weak_students = split_students_by_strength(students)
+                return {
+                    "students": students,
+                    "strongStudents": strong_students,
+                    "weakStudents": weak_students,
+                }
             except Exception as e:
                 logger.error(f"Error querying Neon for batch roster: {e}")
                 logger.warning("Continuing with webapp API/local roster fallback")
@@ -1668,7 +1666,6 @@ async def get_batch_students(batch_id: str, authorization: Optional[str] = Heade
                             )
                         batch_doc = await db.batches.find_one({"batch_id": batch_id}, {"_id": 0}) or {}
                         batch_name = str(batch_doc.get("name") or batch_doc.get("batch_name") or "").strip().lower()
-                        batch_student_count = int(batch_doc.get("student_count") or batch_doc.get("studentCount") or 0)
                         webapp_students = [
                             s for s in raw_all
                             if isinstance(s, dict) and (
@@ -1679,18 +1676,6 @@ async def get_batch_students(batch_id: str, authorization: Optional[str] = Heade
                                 )
                             )
                         ]
-                        if not webapp_students and batch_student_count > 0:
-                            untagged_students = [
-                                s for s in raw_all
-                                if isinstance(s, dict)
-                                and not (s.get("batchId") or s.get("batch_id") or s.get("classId") or s.get("class_id"))
-                            ]
-                            if len(untagged_students) == batch_student_count:
-                                logger.warning(
-                                    f"Using untagged webapp roster fallback for batch {batch_id}; "
-                                    f"matched expected count {batch_student_count}"
-                                )
-                                webapp_students = untagged_students
                 
                 mapped_students = []
                 for s in webapp_students:

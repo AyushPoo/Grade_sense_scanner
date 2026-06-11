@@ -118,7 +118,7 @@ function isAmbiguousOrientation(width: number, height: number): boolean {
 }
 
 function shouldSplitAsDoublePage(width: number, height: number): boolean {
-    return width >= height * 1.55;
+    return width >= height * 1.30;
 }
 
 async function autoOrientPageImage(

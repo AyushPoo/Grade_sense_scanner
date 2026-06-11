@@ -197,29 +197,24 @@ async def fetch_active_batches(conn: Any, teacher_id: str) -> list[dict[str, Any
     rows = await conn.fetch(
         '''
         SELECT b.id, b.name, b.class_standard, b.section, b.status,
-               GREATEST(
-                   COALESCE(enrolled.student_count, 0),
-                   COALESCE(submitted.student_count, 0)
-               ) AS student_count
+               COALESCE(roster.student_count, 0) AS student_count
         FROM batches b
         LEFT JOIN (
-            SELECT batch_id, COUNT(DISTINCT student_id) AS student_count
-            FROM batch_students
+            SELECT batch_id, COUNT(DISTINCT roster_key) AS student_count
+            FROM (
+                SELECT batch_id, student_id::text AS roster_key
+                FROM batch_students
+                UNION
+                SELECT batch_id, COALESCE(accepted_by_user_id::text, id::text) AS roster_key
+                FROM student_invitations
+                WHERE COALESCE(status, '') NOT IN ('cancelled', 'deleted')
+            ) roster_rows
             GROUP BY batch_id
-        ) enrolled ON enrolled.batch_id = b.id
-        LEFT JOIN (
-            SELECT e.batch_id, COUNT(DISTINCT NULLIF(s.student_id, '')) AS student_count
-            FROM exams e
-            JOIN submissions s
-              ON s.exam_id = e.id
-             AND COALESCE(s.status, '') <> 'deleted'
-            WHERE COALESCE(e.status, '') NOT IN ('deleted', 'archived')
-            GROUP BY e.batch_id
-        ) submitted ON submitted.batch_id = b.id
+        ) roster ON roster.batch_id = b.id
         WHERE b.teacher_id = $1
           AND COALESCE(b.status, 'active') NOT IN ('archived', 'deleted')
         GROUP BY b.id, b.name, b.class_standard, b.section, b.status, b.created_at
-               , enrolled.student_count, submitted.student_count
+               , roster.student_count
         ORDER BY b.created_at DESC
         ''',
         teacher_id,
@@ -338,6 +333,27 @@ async def fetch_batch_roster(conn: Any, teacher_id: str, batch_id: str) -> list[
               AND e.batch_id = $2
               AND COALESCE(e.status, '') NOT IN ('deleted', 'archived')
               AND COALESCE(s.status, '') <> 'deleted'
+              AND (
+                  (
+                      NULLIF(s.student_id, '') IS NOT NULL
+                      AND EXISTS (
+                          SELECT 1
+                          FROM batch_students bs
+                          WHERE bs.batch_id = e.batch_id
+                            AND bs.student_id = s.student_id
+                      )
+                  )
+                  OR (
+                      NULLIF(s.student_email, '') IS NOT NULL
+                      AND EXISTS (
+                          SELECT 1
+                          FROM student_invitations si
+                          WHERE si.batch_id = e.batch_id
+                            AND LOWER(si.email) = LOWER(s.student_email)
+                            AND COALESCE(si.status, '') NOT IN ('cancelled', 'deleted')
+                      )
+                  )
+              )
         )
         SELECT *
         FROM roster_rows
