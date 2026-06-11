@@ -1,5 +1,5 @@
 param(
-  [switch]$AllArchitectures
+  [switch]$Arm64Only
 )
 
 $ErrorActionPreference = "Stop"
@@ -54,7 +54,7 @@ $env:EXPO_PUBLIC_GOOGLE_CLIENT_ID = "952978433882-f15al0p4202d9m5lj7n7c1n1j25o7p
 $env:EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID = "952978433882-paueq6l9gqjgioc5f22nlrggt9dp29o0.apps.googleusercontent.com"
 
 $GradleArgs = @("--no-daemon", "--no-parallel", "--max-workers=1")
-if (-not $AllArchitectures) {
+if ($Arm64Only) {
   $GradleArgs += "-PreactNativeArchitectures=arm64-v8a"
 }
 $GradleArgs += ":app:bundleRelease"

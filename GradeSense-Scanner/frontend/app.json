@@ -2,7 +2,7 @@
   "expo": {
     "name": "GradeSense",
     "slug": "gradesense-scanner",
-    "version": "1.0.25",
+    "version": "1.0.26",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": [
