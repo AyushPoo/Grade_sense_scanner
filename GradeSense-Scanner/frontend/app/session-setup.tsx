@@ -34,7 +34,7 @@ export default function SessionSetupScreen() {
   }, [fetchBatches, fetchSubjects]);
   
   const [sessionName, setSessionName] = useState(
-    `Scan — ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
+    `Exam - ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
   );
   const [selectedBatch, setSelectedBatch] = useState<Batch | null>(null);
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
@@ -225,7 +225,7 @@ export default function SessionSetupScreen() {
         <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
           <Ionicons name="arrow-back" size={24} color={COLORS.text} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>{sessionId ? 'Edit Session' : 'New Session'}</Text>
+        <Text style={styles.headerTitle}>{sessionId ? 'Edit Exam' : 'New Exam'}</Text>
         <View style={{ width: 40 }} />
       </View>
 
@@ -238,15 +238,15 @@ export default function SessionSetupScreen() {
           contentContainerStyle={{ paddingBottom: bottomContentInset + 16 }}
           showsVerticalScrollIndicator={false}
         >
-          {/* Session Name */}
+          {/* Exam Name */}
           <View style={styles.section}>
-            <Text style={styles.label}>Session Name</Text>
+            <Text style={styles.label}>Exam Name</Text>
             <View style={styles.inputContainer}>
               <TextInput
                 style={styles.input}
                 value={sessionName}
                 onChangeText={setSessionName}
-                placeholder="Enter session name"
+                placeholder="Enter exam name"
                 placeholderTextColor={COLORS.textMuted}
               />
             </View>

@@ -37,7 +37,7 @@ import { useMotionStability } from '../src/hooks/useMotionStability';
 import { createImportedPdfPage, createNativeScannedImagePage, isPdfScannedPage } from '../src/utils/scannedPageAssets';
 import { useLocalSearchParams } from 'expo-router';
 import { evaluateAutoCropCandidate } from '../src/utils/cropQuality';
-import { detectDocumentWithDocQuad } from '../src/utils/docQuadDetector';
+import { detectTextOrientationAndBounds, detectDocumentCorners } from '../src/utils/docQuadDetector';
 import type { ScannedPage } from '../src/types';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -89,6 +89,7 @@ interface PendingCapture {
     quad: Quadrilateral | null;
     dims: { width: number; height: number };
     rawDims: { width: number; height: number };
+    captureOrientation?: ScreenOrientation.Orientation;
 }
 
 type PageSplitPart = 'left' | 'right' | 'top' | 'bottom';
@@ -98,6 +99,9 @@ interface PreparedImagePart {
     width: number;
     height: number;
     splitPart?: PageSplitPart;
+    cropQuad?: Quadrilateral;
+    cropConfidence?: number;
+    cropApplied?: boolean;
 }
 
 interface OrientationResult {
@@ -118,7 +122,147 @@ function isAmbiguousOrientation(width: number, height: number): boolean {
 }
 
 function shouldSplitAsDoublePage(width: number, height: number): boolean {
-    return width >= height * 1.30;
+    const ratio = width / height;
+    return ratio >= 1.30 || ratio <= 0.77;
+}
+
+function isLandscapeDeviceOrientation(orientation?: ScreenOrientation.Orientation): boolean {
+    return orientation === ScreenOrientation.Orientation.LANDSCAPE_LEFT ||
+        orientation === ScreenOrientation.Orientation.LANDSCAPE_RIGHT;
+}
+
+async function checkIfTwoPagesVisible(
+    uri: string,
+    width: number,
+    height: number,
+): Promise<{ visible: boolean; confidence?: number; detectorUsed: 'docquad' | 'opencv' | 'none'; reason?: string; quad?: Quadrilateral }> {
+    try {
+        const docQuadResult = await detectDocumentCorners(uri);
+        if (docQuadResult?.quadrilateral) {
+            const quad = docQuadResult.quadrilateral;
+            const qPoints = [quad.topLeft, quad.topRight, quad.bottomRight, quad.bottomLeft];
+            
+            const topLen = Math.hypot(quad.topRight.x - quad.topLeft.x, quad.topRight.y - quad.topLeft.y);
+            const bottomLen = Math.hypot(quad.bottomRight.x - quad.bottomLeft.x, quad.bottomRight.y - quad.bottomLeft.y);
+            const leftLen = Math.hypot(quad.topLeft.x - quad.bottomLeft.x, quad.topLeft.y - quad.bottomLeft.y);
+            const rightLen = Math.hypot(quad.topRight.x - quad.bottomRight.x, quad.topRight.y - quad.bottomRight.y);
+            
+            const avgWidth = (topLen + bottomLen) / 2;
+            const avgHeight = (leftLen + rightLen) / 2;
+            const quadAspect = avgWidth / Math.max(1, avgHeight);
+            
+            let minX = docQuadResult.dimensions.width, maxX = 0;
+            qPoints.forEach(p => {
+                minX = Math.min(minX, p.x);
+                maxX = Math.max(maxX, p.x);
+            });
+            const quadWidthRatio = (maxX - minX) / docQuadResult.dimensions.width;
+            
+            console.log('[CROP-DIAGNOSTICS] checkTwoPages(DocQuad):', {
+                quadAspect,
+                quadWidthRatio,
+                confidence: docQuadResult.confidence
+            });
+            
+            if (quadAspect < 1.05) {
+                return { visible: false, confidence: docQuadResult.confidence, detectorUsed: 'docquad', reason: `Single portrait page detected (aspect ratio ${quadAspect.toFixed(2)})`, quad };
+            }
+            if (quadWidthRatio < 0.72) {
+                return { visible: false, confidence: docQuadResult.confidence, detectorUsed: 'docquad', reason: `Single narrow page detected (width coverage ${quadWidthRatio.toFixed(2)})`, quad };
+            }
+            
+            return { visible: true, confidence: docQuadResult.confidence, detectorUsed: 'docquad', quad };
+        }
+    } catch (err) {
+        console.warn('[checkTwoPages] DocQuad failed, trying OpenCV fallback:', err);
+    }
+    
+    try {
+        let detectionUri = uri;
+        let detectionDims = { width, height };
+        let downscaled: ImageManipulator.ImageResult | null = null;
+        if (width > POST_CAPTURE_DETECTION_WIDTH) {
+            downscaled = await ImageManipulator.manipulateAsync(
+                uri,
+                [{ resize: { width: POST_CAPTURE_DETECTION_WIDTH } }],
+                { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG },
+            );
+            detectionUri = downscaled.uri;
+            detectionDims = { width: downscaled.width, height: downscaled.height };
+        }
+        
+        const cvResult = await detectDocumentInFrame(detectionUri, detectionDims.width, detectionDims.height);
+        if (downscaled) {
+            try { new File(downscaled.uri).delete(); } catch (_) {}
+        }
+        
+        if (cvResult?.quadrilateral) {
+            const quad = cvResult.quadrilateral;
+            const qPoints = [quad.topLeft, quad.topRight, quad.bottomRight, quad.bottomLeft];
+            
+            const topLen = Math.hypot(quad.topRight.x - quad.topLeft.x, quad.topRight.y - quad.topLeft.y);
+            const bottomLen = Math.hypot(quad.bottomRight.x - quad.bottomLeft.x, quad.bottomRight.y - quad.bottomLeft.y);
+            const leftLen = Math.hypot(quad.topLeft.x - quad.bottomLeft.x, quad.topLeft.y - quad.bottomLeft.y);
+            const rightLen = Math.hypot(quad.topRight.x - quad.bottomRight.x, quad.topRight.y - quad.bottomRight.y);
+            
+            const avgWidth = (topLen + bottomLen) / 2;
+            const avgHeight = (leftLen + rightLen) / 2;
+            const quadAspect = avgWidth / Math.max(1, avgHeight);
+            
+            let minX = detectionDims.width, maxX = 0;
+            qPoints.forEach(p => {
+                minX = Math.min(minX, p.x);
+                maxX = Math.max(maxX, p.x);
+            });
+            const quadWidthRatio = (maxX - minX) / detectionDims.width;
+            
+            console.log('[CROP-DIAGNOSTICS] checkTwoPages(OpenCV):', {
+                quadAspect,
+                quadWidthRatio,
+                confidence: cvResult.confidence
+            });
+            
+            if (quadAspect < 1.05) {
+                return { visible: false, confidence: cvResult.confidence, detectorUsed: 'opencv', reason: `Single portrait page detected via OpenCV (aspect ratio ${quadAspect.toFixed(2)})`, quad };
+            }
+            if (quadWidthRatio < 0.72) {
+                return { visible: false, confidence: cvResult.confidence, detectorUsed: 'opencv', reason: `Single narrow page detected via OpenCV (width coverage ${quadWidthRatio.toFixed(2)})`, quad };
+            }
+            
+            return { visible: true, confidence: cvResult.confidence, detectorUsed: 'opencv', quad };
+        }
+    } catch (err) {
+        console.warn('[checkTwoPages] OpenCV fallback failed:', err);
+    }
+    
+    return { visible: true, detectorUsed: 'none', reason: 'No document detected, falling back to split' };
+}
+
+async function normalizeDoublePageSource(
+    uri: string,
+    width: number,
+    height: number,
+    captureOrientation?: ScreenOrientation.Orientation,
+): Promise<PreparedImagePart> {
+    if (isLandscapeDeviceOrientation(captureOrientation) && height > width * 1.08) {
+        const rotate = captureOrientation === ScreenOrientation.Orientation.LANDSCAPE_RIGHT ? -90 : 90;
+        const rotated = await ImageManipulator.manipulateAsync(
+            uri,
+            [{ rotate }],
+            { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG },
+        );
+        return { uri: rotated.uri, width: rotated.width, height: rotated.height };
+    }
+    if (!isLandscapeDeviceOrientation(captureOrientation) && width > height * 1.08 && captureOrientation !== undefined) {
+        const rotated = await ImageManipulator.manipulateAsync(
+            uri,
+            [{ rotate: 90 }],
+            { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG },
+        );
+        return { uri: rotated.uri, width: rotated.width, height: rotated.height };
+    }
+
+    return { uri, width, height };
 }
 
 async function autoOrientPageImage(
@@ -159,26 +303,178 @@ async function splitDoublePageImage(
         return [{ uri, width, height }];
     }
 
-    const overlap = Math.round(width * 0.018);
+    if (width >= height) {
+        const overlap = Math.round(width * 0.018);
+        const mid = Math.floor(width / 2);
+        const leftWidth = Math.min(width, mid + overlap);
+        const rightX = Math.max(0, mid - overlap);
+        const rightWidth = width - rightX;
+        const left = await ImageManipulator.manipulateAsync(
+            uri,
+            [{ crop: { originX: 0, originY: 0, width: leftWidth, height } }],
+            { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG }
+        );
+        const right = await ImageManipulator.manipulateAsync(
+            uri,
+            [{ crop: { originX: rightX, originY: 0, width: rightWidth, height } }],
+            { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG }
+        );
+        return [
+            { uri: left.uri, width: left.width, height: left.height, splitPart: 'left' },
+            { uri: right.uri, width: right.width, height: right.height, splitPart: 'right' },
+        ];
+    } else {
+        const overlap = Math.round(height * 0.018);
+        const mid = Math.floor(height / 2);
+        const topHeight = Math.min(height, mid + overlap);
+        const bottomY = Math.max(0, mid - overlap);
+        const bottomHeight = height - bottomY;
+        const top = await ImageManipulator.manipulateAsync(
+            uri,
+            [{ crop: { originX: 0, originY: 0, width, height: topHeight } }],
+            { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG }
+        );
+        const bottom = await ImageManipulator.manipulateAsync(
+            uri,
+            [{ crop: { originX: 0, originY: bottomY, width, height: bottomHeight } }],
+            { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG }
+        );
+        return [
+            { uri: top.uri, width: top.width, height: top.height, splitPart: 'top' },
+            { uri: bottom.uri, width: bottom.width, height: bottom.height, splitPart: 'bottom' },
+        ];
+    }
+}
 
-    const mid = Math.floor(width / 2);
-    const leftWidth = Math.min(width, mid + overlap);
-    const rightX = Math.max(0, mid - overlap);
-    const rightWidth = width - rightX;
-    const left = await ImageManipulator.manipulateAsync(
-        uri,
-        [{ crop: { originX: 0, originY: 0, width: leftWidth, height } }],
-        { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG }
-    );
-    const right = await ImageManipulator.manipulateAsync(
-        uri,
-        [{ crop: { originX: rightX, originY: 0, width: rightWidth, height } }],
-        { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG }
-    );
-    return [
-        { uri: left.uri, width: left.width, height: left.height, splitPart: 'left' },
-        { uri: right.uri, width: right.width, height: right.height, splitPart: 'right' },
-    ];
+function scaleQuadToDimensions(
+    quad: Quadrilateral,
+    from: { width: number; height: number },
+    to: { width: number; height: number },
+): Quadrilateral {
+    const scaleX = to.width / Math.max(1, from.width);
+    const scaleY = to.height / Math.max(1, from.height);
+    return {
+        topLeft: { x: quad.topLeft.x * scaleX, y: quad.topLeft.y * scaleY },
+        topRight: { x: quad.topRight.x * scaleX, y: quad.topRight.y * scaleY },
+        bottomRight: { x: quad.bottomRight.x * scaleX, y: quad.bottomRight.y * scaleY },
+        bottomLeft: { x: quad.bottomLeft.x * scaleX, y: quad.bottomLeft.y * scaleY },
+    };
+}
+
+async function refineSplitPartCrop(part: PreparedImagePart): Promise<PreparedImagePart> {
+    const partDims = { width: part.width, height: part.height };
+    let detectionQuad: Quadrilateral | null = null;
+    let detectionDims = partDims;
+    let cropConfidence: number | undefined;
+    let cropProfile: 'standard' | 'docquad' = 'standard';
+
+    try {
+        const docQuadResult = await detectDocumentCorners(part.uri);
+        if (docQuadResult?.quadrilateral) {
+            const gate = evaluateAutoCropCandidate(docQuadResult.quadrilateral, docQuadResult.dimensions, {
+                confidence: docQuadResult.confidence,
+                profile: 'docquad',
+            });
+            if (gate.accepted) {
+                detectionQuad = docQuadResult.quadrilateral;
+                detectionDims = docQuadResult.dimensions;
+                cropConfidence = docQuadResult.confidence;
+                cropProfile = 'docquad';
+            }
+        }
+    } catch (err) {
+        console.warn('[splitCrop] DocQuad detection failed:', err);
+    }
+
+    if (!detectionQuad) {
+        let detectionUri = part.uri;
+        let downscaled: ImageManipulator.ImageResult | null = null;
+        try {
+            if (part.width > POST_CAPTURE_DETECTION_WIDTH) {
+                downscaled = await ImageManipulator.manipulateAsync(
+                    part.uri,
+                    [{ resize: { width: POST_CAPTURE_DETECTION_WIDTH } }],
+                    { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG },
+                );
+                detectionUri = downscaled.uri;
+                detectionDims = { width: downscaled.width, height: downscaled.height };
+            }
+
+            const cvResult = await detectDocumentInFrame(detectionUri, detectionDims.width, detectionDims.height);
+            if (cvResult.isDocumentDetected && cvResult.quadrilateral) {
+                const gate = evaluateAutoCropCandidate(cvResult.quadrilateral, detectionDims, {
+                    confidence: cvResult.confidence,
+                    areaScore: cvResult.areaScore,
+                });
+                if (gate.accepted) {
+                    detectionQuad = cvResult.quadrilateral;
+                    cropConfidence = cvResult.confidence;
+                    cropProfile = 'standard';
+                }
+            }
+        } catch (err) {
+            console.warn('[splitCrop] OpenCV detection failed:', err);
+        } finally {
+            if (downscaled) {
+                try { new File(downscaled.uri).delete(); } catch (_) {}
+            }
+        }
+    }
+
+    // FALLBACK: If DocQuad and OpenCV fail, fallback to ML Kit Text Recognition bounds
+    if (!detectionQuad) {
+        try {
+            const mlKitRes = await detectTextOrientationAndBounds(part.uri);
+            if (mlKitRes?.hasText && mlKitRes.textBounds) {
+                const tb = mlKitRes.textBounds;
+                const padX = (tb.right - tb.left) * 0.10;
+                const padY = (tb.bottom - tb.top) * 0.10;
+                const left = Math.max(0, tb.left - padX);
+                const top = Math.max(0, tb.top - padY);
+                const right = Math.min(part.width, tb.right + padX);
+                const bottom = Math.min(part.height, tb.bottom + padY);
+
+                detectionQuad = {
+                    topLeft: { x: left, y: top },
+                    topRight: { x: right, y: top },
+                    bottomRight: { x: right, y: bottom },
+                    bottomLeft: { x: left, y: bottom }
+                };
+                cropConfidence = 0.85;
+                cropProfile = 'docquad';
+                console.log('[splitCrop] Fallback to ML Kit text bounds SUCCESS:', detectionQuad);
+            }
+        } catch (err) {
+            console.warn('[splitCrop] ML Kit fallback failed:', err);
+        }
+    }
+
+    if (!detectionQuad) return part;
+
+    try {
+        const scaledQuad = scaleQuadToDimensions(detectionQuad, detectionDims, partDims);
+        const gate = evaluateAutoCropCandidate(scaledQuad, partDims, {
+            confidence: cropConfidence,
+            profile: cropProfile,
+        });
+        if (!gate.accepted) return part;
+
+        const normalized = await normalizeCapturedDocument(part.uri, scaledQuad, partDims, {
+            cropProfile,
+        });
+        return {
+            ...part,
+            uri: normalized.uri,
+            width: normalized.width,
+            height: normalized.height,
+            cropQuad: scaledQuad,
+            cropConfidence,
+            cropApplied: true,
+        };
+    } catch (err) {
+        console.warn('[splitCrop] Perspective correction failed:', err);
+        return part;
+    }
 }
 
 function phaseToLiveStatus(phase: ScannerPhase): LiveScanStatus {
@@ -344,6 +640,12 @@ export default function ScannerScreen() {
                 shutterSound: false,
             });
             if (!photo?.uri) throw new Error('No photo URI');
+            let captureOrientation: ScreenOrientation.Orientation | undefined;
+            try {
+                captureOrientation = await ScreenOrientation.getOrientationAsync();
+            } catch (_) {
+                captureOrientation = undefined;
+            }
 
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
@@ -358,6 +660,7 @@ export default function ScannerScreen() {
                 quad: lastQuadRef.current,
                 dims: cvResultRef.current?.dimensions ?? { width: 480, height: 640 },
                 rawDims: { width: photo.width, height: photo.height },
+                captureOrientation,
             };
 
             // Commit with a natural document-clean filter, while preserving the
@@ -381,6 +684,8 @@ export default function ScannerScreen() {
         if (normalizingRef.current) return;
         normalizingRef.current = true;
 
+        let uprightUriToCleanup: string | null = null;
+
         try {
             let finalUri = pending.uri;
             let finalDims = { width: pending.rawDims.width, height: pending.rawDims.height };
@@ -402,9 +707,76 @@ export default function ScannerScreen() {
                 console.log(`[EXIF-AUDIT] canonicalDims=${canonical.width}x${canonical.height} rawDims=${pending.rawDims.width}x${pending.rawDims.height}`);
             }
 
+            // ── PHASE 1.5: Detect text orientation and auto-rotate ──────
+            let uprightUri = canonicalUri;
+            let uprightDims = { ...canonicalDims };
+            let autoRotationDegrees: 0 | 90 | 180 | 270 = 0;
+            let hasText = false;
+            let textBounds: { left: number; top: number; right: number; bottom: number } | undefined;
+
+            try {
+                const orientationRes = await detectTextOrientationAndBounds(canonicalUri);
+                if (orientationRes) {
+                    autoRotationDegrees = orientationRes.rotationNeeded;
+                    hasText = orientationRes.hasText;
+                    textBounds = orientationRes.textBounds;
+                    console.log('[commitCapture] ML Kit Text Orientation:', {
+                        rotationNeeded: autoRotationDegrees,
+                        hasText,
+                        textBounds,
+                        originalDims: `${orientationRes.width}x${orientationRes.height}`
+                    });
+
+                    if (autoRotationDegrees !== 0) {
+                        const rotated = await ImageManipulator.manipulateAsync(
+                            canonicalUri,
+                            [{ rotate: autoRotationDegrees }],
+                            { compress: 0.98, format: ImageManipulator.SaveFormat.JPEG }
+                        );
+                        uprightUri = rotated.uri;
+                        uprightUriToCleanup = rotated.uri;
+                        uprightDims = { width: rotated.width, height: rotated.height };
+                        
+                        // Transform the textBounds to the new rotated coordinate space
+                        const origW = canonicalDims.width;
+                        const origH = canonicalDims.height;
+                        const tb = orientationRes.textBounds;
+                        
+                        if (autoRotationDegrees === 90) {
+                            textBounds = {
+                                left: origH - tb.bottom,
+                                top: tb.left,
+                                right: origH - tb.top,
+                                bottom: tb.right
+                            };
+                        } else if (autoRotationDegrees === 180) {
+                            textBounds = {
+                                left: origW - tb.right,
+                                top: origH - tb.bottom,
+                                right: origW - tb.left,
+                                bottom: origH - tb.top
+                            };
+                        } else if (autoRotationDegrees === 270) {
+                            textBounds = {
+                                left: tb.top,
+                                top: origW - tb.right,
+                                right: tb.bottom,
+                                bottom: origW - tb.left
+                            };
+                        }
+                        console.log('[commitCapture] Rotated textBounds:', textBounds);
+                    }
+                }
+            } catch (err) {
+                console.warn('[commitCapture] ML Kit Orientation detection failed:', err);
+            }
+
+            finalDims = uprightDims;
+            finalUri = uprightUri;
+
             // Step 1: Post-Capture Auto-Crop Detection
             let detectionQuad: Quadrilateral | null = null;
-            let detectionDims = pending.dims;
+            let detectionDims = uprightDims;
             let finalScaledQuad: Quadrilateral | null = null;
             let cropConfidence: number | undefined;
             let cropProfile: 'standard' | 'docquad' = 'standard';
@@ -430,7 +802,7 @@ export default function ScannerScreen() {
             try {
                 if (scanStateForCrop.autoCropEnabled && !isDoublePageCapture) {
                     try {
-                        const docQuadResult = await detectDocumentWithDocQuad(canonicalUri);
+                        const docQuadResult = await detectDocumentCorners(uprightUri);
                         if (docQuadResult?.quadrilateral) {
                             const docQuadGate = evaluateAutoCropCandidate(
                                 docQuadResult.quadrilateral,
@@ -463,59 +835,81 @@ export default function ScannerScreen() {
                     if (detectionQuad) {
                         console.log('[commitCapture] Skipping OpenCV fallback because DocQuad produced an accepted crop.');
                     } else {
-                    // Downscale the EXIF-resolved canonical image (NOT raw sensor image)
-                    const downscaled = await ImageManipulator.manipulateAsync(
-                        canonicalUri,
-                        [{ resize: { width: POST_CAPTURE_DETECTION_WIDTH } }],
-                        { base64: false, format: ImageManipulator.SaveFormat.JPEG, compress: 0.72 }
-                    );
-
-                    if (__DEV__) {
-                        console.log(`[EXIF-AUDIT] detectionDims=${downscaled.width}x${downscaled.height}`);
-                    }
-
-                    if (downscaled.uri) {
-                        const cvResult = await detectDocumentInFrame(
-                            downscaled.uri,
-                            downscaled.width,
-                            downscaled.height
+                        // Downscale the upright image
+                        const downscaled = await ImageManipulator.manipulateAsync(
+                            uprightUri,
+                            [{ resize: { width: POST_CAPTURE_DETECTION_WIDTH } }],
+                            { base64: false, format: ImageManipulator.SaveFormat.JPEG, compress: 0.72 }
                         );
-                        
-                        console.log(`[DEBUG-AUTOCROP] cvResult returned:`, JSON.stringify({
-                            isDetected: cvResult?.isDocumentDetected,
-                            hasQuad: !!cvResult?.quadrilateral,
-                            sharpness: cvResult?.sharpnessScore,
-                            areaScore: cvResult?.areaScore,
-                            confidence: cvResult?.confidence
-                        }));
 
-                        if (cvResult && cvResult.quadrilateral) {
-                            const cropGate = evaluateAutoCropCandidate(
-                                cvResult.quadrilateral,
-                                { width: downscaled.width, height: downscaled.height },
-                                { confidence: cvResult.confidence, areaScore: cvResult.areaScore }
-                            );
-                            if (!cropGate.accepted) {
-                                console.warn('[commitCapture] Auto-crop rejected. Falling back to full image.', {
-                                    reason: cropGate.reason,
-                                    metrics: cropGate.metrics,
-                                });
-                            } else {
-                                detectionQuad = cvResult.quadrilateral;
-                                detectionDims = { width: downscaled.width, height: downscaled.height };
-                                cropConfidence = cvResult.confidence;
-                                cropProfile = 'standard';
-                                console.log('[commitCapture] Post-capture detection SUCCESS');
-                            }
-                        } else {
-                            console.log('[commitCapture] Post-capture detection failed to find document. Falling back to original image.');
+                        if (__DEV__) {
+                            console.log(`[EXIF-AUDIT] detectionDims=${downscaled.width}x${downscaled.height}`);
                         }
 
-                        // CLEANUP: delete temporary downscaled file
-                        try {
-                            new File(downscaled.uri).delete();
-                        } catch (_) {}
+                        if (downscaled.uri) {
+                            const cvResult = await detectDocumentInFrame(
+                                downscaled.uri,
+                                downscaled.width,
+                                downscaled.height
+                            );
+                            
+                            console.log(`[DEBUG-AUTOCROP] cvResult returned:`, JSON.stringify({
+                                isDetected: cvResult?.isDocumentDetected,
+                                hasQuad: !!cvResult?.quadrilateral,
+                                sharpness: cvResult?.sharpnessScore,
+                                areaScore: cvResult?.areaScore,
+                                confidence: cvResult?.confidence
+                            }));
+
+                            if (cvResult && cvResult.quadrilateral) {
+                                const cropGate = evaluateAutoCropCandidate(
+                                    cvResult.quadrilateral,
+                                    { width: downscaled.width, height: downscaled.height },
+                                    { confidence: cvResult.confidence, areaScore: cvResult.areaScore }
+                                );
+                                if (!cropGate.accepted) {
+                                    console.warn('[commitCapture] Auto-crop rejected. Falling back to full image.', {
+                                        reason: cropGate.reason,
+                                        metrics: cropGate.metrics,
+                                    });
+                                } else {
+                                    detectionQuad = cvResult.quadrilateral;
+                                    detectionDims = { width: downscaled.width, height: downscaled.height };
+                                    cropConfidence = cvResult.confidence;
+                                    cropProfile = 'standard';
+                                    console.log('[commitCapture] Post-capture detection SUCCESS');
+                                }
+                            } else {
+                                console.log('[commitCapture] Post-capture detection failed to find document. Falling back to original image.');
+                            }
+
+                            // CLEANUP: delete temporary downscaled file
+                            try {
+                                new File(downscaled.uri).delete();
+                            } catch (_) {}
+                        }
                     }
+
+                    // FALLBACK: If both DocQuad and OpenCV failed but we have text bounds, use it!
+                    if (!detectionQuad && hasText && textBounds) {
+                        const tb = textBounds;
+                        const padX = (tb.right - tb.left) * 0.10;
+                        const padY = (tb.bottom - tb.top) * 0.10;
+                        const left = Math.max(0, tb.left - padX);
+                        const top = Math.max(0, tb.top - padY);
+                        const right = Math.min(uprightDims.width, tb.right + padX);
+                        const bottom = Math.min(uprightDims.height, tb.bottom + padY);
+
+                        detectionQuad = {
+                            topLeft: { x: left, y: top },
+                            topRight: { x: right, y: top },
+                            bottomRight: { x: right, y: bottom },
+                            bottomLeft: { x: left, y: bottom }
+                        };
+                        detectionDims = uprightDims;
+                        cropConfidence = 0.85;
+                        cropProfile = 'docquad';
+                        console.log('[commitCapture] Fallback to ML Kit text bounds crop SUCCESS:', detectionQuad);
                     }
                 } else if (!scanStateForCrop.autoCropEnabled) {
                     console.log('[commitCapture] Auto-crop disabled. Skipping post-capture detection.');
@@ -527,19 +921,16 @@ export default function ScannerScreen() {
             }
 
             // Step 2: Perspective correction with scaled coordinates
-            // Both canonicalDims and detectionDims are now in the same EXIF-resolved
-            // upright coordinate space, so scaleX/scaleY are mathematically correct.
             if (detectionQuad?.topLeft && detectionDims) {
                 try {
-                    // ── PHASE 6: Orientation mismatch guard ──────────────────
-                    const canonicalIsPortrait = canonicalDims.width < canonicalDims.height;
+                    const uprightIsPortrait = uprightDims.width < uprightDims.height;
                     const detectionIsPortrait = detectionDims.width < detectionDims.height;
-                    if (canonicalIsPortrait !== detectionIsPortrait) {
-                        console.error(`[GEOMETRY-ERROR] Orientation mismatch detected between detection and normalization spaces. canonical=${canonicalDims.width}x${canonicalDims.height} detection=${detectionDims.width}x${detectionDims.height}`);
+                    if (uprightIsPortrait !== detectionIsPortrait) {
+                        console.error(`[GEOMETRY-ERROR] Orientation mismatch detected. upright=${uprightDims.width}x${uprightDims.height} detection=${detectionDims.width}x${detectionDims.height}`);
                     }
 
-                    const scaleX = canonicalDims.width / detectionDims.width;
-                    const scaleY = canonicalDims.height / detectionDims.height;
+                    const scaleX = uprightDims.width / detectionDims.width;
+                    const scaleY = uprightDims.height / detectionDims.height;
 
                     if (__DEV__) {
                         console.log(`[EXIF-AUDIT] scaleX=${scaleX.toFixed(4)} scaleY=${scaleY.toFixed(4)}`);
@@ -551,7 +942,7 @@ export default function ScannerScreen() {
                         bottomRight: { x: detectionQuad.bottomRight.x * scaleX, y: detectionQuad.bottomRight.y * scaleY },
                         bottomLeft: { x: detectionQuad.bottomLeft.x * scaleX, y: detectionQuad.bottomLeft.y * scaleY },
                     };
-                    const scaledCropGate = evaluateAutoCropCandidate(scaledQuad, canonicalDims, {
+                    const scaledCropGate = evaluateAutoCropCandidate(scaledQuad, uprightDims, {
                         profile: cropProfile,
                     });
                     if (!scaledCropGate.accepted) {
@@ -563,12 +954,11 @@ export default function ScannerScreen() {
                         finalScaledQuad = null;
                         throw new Error(`Unsafe auto-crop geometry: ${scaledCropGate.reason}`);
                     }
-                    // Pass the EXIF-resolved canonical URI so OpenCV.imread loads
-                    // an upright image matching the coordinate space of the quad.
+
                     const norm = await normalizeCapturedDocument(
-                        canonicalUri,
+                        uprightUri,
                         scaledQuad,
-                        canonicalDims,
+                        uprightDims,
                         { cropProfile },
                     );
                     finalUri = norm.uri;
@@ -582,7 +972,7 @@ export default function ScannerScreen() {
             }
 
             // Step 2b: Resize if perspective correction didn't run
-            if (finalUri === pending.uri) {
+            if (finalUri === uprightUri) {
                 const resized = await ImageManipulator.manipulateAsync(
                     finalUri,
                     [{ resize: { width: 1200 } }],
@@ -592,18 +982,190 @@ export default function ScannerScreen() {
                 finalDims = { width: resized.width, height: resized.height };
             }
 
-            // CLEANUP: delete temporary canonical image
+            // CLEANUP: delete temporary canonical image and upright rotated image if they are not final
             try {
-                new File(canonicalUri).delete();
+                if (canonicalUri !== finalUri && canonicalUri !== uprightUri) {
+                    new File(canonicalUri).delete();
+                }
+            } catch (_) {}
+            try {
+                if (uprightUriToCleanup && uprightUriToCleanup !== finalUri) {
+                    new File(uprightUriToCleanup).delete();
+                }
             } catch (_) {}
 
             const stateAtSave = useScanStore.getState();
-            const shouldSplitDoublePage =
+            let shouldSplitDoublePage =
                 stateAtSave.currentSession?.settings.page_mode === 'double' &&
                 !stateAtSave.pendingRetake;
-            const imageParts: PreparedImagePart[] = shouldSplitDoublePage
-                ? await splitDoublePageImage(finalUri, finalDims.width, finalDims.height)
-                : [{ uri: finalUri, width: finalDims.width, height: finalDims.height }];
+
+            // Normalize double-page source orientation before split.
+            // normalizeDoublePageSource() ensures the image is landscape-oriented
+            // (matching the open book) before we split left/right.
+            // Without this call, a portrait-captured double-page spread gets split
+            // top/bottom instead of left/right, producing garbage output.
+            let splitSource = { uri: finalUri, width: finalDims.width, height: finalDims.height };
+            if (stateAtSave.currentSession?.settings.page_mode === 'double' && !stateAtSave.pendingRetake) {
+                try {
+                    const normalized = await normalizeDoublePageSource(
+                        finalUri,
+                        finalDims.width,
+                        finalDims.height,
+                        pending.captureOrientation,
+                    );
+                    splitSource = normalized;
+                } catch (normErr) {
+                    console.warn('[commitCapture] normalizeDoublePageSource failed, using original:', normErr);
+                }
+            }
+
+            // Store diagnostics for each page part
+            let partsDiagnostics: any[] = [];
+            let singlePageCropQuad: Quadrilateral | null = null;
+            let singlePageCropConfidence: number | undefined;
+            let singlePageDetector: 'docquad' | 'opencv' | 'none' = 'none';
+            let singlePageRejectedReason: string | undefined;
+
+            if (shouldSplitDoublePage) {
+                // Determine if 2 pages are actually visible
+                const twoPagesRes = await checkIfTwoPagesVisible(splitSource.uri, splitSource.width, splitSource.height);
+                if (!twoPagesRes.visible) {
+                    console.log(`[CROP-DIAGNOSTICS] Only one page visible in double page mode. Skipping split. Reason: ${twoPagesRes.reason}`);
+                    shouldSplitDoublePage = false;
+                    singlePageCropQuad = twoPagesRes.quad || null;
+                    singlePageCropConfidence = twoPagesRes.confidence;
+                    singlePageDetector = twoPagesRes.detectorUsed;
+                    singlePageRejectedReason = twoPagesRes.reason;
+                }
+            }
+
+            let imageParts: PreparedImagePart[] = [];
+            if (shouldSplitDoublePage) {
+                imageParts = await splitDoublePageImage(splitSource.uri, splitSource.width, splitSource.height);
+                if (stateAtSave.autoCropEnabled) {
+                    imageParts = await Promise.all(imageParts.map(async (part, idx) => {
+                        const refined = await refineSplitPartCrop(part);
+                        // Save diagnostics for each split part
+                        partsDiagnostics[idx] = {
+                            detectorUsed: refined.cropApplied ? (refined.cropConfidence !== undefined ? 'docquad' : 'opencv') : 'none',
+                            confidence: refined.cropConfidence || 0,
+                            accepted: !!refined.cropApplied,
+                            reason: refined.cropApplied ? undefined : 'Crop rejected or low confidence',
+                            cropQuad: refined.cropQuad ? JSON.stringify(refined.cropQuad) : undefined,
+                            outputSize: `${refined.width}x${refined.height}`,
+                        };
+                        return refined;
+                    }));
+                } else {
+                    imageParts.forEach((part, idx) => {
+                        partsDiagnostics[idx] = {
+                            detectorUsed: 'none',
+                            confidence: 0,
+                            accepted: false,
+                            reason: 'Auto-crop disabled',
+                            outputSize: `${part.width}x${part.height}`,
+                        };
+                    });
+                }
+            } else {
+                // Single page path (either from the beginning, or skipped split)
+                let singlePart: PreparedImagePart = { uri: splitSource.uri, width: splitSource.width, height: splitSource.height };
+                
+                if (stateAtSave.autoCropEnabled) {
+                    if (finalScaledQuad) {
+                        // If we already cropped/normalized in Step 2, use the cropped image directly!
+                        singlePart = {
+                            uri: splitSource.uri,
+                            width: splitSource.width,
+                            height: splitSource.height,
+                            cropQuad: finalScaledQuad,
+                            cropConfidence: cropConfidence,
+                            cropApplied: true
+                        };
+                        partsDiagnostics[0] = {
+                            detectorUsed: cropProfile === 'docquad' ? 'docquad' : 'opencv',
+                            confidence: cropConfidence || 0,
+                            accepted: true,
+                            cropQuad: JSON.stringify(finalScaledQuad),
+                            outputSize: `${splitSource.width}x${splitSource.height}`,
+                        };
+                    } else {
+                        // If auto-crop didn't run or failed in Step 2, check if checkIfTwoPagesVisible found a quad, or fallback
+                        let detectionQ = singlePageCropQuad;
+                        let cropConf = singlePageCropConfidence;
+                        let detector = singlePageDetector;
+                        
+                        if (detectionQ) {
+                            try {
+                                const scaledQuad = scaleQuadToDimensions(detectionQ, splitSource, splitSource);
+                                const gate = evaluateAutoCropCandidate(scaledQuad, splitSource, {
+                                    confidence: cropConf,
+                                    profile: detector === 'docquad' ? 'docquad' : 'standard',
+                                });
+                                
+                                if (gate.accepted) {
+                                    const norm = await normalizeCapturedDocument(splitSource.uri, scaledQuad, splitSource, {
+                                        cropProfile: detector === 'docquad' ? 'docquad' : 'standard',
+                                        isManualCrop: false
+                                    });
+                                    singlePart = {
+                                        uri: norm.uri,
+                                        width: norm.width,
+                                        height: norm.height,
+                                        cropQuad: scaledQuad,
+                                        cropConfidence: cropConf,
+                                        cropApplied: true
+                                    };
+                                    partsDiagnostics[0] = {
+                                        detectorUsed: detector,
+                                        confidence: cropConf || 0,
+                                        accepted: true,
+                                        cropQuad: JSON.stringify(scaledQuad),
+                                        outputSize: `${norm.width}x${norm.height}`,
+                                    };
+                                } else {
+                                    partsDiagnostics[0] = {
+                                        detectorUsed: detector,
+                                        confidence: cropConf || 0,
+                                        accepted: false,
+                                        reason: gate.reason || 'Rejected by candidate evaluation',
+                                        cropQuad: JSON.stringify(scaledQuad),
+                                        outputSize: `${splitSource.width}x${splitSource.height}`,
+                                    };
+                                }
+                            } catch (err) {
+                                console.warn('[commitCapture] Single part perspective correction failed:', err);
+                                partsDiagnostics[0] = {
+                                    detectorUsed: detector,
+                                    confidence: cropConf || 0,
+                                    accepted: false,
+                                    reason: err instanceof Error ? err.message : String(err),
+                                    outputSize: `${splitSource.width}x${splitSource.height}`,
+                                };
+                            }
+                        } else {
+                            partsDiagnostics[0] = {
+                                detectorUsed: 'none',
+                                confidence: 0,
+                                accepted: false,
+                                reason: singlePageRejectedReason || 'No document detected',
+                                outputSize: `${splitSource.width}x${splitSource.height}`,
+                            };
+                        }
+                    }
+                } else {
+                    partsDiagnostics[0] = {
+                        detectorUsed: 'none',
+                        confidence: 0,
+                        accepted: false,
+                        reason: 'Auto-crop disabled',
+                        outputSize: `${splitSource.width}x${splitSource.height}`,
+                    };
+                }
+                
+                imageParts = [singlePart];
+            }
+
             const didSplitDoublePage = imageParts.length > 1;
             const splitSourcePageId = didSplitDoublePage ? generateUUID() : undefined;
 
@@ -639,6 +1201,10 @@ export default function ScannerScreen() {
                     throw new Error('Failed to save filtered page image');
                 }
 
+                const cropAttempted = stateAtSave.autoCropEnabled;
+                const cropFailed = cropAttempted && !part.cropApplied;
+                const needsOrientationOrCropReview = oriented.needsReview || cropFailed;
+
                 const page: ScannedPage = {
                     id: generateUUID(),
                     ui_id: '',
@@ -646,11 +1212,11 @@ export default function ScannerScreen() {
                     file_path: dest.uri,
                     original_file_path: destOrig.uri,
                     raw_file_path: didSplitDoublePage ? undefined : (rawVerified ? destRaw.uri : undefined),
-                    crop_quad: didSplitDoublePage ? undefined : (finalScaledQuad || undefined),
-                    crop_applied: didSplitDoublePage ? true : !!finalScaledQuad,
-                    crop_confidence: didSplitDoublePage ? cropConfidence : (finalScaledQuad ? cropConfidence : undefined),
+                    crop_quad: didSplitDoublePage ? part.cropQuad : (part.cropQuad || undefined),
+                    crop_applied: !!part.cropApplied,
+                    crop_confidence: part.cropConfidence,
                     orientation_degrees: oriented.orientationDegrees,
-                    needs_orientation_review: oriented.needsReview,
+                    needs_orientation_review: needsOrientationOrCropReview,
                     split_source_page_id: splitSourcePageId,
                     split_part: part.splitPart,
                     filter_mode: filter,
@@ -658,6 +1224,7 @@ export default function ScannerScreen() {
                     is_blurry: pending.blur.isBlurry,
                     sharpness_score: pending.blur.sharpnessScore,
                     captured_at: new Date().toISOString(),
+                    diagnostics: partsDiagnostics[index],
                 };
 
                 addPageRef.current(page);
@@ -673,7 +1240,6 @@ export default function ScannerScreen() {
         }
     }, []);
 
-    // ── UI handlers ────────────────────────────────────────────────────────────
     const handleManualCapture = useCallback(() => {
         if (
             scannerPhaseRef.current === 'CAPTURING' ||

@@ -20,8 +20,13 @@ import { COLORS, getBackendUrl } from '../../src/config';
 import { useAuthStore } from '../../src/store/authStore';
 import { useScanStore } from '../../src/store/scanStore';
 import {
+  archiveManagedBatch,
   archiveManagedExam,
   closeManagedExam,
+  createBatchStudent,
+  createManagedBatch,
+  deleteBatchStudent,
+  deleteManagedBatch,
   fetchBatchStudents,
   fetchManagedBatches,
   fetchManagedExams,
@@ -38,6 +43,7 @@ import {
   StudentProfileUpdateInput,
 } from '../../src/components/manage/StudentReportModal';
 import { ManagedBatch, ManagedExam, ManagePerformance } from '../../src/utils/manageData';
+import { fetchWithTimeout } from '../../src/utils/fetchWithTimeout';
 
 interface TeacherOverview {
   examsCount: number;
@@ -221,13 +227,9 @@ export default function ManageScreen() {
     }
     if (!silent) setIsLoading(true);
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 2500);
-      const res = await fetch(`${getBackendUrl()}/api/v1/analytics/overview`, {
-        headers: { 'Authorization': `Bearer ${token}` },
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
+      const res = await fetchWithTimeout(`${getBackendUrl()}/api/v1/analytics/overview`, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Bypass-Tunnel-Reminder': 'true' },
+      }, 8000);
       if (res.ok) {
         const json = await res.json();
         setOverview(json.data);
@@ -420,24 +422,13 @@ export default function ManageScreen() {
       Alert.alert('Error', 'Please enter a batch name');
       return;
     }
+    if (!token) return;
     try {
-      const res = await fetch(`${getBackendUrl()}/api/batches`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ name: newBatchName })
-      });
-      if (res.ok) {
-        Alert.alert('Success', 'Batch created successfully!');
-        setNewBatchName('');
-        setShowAddBatchModal(false);
-        fetchBatches();
-      } else {
-        const txt = await res.text();
-        Alert.alert('Failed', `Could not create batch: ${txt}`);
-      }
+      await createManagedBatch({ backendUrl: getBackendUrl(), token }, { name: newBatchName.trim() });
+      Alert.alert('Success', 'Batch created successfully!');
+      setNewBatchName('');
+      setShowAddBatchModal(false);
+      fetchBatches();
     } catch (err: any) {
       Alert.alert('Error', err.message);
     }
@@ -486,15 +477,11 @@ export default function ManageScreen() {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
+            if (!token) return;
             try {
-              const res = await fetch(`${getBackendUrl()}/api/batches/${batchId}`, {
-                method: 'DELETE',
-                headers: { 'Authorization': `Bearer ${token}` }
-              });
-              if (res.ok) {
-                Alert.alert('Success', 'Batch deleted successfully.');
-                fetchBatches();
-              }
+              await deleteManagedBatch({ backendUrl: getBackendUrl(), token, batchId });
+              Alert.alert('Success', 'Batch deleted successfully.');
+              fetchBatches();
             } catch (err: any) {
               Alert.alert('Error', err.message);
             }
@@ -513,18 +500,11 @@ export default function ManageScreen() {
         {
           text: 'Archive',
           onPress: async () => {
+            if (!token) return;
             try {
-              const res = await fetch(`${getBackendUrl()}/api/batches/${batchId}/archive`, {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}` }
-              });
-              if (res.ok) {
-                Alert.alert('Success', 'Batch archived successfully.');
-                fetchBatches();
-              } else {
-                const txt = await res.text();
-                Alert.alert('Failed', `Could not archive batch: ${txt}`);
-              }
+              await archiveManagedBatch({ backendUrl: getBackendUrl(), token, batchId });
+              Alert.alert('Success', 'Batch archived successfully.');
+              fetchBatches();
             } catch (err: any) {
               Alert.alert('Error', err.message);
             }
@@ -539,31 +519,23 @@ export default function ManageScreen() {
       Alert.alert('Error', 'Name and Roll Number are required.');
       return;
     }
+    if (!token) return;
     try {
-      const res = await fetch(`${getBackendUrl()}/api/batches/${selectedBatchId}/students`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          name: newStudentName,
-          rollNumber: newStudentRoll,
-          email: newStudentEmail || undefined
-        })
-      });
-      if (res.ok) {
-        Alert.alert('Success', 'Student added successfully!');
-        setNewStudentName('');
-        setNewStudentRoll('');
-        setNewStudentEmail('');
-        setShowAddStudentModal(false);
-        fetchStudents(selectedBatchId);
-        fetchBatches();
-      } else {
-        const txt = await res.text();
-        Alert.alert('Failed', `Could not invite student: ${txt}`);
-      }
+      await createBatchStudent(
+        { backendUrl: getBackendUrl(), token, batchId: selectedBatchId },
+        {
+          name: newStudentName.trim(),
+          rollNumber: newStudentRoll.trim(),
+          email: newStudentEmail.trim() || undefined,
+        }
+      );
+      Alert.alert('Success', 'Student added successfully!');
+      setNewStudentName('');
+      setNewStudentRoll('');
+      setNewStudentEmail('');
+      setShowAddStudentModal(false);
+      fetchStudents(selectedBatchId);
+      fetchBatches();
     } catch (err: any) {
       Alert.alert('Error', err.message);
     }
@@ -579,16 +551,12 @@ export default function ManageScreen() {
           text: 'Remove',
           style: 'destructive',
           onPress: async () => {
+            if (!token) return;
             try {
-              const res = await fetch(`${getBackendUrl()}/api/batches/${batchId}/students/${studentId}`, {
-                method: 'DELETE',
-                headers: { 'Authorization': `Bearer ${token}` }
-              });
-              if (res.ok) {
-                Alert.alert('Success', 'Student removed successfully.');
-                fetchStudents(batchId);
-                fetchBatches();
-              }
+              await deleteBatchStudent({ backendUrl: getBackendUrl(), token, batchId, studentId });
+              Alert.alert('Success', 'Student removed successfully.');
+              fetchStudents(batchId);
+              fetchBatches();
             } catch (err: any) {
               Alert.alert('Error', err.message);
             }

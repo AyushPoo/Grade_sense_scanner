@@ -10,6 +10,7 @@ import {
   Dimensions,
   Alert,
   BackHandler,
+  Platform,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -830,6 +831,27 @@ export default function ReviewScreen() {
               }
             }}
           />
+          {__DEV__ && cropTarget.page.diagnostics && (
+            <View style={styles.diagnosticsCard}>
+              <View style={styles.diagHeader}>
+                <Text style={styles.diagTitle}>Auto-Crop Diagnostics</Text>
+              </View>
+              <Text style={styles.diagText}><Text style={styles.diagLabel}>Detector:</Text> {cropTarget.page.diagnostics.detectorUsed.toUpperCase()}</Text>
+              <Text style={styles.diagText}><Text style={styles.diagLabel}>Confidence:</Text> {cropTarget.page.diagnostics.confidence.toFixed(3)}</Text>
+              <Text style={styles.diagText}><Text style={styles.diagLabel}>Accepted:</Text> {cropTarget.page.diagnostics.accepted ? 'YES' : 'NO'}</Text>
+              {cropTarget.page.diagnostics.reason && (
+                <Text style={styles.diagText}><Text style={styles.diagLabel}>Reason:</Text> {cropTarget.page.diagnostics.reason}</Text>
+              )}
+              {cropTarget.page.diagnostics.outputSize && (
+                <Text style={styles.diagText}><Text style={styles.diagLabel}>Size:</Text> {cropTarget.page.diagnostics.outputSize}</Text>
+              )}
+              {cropTarget.page.diagnostics.cropQuad && (
+                <Text style={styles.diagText} numberOfLines={1} ellipsizeMode="tail">
+                  <Text style={styles.diagLabel}>Quad:</Text> {cropTarget.page.diagnostics.cropQuad}
+                </Text>
+              )}
+            </View>
+          )}
           {isProcessingCrop && (
             <View style={styles.globalFilterOverlay}>
               <Text style={{color: '#fff', fontSize: 13, fontWeight: 'bold'}}>Applying Crop...</Text>
@@ -898,4 +920,40 @@ const styles = StyleSheet.create({
   filterChip:       { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20, backgroundColor: COLORS.backgroundDark, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
   filterChipText:   { fontSize: 13, fontWeight: '600', color: COLORS.textPrimary },
   globalFilterOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' },
+  diagnosticsCard: {
+    position: 'absolute',
+    top: 110,
+    right: 12,
+    left: 12,
+    backgroundColor: 'rgba(17, 17, 17, 0.88)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+    padding: 12,
+    zIndex: 99,
+  },
+  diagHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255, 255, 255, 0.15)',
+    paddingBottom: 6,
+    marginBottom: 8,
+  },
+  diagTitle: {
+    color: '#FF9800',
+    fontSize: 13,
+    fontWeight: 'bold',
+  },
+  diagText: {
+    color: '#ddd',
+    fontSize: 11,
+    fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace',
+    lineHeight: 15,
+  },
+  diagLabel: {
+    color: '#aaa',
+    fontWeight: 'bold',
+  },
 });

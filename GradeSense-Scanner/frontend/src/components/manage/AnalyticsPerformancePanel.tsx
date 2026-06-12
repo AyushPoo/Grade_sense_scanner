@@ -127,7 +127,7 @@ export function AnalyticsPerformancePanel({ performance, isLoading }: Props) {
         )}
       </InsightSection>
 
-      <InsightSection title="Weak Questions" icon="help-circle-outline">
+      <InsightSection title="Hard Questions" icon="help-circle-outline">
         {data.weakQuestions.length === 0 ? (
           <EmptyState label="No question-level analytics yet." />
         ) : (

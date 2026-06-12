@@ -193,7 +193,7 @@ export default function SessionsScreen() {
       {/* Header */}
       <View style={styles.header}>
         <View>
-          <Text style={styles.headerTitle}>Sessions</Text>
+          <Text style={styles.headerTitle}>Review</Text>
           <Text style={styles.headerSub}>
             {activeTab === 'drafts'
               ? `${sessions.length} local draft${sessions.length !== 1 ? 's' : ''}`
@@ -251,7 +251,7 @@ export default function SessionsScreen() {
             <Text style={styles.emptySub}>Scan your first batch of answer papers to get started.</Text>
             <TouchableOpacity style={styles.emptyCTA} onPress={() => router.push('/session-setup')} activeOpacity={0.82}>
               <Ionicons name="camera" size={18} color="#fff" />
-              <Text style={styles.emptyCTAText}>New Scan Session</Text>
+              <Text style={styles.emptyCTAText}>New Scan/Upload</Text>
             </TouchableOpacity>
           </View>
         ) : (
@@ -282,7 +282,7 @@ export default function SessionsScreen() {
             <Text style={styles.emptySub}>Graded papers will appear here automatically after AI grading completes.</Text>
             <TouchableOpacity style={styles.emptyCTA} onPress={() => router.push('/session-setup')} activeOpacity={0.82}>
               <Ionicons name="scan" size={18} color="#fff" />
-              <Text style={styles.emptyCTAText}>New Scan Session</Text>
+              <Text style={styles.emptyCTAText}>New Scan/Upload</Text>
             </TouchableOpacity>
           </View>
         ) : (

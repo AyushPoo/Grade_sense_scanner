@@ -31,6 +31,8 @@ import {
   notifyGradingProgress,
 } from '../../src/services/gradingNotifications';
 
+const ACTIONABLE_SESSION_STATUSES = new Set(['scanning', 'ready', 'uploading', 'syncing', 'failed', 'sync_failed']);
+
 // ─── Sub-components ───────────────────────────────────────────────────
 
 function StatPill({ value, label, icon, highlight = false }: {
@@ -562,7 +564,9 @@ export default function HomeScreen() {
   const todaySessions = sessions.filter(s => s.created_at && new Date(s.created_at).toDateString() === new Date().toDateString()).length;
   const pendingUploads = sessions.filter(s => s.status === 'ready' || s.status === 'failed').length;
   const totalPages = sessions.reduce((sum, s) => sum + (s.stats?.total_pages || 0), 0);
-  const recentSessions = sessions.slice(0, 5);
+  const recentSessions = sessions
+    .filter(session => ACTIONABLE_SESSION_STATUSES.has(session.status) && !gradingProgress[session.session_id])
+    .slice(0, 5);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -666,8 +670,8 @@ export default function HomeScreen() {
               <Ionicons name="scan" size={32} color={COLORS.primary} />
             </View>
             <View style={styles.scanText}>
-              <Text style={styles.scanTitle}>New Scan Session</Text>
-              <Text style={styles.scanSubtitle}>Set up and scan answer papers</Text>
+              <Text style={styles.scanTitle}>New Scan/Upload</Text>
+              <Text style={styles.scanSubtitle}>Set up, scan, or upload answer papers</Text>
             </View>
             <View style={styles.scanArrow}>
               <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.8)" />
@@ -753,9 +757,7 @@ export default function HomeScreen() {
               </TouchableOpacity>
             </View>
             <View style={styles.cardList}>
-              {recentSessions
-                .filter(s => !gradingProgress[s.session_id])
-                .map(session => (
+              {recentSessions.map(session => (
                   <SessionRow
                     key={session.session_id}
                     session={session}

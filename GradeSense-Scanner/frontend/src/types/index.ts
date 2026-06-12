@@ -58,6 +58,14 @@ export interface ScannedPage {
   captured_at: string;
   base64?: string;
   sync_status?: 'synced' | 'unsynced' | 'failed';
+  diagnostics?: {
+    detectorUsed: string;
+    confidence: number;
+    accepted: boolean;
+    reason?: string;
+    cropQuad?: string;
+    outputSize?: string;
+  };
 }
 
 export interface ScannedStudent {

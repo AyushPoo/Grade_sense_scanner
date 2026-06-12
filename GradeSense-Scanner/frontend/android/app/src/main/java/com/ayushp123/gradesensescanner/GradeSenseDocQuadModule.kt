@@ -16,6 +16,10 @@ import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import com.google.android.gms.tasks.Tasks
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.FloatBuffer
@@ -53,6 +57,127 @@ class GradeSenseDocQuadModule(
         promise.resolve(map)
       } catch (t: Throwable) {
         promise.reject("DOCQUAD_DETECT_FAILED", t.message, t)
+      }
+    }
+  }
+
+  @ReactMethod
+  fun detectTextOrientationAndBounds(imageUri: String, promise: Promise) {
+    executor.execute {
+      try {
+        val bitmap = decodeBitmap(imageUri)
+            ?: throw IllegalArgumentException("Unable to decode image URI")
+        
+        val image = InputImage.fromBitmap(bitmap, 0)
+        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        
+        val visionText = Tasks.await(recognizer.process(image))
+        
+        var weight0 = 0
+        var weight90 = 0
+        var weight180 = 0
+        var weight270 = 0
+        
+        var minX = Double.MAX_VALUE
+        var minY = Double.MAX_VALUE
+        var maxX = Double.MIN_VALUE
+        var maxY = Double.MIN_VALUE
+        var hasText = false
+        
+        val blocksArray = Arguments.createArray()
+        
+        for (block in visionText.textBlocks) {
+          val blockMap = Arguments.createMap()
+          blockMap.putString("text", block.text)
+          
+          val box = block.boundingBox
+          if (box != null) {
+            val boxMap = Arguments.createMap()
+            boxMap.putInt("left", box.left)
+            boxMap.putInt("top", box.top)
+            boxMap.putInt("right", box.right)
+            boxMap.putInt("bottom", box.bottom)
+            blockMap.putMap("boundingBox", boxMap)
+          }
+          
+          val corners = block.cornerPoints
+          if (corners != null) {
+            val cornersArray = Arguments.createArray()
+            for (p in corners) {
+              val pMap = Arguments.createMap()
+              pMap.putInt("x", p.x)
+              pMap.putInt("y", p.y)
+              cornersArray.pushMap(pMap)
+              
+              val px = p.x.toDouble()
+              val py = p.y.toDouble()
+              minX = minOf(minX, px)
+              minY = minOf(minY, py)
+              maxX = maxOf(maxX, px)
+              maxY = maxOf(maxY, py)
+              hasText = true
+            }
+            blockMap.putArray("cornerPoints", cornersArray)
+          }
+          
+          blocksArray.pushMap(blockMap)
+          
+          for (line in block.lines) {
+            for (element in line.elements) {
+              val angle = element.angle
+              val len = element.text.length
+              val normAngle = (angle % 360 + 360) % 360
+              if (normAngle >= 315 || normAngle < 45) {
+                weight0 += len
+              } else if (normAngle >= 45 && normAngle < 135) {
+                weight90 += len
+              } else if (normAngle >= 135 && normAngle < 225) {
+                weight180 += len
+              } else {
+                weight270 += len
+              }
+            }
+          }
+        }
+        
+        val maxWeight = maxOf(weight0, weight90, weight180, weight270)
+        val rotationNeeded = if (maxWeight < 3) {
+          0
+        } else if (maxWeight == weight0) {
+          0
+        } else if (maxWeight == weight90) {
+          270
+        } else if (maxWeight == weight180) {
+          180
+        } else {
+          90
+        }
+        
+        val result = Arguments.createMap()
+        result.putInt("rotationNeeded", rotationNeeded)
+        result.putBoolean("hasText", hasText)
+        result.putInt("width", bitmap.width)
+        result.putInt("height", bitmap.height)
+        
+        val boundsMap = Arguments.createMap()
+        if (hasText) {
+          boundsMap.putDouble("left", minX)
+          boundsMap.putDouble("top", minY)
+          boundsMap.putDouble("right", maxX)
+          boundsMap.putDouble("bottom", maxY)
+        } else {
+          boundsMap.putDouble("left", 0.0)
+          boundsMap.putDouble("top", 0.0)
+          boundsMap.putDouble("right", bitmap.width.toDouble())
+          boundsMap.putDouble("bottom", bitmap.height.toDouble())
+        }
+        result.putMap("textBounds", boundsMap)
+        result.putArray("blocks", blocksArray)
+        
+        bitmap.recycle()
+        promise.resolve(result)
+      } catch (t: Throwable) {
+        promise.reject("MLKIT_TEXT_DETECT_FAILED", t.message, t)
       }
     }
   }

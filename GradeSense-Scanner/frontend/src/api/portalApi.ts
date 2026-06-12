@@ -1,4 +1,5 @@
 import { getBackendUrl, getWebappUrl } from '../config';
+import { fetchWithTimeout } from '../utils/fetchWithTimeout';
 
 export interface PortalJsonRequest {
   token: string;
@@ -45,11 +46,11 @@ function errorMessage(status: number, payload: unknown): string {
 
 async function requestJson(url: string, request: PortalJsonRequest): Promise<{ status: number; ok: boolean; payload: unknown }> {
   const hasJsonBody = Boolean(request.body);
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     method: request.method ?? 'GET',
     headers: authHeaders(request.token, hasJsonBody),
     body: hasJsonBody ? JSON.stringify(request.body) : undefined,
-  });
+  }, 10000);
 
   return {
     status: res.status,

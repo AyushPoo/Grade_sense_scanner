@@ -51,10 +51,27 @@ export interface UpdateManagedBatchInput {
   name?: string;
 }
 
+export interface CreateManagedBatchInput {
+  name: string;
+}
+
+export interface CreateBatchStudentInput {
+  name: string;
+  rollNumber: string;
+  email?: string;
+}
+
 function authHeaders(token: string) {
   return {
     'Authorization': `Bearer ${token}`,
     'Bypass-Tunnel-Reminder': 'true',
+  };
+}
+
+function jsonHeaders(token: string) {
+  return {
+    ...authHeaders(token),
+    'Content-Type': 'application/json',
   };
 }
 
@@ -79,7 +96,7 @@ function normalizeSingleExam(value: unknown): ManagedExam {
 export async function fetchManagedExams({ backendUrl, token }: ManageApiOptions): Promise<ManagedExam[]> {
   const res = await fetchWithTimeout(`${backendUrl}/api/v1/exams`, {
     headers: authHeaders(token),
-  }, 2500);
+  }, 8000);
 
   return parseJsonResponse(res, normalizeManagedExams);
 }
@@ -98,10 +115,7 @@ export async function updateManagedBatch(
 ): Promise<ManagedBatch> {
   const res = await fetchWithTimeout(`${backendUrl}/api/batches/${batchId}`, {
     method: 'PATCH',
-    headers: {
-      ...authHeaders(token),
-      'Content-Type': 'application/json',
-    },
+    headers: jsonHeaders(token),
     body: JSON.stringify(input),
   }, 8000);
 
@@ -110,6 +124,46 @@ export async function updateManagedBatch(
     throw new Error('Batch response was empty.');
   }
   return batch[0];
+}
+
+export async function createManagedBatch(
+  { backendUrl, token }: ManageApiOptions,
+  input: CreateManagedBatchInput
+): Promise<void> {
+  const res = await fetchWithTimeout(`${backendUrl}/api/batches`, {
+    method: 'POST',
+    headers: jsonHeaders(token),
+    body: JSON.stringify(input),
+  }, 8000);
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Status ${res.status}`);
+  }
+}
+
+export async function deleteManagedBatch({ backendUrl, token, batchId }: BatchApiOptions): Promise<void> {
+  const res = await fetchWithTimeout(`${backendUrl}/api/batches/${batchId}`, {
+    method: 'DELETE',
+    headers: authHeaders(token),
+  }, 8000);
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Status ${res.status}`);
+  }
+}
+
+export async function archiveManagedBatch({ backendUrl, token, batchId }: BatchApiOptions): Promise<void> {
+  const res = await fetchWithTimeout(`${backendUrl}/api/batches/${batchId}/archive`, {
+    method: 'POST',
+    headers: authHeaders(token),
+  }, 8000);
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Status ${res.status}`);
+  }
 }
 
 export async function fetchBatchStudents({
@@ -139,10 +193,7 @@ export async function updateManagedExam(
 ): Promise<ManagedExam> {
   const res = await fetchWithTimeout(`${backendUrl}/api/v1/exams/${examId}`, {
     method: 'PATCH',
-    headers: {
-      ...authHeaders(token),
-      'Content-Type': 'application/json',
-    },
+    headers: jsonHeaders(token),
     body: JSON.stringify(input),
   }, 6000);
 
@@ -185,10 +236,7 @@ export async function updateBatchStudent(
 ): Promise<ManagedRosterStudent> {
   const res = await fetchWithTimeout(`${backendUrl}/api/batches/${batchId}/students/${studentId}`, {
     method: 'PATCH',
-    headers: {
-      ...authHeaders(token),
-      'Content-Type': 'application/json',
-    },
+    headers: jsonHeaders(token),
     body: JSON.stringify(input),
   }, 8000);
 
@@ -203,4 +251,34 @@ export async function updateBatchStudent(
     throw new Error('Student response was empty.');
   }
   return student;
+}
+
+export async function createBatchStudent(
+  { backendUrl, token, batchId }: BatchStudentsApiOptions,
+  input: CreateBatchStudentInput
+): Promise<void> {
+  const res = await fetchWithTimeout(`${backendUrl}/api/batches/${batchId}/students`, {
+    method: 'POST',
+    headers: jsonHeaders(token),
+    body: JSON.stringify(input),
+  }, 8000);
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Status ${res.status}`);
+  }
+}
+
+export async function deleteBatchStudent(
+  { backendUrl, token, batchId, studentId }: StudentApiOptions
+): Promise<void> {
+  const res = await fetchWithTimeout(`${backendUrl}/api/batches/${batchId}/students/${studentId}`, {
+    method: 'DELETE',
+    headers: authHeaders(token),
+  }, 8000);
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Status ${res.status}`);
+  }
 }

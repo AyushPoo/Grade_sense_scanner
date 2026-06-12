@@ -272,7 +272,7 @@ export default function ProfileScreen() {
               label="Help & Support"
               iconBg={COLORS.successLight}
               iconColor={COLORS.success}
-              onPress={() => Alert.alert('Help', 'Contact our support team at support@gradesense.io')}
+              onPress={() => Alert.alert('Help', 'Contact our support team at hello@gradesense.in')}
             />
             <SettingRow
               icon="phone-portrait-outline"

@@ -3244,10 +3244,10 @@ def process_enhance(base64_str: str, mode: str = "enhanced", points: Optional[li
                 cv2.THRESH_BINARY, 21, 10
             )
         elif mode == "high_contrast":
-            # Aggressive contrast
-            alpha = 1.6 # Contrast control
-            beta = -40  # Brightness control
-            final = cv2.convertScaleAbs(gray, alpha=alpha, beta=beta)
+            # Division-based background normalization (similar to ML Kit document enhancement)
+            blur = cv2.GaussianBlur(gray, (71, 71), 0)
+            divided = cv2.divide(gray, blur, scale=255)
+            final = cv2.convertScaleAbs(divided, alpha=1.40, beta=-80)
         else: # DEFAULT: "enhanced" - HANDWRITING PRESERVING
             # Lighting Normalization (CLAHE) - Softer settings
             clahe = cv2.createCLAHE(clipLimit=1.2, tileGridSize=(12, 12))
@@ -3292,8 +3292,37 @@ async def enhance_image_file_endpoint(
     try:
         # Read file into memory
         contents = await file.read()
-        nparr = np.frombuffer(contents, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        # Auto-rotate based on EXIF orientation using PIL
+        from PIL import Image, ExifTags
+        import io
+        try:
+            with Image.open(io.BytesIO(contents)) as pil_img:
+                exif = pil_img._getexif()
+                if exif:
+                    for tag, value in exif.items():
+                        if ExifTags.TAGS.get(tag) == 'Orientation':
+                            if value == 2:
+                                pil_img = pil_img.transpose(Image.FLIP_LEFT_RIGHT)
+                            elif value == 3:
+                                pil_img = pil_img.rotate(180, expand=True)
+                            elif value == 4:
+                                pil_img = pil_img.transpose(Image.FLIP_TOP_BOTTOM)
+                            elif value == 5:
+                                pil_img = pil_img.rotate(270, expand=True).transpose(Image.FLIP_LEFT_RIGHT)
+                            elif value == 6:
+                                pil_img = pil_img.rotate(270, expand=True)
+                            elif value == 7:
+                                pil_img = pil_img.rotate(90, expand=True).transpose(Image.FLIP_LEFT_RIGHT)
+                            elif value == 8:
+                                pil_img = pil_img.rotate(90, expand=True)
+                            break
+                # Convert PIL Image back to cv2 BGR
+                img = cv2.cvtColor(np.array(pil_img.convert('RGB')), cv2.COLOR_RGB2BGR)
+        except Exception as e:
+            logger.warning(f"EXIF rotation failed, falling back to cv2: {e}")
+            nparr = np.frombuffer(contents, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
         if img is None:
             raise HTTPException(status_code=400, detail="Could not decode image")
@@ -3320,7 +3349,9 @@ async def enhance_image_file_endpoint(
                 cv2.THRESH_BINARY, 21, 10
             )
         elif mode == "high_contrast":
-            final = cv2.convertScaleAbs(gray, alpha=1.6, beta=-40)
+            blur = cv2.GaussianBlur(gray, (71, 71), 0)
+            divided = cv2.divide(gray, blur, scale=255)
+            final = cv2.convertScaleAbs(divided, alpha=1.40, beta=-80)
         else: # enhanced
             clahe = cv2.createCLAHE(clipLimit=1.2, tileGridSize=(12, 12))
             normalized = clahe.apply(gray)

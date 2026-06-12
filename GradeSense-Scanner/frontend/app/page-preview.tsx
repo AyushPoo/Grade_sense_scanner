@@ -9,6 +9,7 @@ import {
   Alert,
   ActivityIndicator,
   BackHandler,
+  Platform,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -32,6 +33,9 @@ import Animated, {
 } from 'react-native-reanimated';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+const PREVIEW_IMAGE_HEIGHT = SCREEN_HEIGHT * 0.6;
+const MAX_PREVIEW_ZOOM = 4;
+const DOUBLE_TAP_ZOOM = 2.3;
 
 function InlineZoomableImage({
   uri,
@@ -52,8 +56,25 @@ function InlineZoomableImage({
   const translateY = useSharedValue(0);
   const savedTranslateX = useSharedValue(0);
   const savedTranslateY = useSharedValue(0);
+  const lastDoubleTapAt = useSharedValue(0);
+
+  const clamp = (value: number, min: number, max: number) => {
+    'worklet';
+    return Math.max(min, Math.min(max, value));
+  };
+
+  const clampTranslation = (nextX: number, nextY: number, nextScale: number) => {
+    'worklet';
+    const boundX = (SCREEN_WIDTH * Math.max(0, nextScale - 1)) / 2;
+    const boundY = (PREVIEW_IMAGE_HEIGHT * Math.max(0, nextScale - 1)) / 2;
+    return {
+      x: clamp(nextX, -boundX, boundX),
+      y: clamp(nextY, -boundY, boundY),
+    };
+  };
 
   const reset = () => {
+    'worklet';
     scale.value = withTiming(1);
     savedScale.value = 1;
     translateX.value = withTiming(0);
@@ -65,9 +86,22 @@ function InlineZoomableImage({
 
   const pinchGesture = Gesture.Pinch()
     .onUpdate(event => {
-      scale.value = Math.max(1, Math.min(savedScale.value * event.scale, 5));
+      const nextScale = clamp(savedScale.value * event.scale, 1, MAX_PREVIEW_ZOOM);
+      const clamped = clampTranslation(translateX.value, translateY.value, nextScale);
+      scale.value = nextScale;
+      translateX.value = clamped.x;
+      translateY.value = clamped.y;
     })
     .onEnd(() => {
+      if (scale.value <= 1.05) {
+        reset();
+        return;
+      }
+      const clamped = clampTranslation(translateX.value, translateY.value, scale.value);
+      translateX.value = withTiming(clamped.x);
+      translateY.value = withTiming(clamped.y);
+      savedTranslateX.value = clamped.x;
+      savedTranslateY.value = clamped.y;
       savedScale.value = scale.value;
       runOnJS(onZoomChange)(scale.value > 1.05);
     });
@@ -76,8 +110,13 @@ function InlineZoomableImage({
     .enabled(isZoomed)
     .onUpdate(event => {
       if (scale.value > 1) {
-        translateX.value = savedTranslateX.value + event.translationX;
-        translateY.value = savedTranslateY.value + event.translationY;
+        const clamped = clampTranslation(
+          savedTranslateX.value + event.translationX,
+          savedTranslateY.value + event.translationY,
+          scale.value,
+        );
+        translateX.value = clamped.x;
+        translateY.value = clamped.y;
       }
     })
     .onEnd(() => {
@@ -87,12 +126,21 @@ function InlineZoomableImage({
 
   const doubleTapGesture = Gesture.Tap()
     .numberOfTaps(2)
-    .onStart(() => {
+    .maxDelay(260)
+    .onEnd(() => {
+      const now = Date.now();
+      if (now - lastDoubleTapAt.value < 280) return;
+      lastDoubleTapAt.value = now;
+
       if (scale.value > 1.1) {
         reset();
       } else {
-        scale.value = withTiming(2.4);
-        savedScale.value = 2.4;
+        scale.value = withTiming(DOUBLE_TAP_ZOOM);
+        savedScale.value = DOUBLE_TAP_ZOOM;
+        translateX.value = withTiming(0);
+        translateY.value = withTiming(0);
+        savedTranslateX.value = 0;
+        savedTranslateY.value = 0;
         runOnJS(onZoomChange)(true);
       }
     });
@@ -107,7 +155,7 @@ function InlineZoomableImage({
 
   return (
     <GestureHandlerRootView style={styles.imageTouchArea}>
-      <GestureDetector gesture={isZoomed ? Gesture.Race(doubleTapGesture, Gesture.Simultaneous(pinchGesture, panGesture)) : Gesture.Simultaneous(doubleTapGesture, pinchGesture)}>
+      <GestureDetector gesture={Gesture.Simultaneous(doubleTapGesture, pinchGesture, panGesture)}>
         <Animated.View style={[styles.zoomableLayer, animatedStyle]}>
           <Image
             source={{ uri }}
@@ -140,6 +188,7 @@ export default function PagePreviewScreen() {
   const [cropTarget, setCropTarget] = useState<ScannedPage | null>(null);
   const [isProcessingCrop, setIsProcessingCrop] = useState(false);
   const [zoomedPageId, setZoomedPageId] = useState<string | null>(null);
+  const [showDevDiagnostics, setShowDevDiagnostics] = useState(false);
 
   const FILTERS: { id: FilterMode; label: string; icon: string }[] = [
     { id: 'original',           label: 'Original',    icon: 'image-outline' },
@@ -531,6 +580,38 @@ export default function PagePreviewScreen() {
               });
             }}
           />
+          {__DEV__ && item.diagnostics && (
+            <TouchableOpacity
+              style={styles.diagToggleBtn}
+              onPress={() => setShowDevDiagnostics(prev => !prev)}
+            >
+              <Ionicons name="bug-outline" size={18} color="#fff" />
+            </TouchableOpacity>
+          )}
+          {__DEV__ && showDevDiagnostics && item.diagnostics && (
+            <View style={styles.diagnosticsCard}>
+              <View style={styles.diagHeader}>
+                <Text style={styles.diagTitle}>Crop Diagnostics</Text>
+                <TouchableOpacity onPress={() => setShowDevDiagnostics(false)}>
+                  <Ionicons name="close" size={16} color="#aaa" />
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.diagText}><Text style={styles.diagLabel}>Detector:</Text> {item.diagnostics.detectorUsed.toUpperCase()}</Text>
+              <Text style={styles.diagText}><Text style={styles.diagLabel}>Confidence:</Text> {item.diagnostics.confidence.toFixed(3)}</Text>
+              <Text style={styles.diagText}><Text style={styles.diagLabel}>Accepted:</Text> {item.diagnostics.accepted ? 'YES' : 'NO'}</Text>
+              {item.diagnostics.reason && (
+                <Text style={styles.diagText}><Text style={styles.diagLabel}>Reason:</Text> {item.diagnostics.reason}</Text>
+              )}
+              {item.diagnostics.outputSize && (
+                <Text style={styles.diagText}><Text style={styles.diagLabel}>Size:</Text> {item.diagnostics.outputSize}</Text>
+              )}
+              {item.diagnostics.cropQuad && (
+                <Text style={styles.diagText} numberOfLines={1} ellipsizeMode="tail">
+                  <Text style={styles.diagLabel}>Quad:</Text> {item.diagnostics.cropQuad}
+                </Text>
+              )}
+            </View>
+          )}
           {(loadingPages.has(item.id) || isApplyingFilter || isRotating) && index === currentIndex && (
             <View style={styles.loadingOverlay}>
               <ActivityIndicator size="large" color={COLORS.primary} />
@@ -923,5 +1004,53 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     color: COLORS.text,
+  },
+  diagToggleBtn: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 10,
+  },
+  diagnosticsCard: {
+    position: 'absolute',
+    top: 54,
+    right: 12,
+    left: 12,
+    backgroundColor: 'rgba(17, 17, 17, 0.88)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+    padding: 12,
+    zIndex: 99,
+  },
+  diagHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255, 255, 255, 0.15)',
+    paddingBottom: 6,
+    marginBottom: 8,
+  },
+  diagTitle: {
+    color: '#FF9800',
+    fontSize: 13,
+    fontWeight: 'bold',
+  },
+  diagText: {
+    color: '#ddd',
+    fontSize: 11,
+    fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace',
+    lineHeight: 15,
+  },
+  diagLabel: {
+    color: '#aaa',
+    fontWeight: 'bold',
   },
 });

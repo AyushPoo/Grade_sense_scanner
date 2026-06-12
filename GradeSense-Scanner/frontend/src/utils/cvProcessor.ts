@@ -1457,29 +1457,15 @@ export async function applyFilter(imageUri: string, mode: FilterMode): Promise<s
     dstMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
 
     if (mode === 'high_contrast') {
-      // Scanner-style review filter: lift the page and sharpen ink without
-      // turning the image into an OCR-style black/white mask.
+      // Division-based background normalization (similar to ML Kit document enhancement)
       try {
         blurMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
-        sharpMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
-        binaryMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
-        paperMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
-        const blurSize = OpenCV.createObject(ObjectType.Size, 5, 5);
+        const blurSize = OpenCV.createObject(ObjectType.Size, 71, 71);
         (OpenCV as any).invoke('GaussianBlur', grayMat, blurMat, blurSize, 0);
-        (OpenCV as any).invoke('addWeighted', grayMat, 1.45, blurMat, -0.45, 0, sharpMat);
-        (OpenCV as any).invoke('convertScaleAbs', sharpMat, paperMat, 1.28, -18);
-        (OpenCV as any).invoke(
-          'adaptiveThreshold',
-          blurMat, binaryMat,
-          255,
-          1,
-          0,
-          31,
-          10,
-        );
-        (OpenCV as any).invoke('addWeighted', paperMat, 0.78, binaryMat, 0.22, 0, dstMat);
+        (OpenCV as any).invoke('divide', grayMat, blurMat, dstMat, 255);
+        (OpenCV as any).invoke('convertScaleAbs', dstMat, dstMat, 1.40, -80);
       } catch (enhanceErr) {
-        console.warn('[CV] high_contrast enhancement fallback:', enhanceErr);
+        console.warn('[CV] high_contrast division normalization failed, using fallback:', enhanceErr);
         (OpenCV as any).invoke('convertScaleAbs', grayMat, dstMat, 1.28, -18);
       }
     } else if (mode === 'adaptive_threshold') {

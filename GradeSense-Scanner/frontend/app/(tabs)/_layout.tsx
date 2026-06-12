@@ -39,7 +39,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="sessions"
         options={{
-          title: 'Sessions',
+          title: 'Review',
           tabBarIcon: ({ color, focused }) => (
             <TabIcon name={focused ? 'folder' : 'folder-outline'} color={color} focused={focused} />
           ),
