@@ -2,15 +2,21 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies needed for OpenCV, PyTorch, and wget
+# Install system dependencies needed for OpenCV, PyTorch, wget, and SciPy compilation fallback
 RUN apt-get update && apt-get install -y \
     wget \
     libgl1 \
     libglib2.0-0 \
+    build-essential \
+    gfortran \
+    libopenblas-dev \
+    liblapack-dev \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Download DocTr code scripts and model weights from Hugging Face Space repository
 RUN mkdir -p model_pretrained
