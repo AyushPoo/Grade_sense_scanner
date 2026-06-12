@@ -26,7 +26,7 @@ import { File, Paths } from 'expo-file-system';
 import { AppState, AppStateStatus } from 'react-native';
 import { COLORS } from '../src/config';
 import { useShallow } from 'zustand/react/shallow';
-import { CVProcessingResult, Quadrilateral } from '../src/utils/cvProcessor';
+import { CVProcessingResult, Quadrilateral, Point } from '../src/utils/cvProcessor';
 import { LiveScanStatus } from '../src/components/StatusIndicator';
 import { ScannerHeader } from '../src/components/ScannerHeader';
 import { ProtectedCameraView } from '../src/components/ProtectedCameraView';
@@ -102,6 +102,7 @@ interface PreparedImagePart {
     cropQuad?: Quadrilateral;
     cropConfidence?: number;
     cropApplied?: boolean;
+    rawUri?: string;
 }
 
 interface OrientationResult {
@@ -312,8 +313,8 @@ async function splitDoublePageImage(
             { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG }
         );
         return [
-            { uri: left.uri, width: left.width, height: left.height, splitPart: 'left' },
-            { uri: right.uri, width: right.width, height: right.height, splitPart: 'right' },
+            { uri: left.uri, width: left.width, height: left.height, splitPart: 'left', rawUri: left.uri },
+            { uri: right.uri, width: right.width, height: right.height, splitPart: 'right', rawUri: right.uri },
         ];
     } else {
         const overlap = Math.round(height * 0.018);
@@ -332,10 +333,86 @@ async function splitDoublePageImage(
             { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG }
         );
         return [
-            { uri: top.uri, width: top.width, height: top.height, splitPart: 'top' },
-            { uri: bottom.uri, width: bottom.width, height: bottom.height, splitPart: 'bottom' },
+            { uri: top.uri, width: top.width, height: top.height, splitPart: 'top', rawUri: top.uri },
+            { uri: bottom.uri, width: bottom.width, height: bottom.height, splitPart: 'bottom', rawUri: bottom.uri },
         ];
     }
+}
+
+function splitQuadrilateral(
+    quad: Quadrilateral,
+    splitDir: 'horizontal' | 'vertical'
+): { first: Quadrilateral; second: Quadrilateral } {
+    const TL = quad.topLeft;
+    const TR = quad.topRight;
+    const BR = quad.bottomRight;
+    const BL = quad.bottomLeft;
+
+    if (splitDir === 'horizontal') {
+        const midTop = {
+            x: (TL.x + TR.x) / 2,
+            y: (TL.y + TR.y) / 2,
+        };
+        const midBottom = {
+            x: (BL.x + BR.x) / 2,
+            y: (BL.y + BR.y) / 2,
+        };
+        return {
+            first: { topLeft: TL, topRight: midTop, bottomRight: midBottom, bottomLeft: BL },
+            second: { topLeft: midTop, topRight: TR, bottomRight: BR, bottomLeft: midBottom },
+        };
+    } else {
+        const midLeft = {
+            x: (TL.x + BL.x) / 2,
+            y: (TL.y + BL.y) / 2,
+        };
+        const midRight = {
+            x: (TR.x + BR.x) / 2,
+            y: (TR.y + BR.y) / 2,
+        };
+        return {
+            first: { topLeft: TL, topRight: TR, bottomRight: midRight, bottomLeft: midLeft },
+            second: { topLeft: midLeft, topRight: midRight, bottomRight: BR, bottomLeft: BL },
+        };
+    }
+}
+
+function adjustQuadForSplitOffset(
+    quad: Quadrilateral,
+    splitPart: PageSplitPart,
+    width: number,
+    height: number
+): Quadrilateral {
+    if (width >= height) {
+        if (splitPart === 'right') {
+            const overlap = Math.round(width * 0.018);
+            const mid = Math.floor(width / 2);
+            const rightX = Math.max(0, mid - overlap);
+            
+            const shiftPoint = (p: Point) => ({ x: Math.max(0, p.x - rightX), y: p.y });
+            return {
+                topLeft: shiftPoint(quad.topLeft),
+                topRight: shiftPoint(quad.topRight),
+                bottomRight: shiftPoint(quad.bottomRight),
+                bottomLeft: shiftPoint(quad.bottomLeft),
+            };
+        }
+    } else {
+        if (splitPart === 'bottom') {
+            const overlap = Math.round(height * 0.018);
+            const mid = Math.floor(height / 2);
+            const bottomY = Math.max(0, mid - overlap);
+            
+            const shiftPoint = (p: Point) => ({ x: p.x, y: Math.max(0, p.y - bottomY) });
+            return {
+                topLeft: shiftPoint(quad.topLeft),
+                topRight: shiftPoint(quad.topRight),
+                bottomRight: shiftPoint(quad.bottomRight),
+                bottomLeft: shiftPoint(quad.bottomLeft),
+            };
+        }
+    }
+    return quad;
 }
 
 function scaleQuadToDimensions(
@@ -1018,9 +1095,11 @@ export default function ScannerScreen() {
             let singlePageDetector: 'docquad' | 'opencv' | 'none' = 'none';
             let singlePageRejectedReason: string | undefined;
 
+            let twoPagesRes: any = null;
+
             if (shouldSplitDoublePage) {
                 // Determine if 2 pages are actually visible
-                const twoPagesRes = await checkIfTwoPagesVisible(splitSource.uri, splitSource.width, splitSource.height);
+                twoPagesRes = await checkIfTwoPagesVisible(splitSource.uri, splitSource.width, splitSource.height);
                 if (!twoPagesRes.visible) {
                     console.log(`[CROP-DIAGNOSTICS] Only one page visible in double page mode. Skipping split. Reason: ${twoPagesRes.reason}`);
                     shouldSplitDoublePage = false;
@@ -1031,13 +1110,10 @@ export default function ScannerScreen() {
                 }
             }
 
-            let imageParts: PreparedImagePart[] = [];
-            if (shouldSplitDoublePage) {
-                imageParts = await splitDoublePageImage(splitSource.uri, splitSource.width, splitSource.height);
+            const refineSequentialSplitParts = async (rawParts: PreparedImagePart[]) => {
                 if (stateAtSave.autoCropEnabled) {
-                    imageParts = await Promise.all(imageParts.map(async (part, idx) => {
+                    return await Promise.all(rawParts.map(async (part, idx) => {
                         const refined = await refineSplitPartCrop(part);
-                        // Save diagnostics for each split part
                         partsDiagnostics[idx] = {
                             detectorUsed: refined.cropApplied ? (refined.cropConfidence !== undefined ? 'docquad' : 'opencv') : 'none',
                             confidence: refined.cropConfidence || 0,
@@ -1049,7 +1125,7 @@ export default function ScannerScreen() {
                         return refined;
                     }));
                 } else {
-                    imageParts.forEach((part, idx) => {
+                    rawParts.forEach((part, idx) => {
                         partsDiagnostics[idx] = {
                             detectorUsed: 'none',
                             confidence: 0,
@@ -1058,6 +1134,93 @@ export default function ScannerScreen() {
                             outputSize: `${part.width}x${part.height}`,
                         };
                     });
+                    return rawParts;
+                }
+            };
+
+            let imageParts: PreparedImagePart[] = [];
+            if (shouldSplitDoublePage) {
+                const rawParts = await splitDoublePageImage(splitSource.uri, splitSource.width, splitSource.height);
+                if (stateAtSave.autoCropEnabled && twoPagesRes.quad && twoPagesRes.detectorUsed !== 'none') {
+                    console.log(`[commitCapture] Using optimized mathematical split of the full spread quad (${twoPagesRes.detectorUsed})`);
+                    const isHorizontal = splitSource.width >= splitSource.height;
+                    const splitQuads = splitQuadrilateral(twoPagesRes.quad, isHorizontal ? 'horizontal' : 'vertical');
+
+                    let detectionDims = { width: splitSource.width, height: splitSource.height };
+                    if (twoPagesRes.detectorUsed === 'opencv' && splitSource.width > POST_CAPTURE_DETECTION_WIDTH) {
+                        detectionDims = {
+                            width: POST_CAPTURE_DETECTION_WIDTH,
+                            height: Math.round(splitSource.height * (POST_CAPTURE_DETECTION_WIDTH / splitSource.width))
+                        };
+                    }
+
+                    const scaledLeftQuad = scaleQuadToDimensions(splitQuads.first, detectionDims, splitSource);
+                    const scaledRightQuad = scaleQuadToDimensions(splitQuads.second, detectionDims, splitSource);
+
+                    try {
+                        const normLeft = await normalizeCapturedDocument(splitSource.uri, scaledLeftQuad, splitSource, {
+                            cropProfile: twoPagesRes.detectorUsed === 'docquad' ? 'docquad' : 'standard',
+                        });
+                        const normRight = await normalizeCapturedDocument(splitSource.uri, scaledRightQuad, splitSource, {
+                            cropProfile: twoPagesRes.detectorUsed === 'docquad' ? 'docquad' : 'standard',
+                        });
+
+                        const finalLeftQuad = adjustQuadForSplitOffset(
+                            scaledLeftQuad,
+                            rawParts[0].splitPart || 'left',
+                            splitSource.width,
+                            splitSource.height
+                        );
+                        const finalRightQuad = adjustQuadForSplitOffset(
+                            scaledRightQuad,
+                            rawParts[1].splitPart || 'right',
+                            splitSource.width,
+                            splitSource.height
+                        );
+
+                        imageParts = [
+                            {
+                                uri: normLeft.uri,
+                                width: normLeft.width,
+                                height: normLeft.height,
+                                splitPart: rawParts[0].splitPart,
+                                rawUri: rawParts[0].uri,
+                                cropQuad: finalLeftQuad,
+                                cropConfidence: twoPagesRes.confidence,
+                                cropApplied: true,
+                            },
+                            {
+                                uri: normRight.uri,
+                                width: normRight.width,
+                                height: normRight.height,
+                                splitPart: rawParts[1].splitPart,
+                                rawUri: rawParts[1].uri,
+                                cropQuad: finalRightQuad,
+                                cropConfidence: twoPagesRes.confidence,
+                                cropApplied: true,
+                            }
+                        ];
+
+                        partsDiagnostics[0] = {
+                            detectorUsed: twoPagesRes.detectorUsed,
+                            confidence: twoPagesRes.confidence || 0,
+                            accepted: true,
+                            cropQuad: JSON.stringify(finalLeftQuad),
+                            outputSize: `${normLeft.width}x${normLeft.height}`,
+                        };
+                        partsDiagnostics[1] = {
+                            detectorUsed: twoPagesRes.detectorUsed,
+                            confidence: twoPagesRes.confidence || 0,
+                            accepted: true,
+                            cropQuad: JSON.stringify(finalRightQuad),
+                            outputSize: `${normRight.width}x${normRight.height}`,
+                        };
+                    } catch (warpErr) {
+                        console.warn('[commitCapture] Optimized warp failed, falling back to sequential split crop:', warpErr);
+                        imageParts = await refineSequentialSplitParts(rawParts);
+                    }
+                } else {
+                    imageParts = await refineSequentialSplitParts(rawParts);
                 }
             } else {
                 // Single page path (either from the beginning, or skipped split)
@@ -1197,14 +1360,35 @@ export default function ScannerScreen() {
                 const cropFailed = cropAttempted && !part.cropApplied;
                 const needsOrientationOrCropReview = oriented.needsReview || cropFailed;
 
+                let rawPath: string | undefined = undefined;
+                if (didSplitDoublePage) {
+                    if (part.rawUri) {
+                        const rawFilename = `raw_${suffix}.jpg`;
+                        const destRawSplit = new File(Paths.document, rawFilename);
+                        new File(part.rawUri).copy(destRawSplit);
+                        let rawVerifiedSplit = false;
+                        for (let i = 0; i < 10; i++) {
+                            if (destRawSplit.exists) { rawVerifiedSplit = true; break; }
+                            await new Promise(r => setTimeout(r, 50));
+                        }
+                        if (rawVerifiedSplit) {
+                            rawPath = destRawSplit.uri;
+                        }
+                    }
+                } else {
+                    if (rawVerified) {
+                        rawPath = destRaw.uri;
+                    }
+                }
+
                 const page: ScannedPage = {
                     id: generateUUID(),
                     ui_id: '',
                     page_number: 0,
                     file_path: dest.uri,
                     original_file_path: destOrig.uri,
-                    raw_file_path: didSplitDoublePage ? undefined : (rawVerified ? destRaw.uri : undefined),
-                    crop_quad: didSplitDoublePage ? part.cropQuad : (part.cropQuad || undefined),
+                    raw_file_path: rawPath,
+                    crop_quad: part.cropQuad || undefined,
                     crop_applied: !!part.cropApplied,
                     crop_confidence: part.cropConfidence,
                     orientation_degrees: oriented.orientationDegrees,

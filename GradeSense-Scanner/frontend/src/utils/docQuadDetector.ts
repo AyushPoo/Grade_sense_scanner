@@ -1,5 +1,7 @@
 import { NativeModules, Platform } from 'react-native';
 import type { Quadrilateral } from './cvProcessor';
+import * as ImageManipulator from 'expo-image-manipulator';
+import { File } from 'expo-file-system';
 
 interface NativeDocQuadResult {
   detected?: boolean;
@@ -40,40 +42,50 @@ const nativeDocQuad = NativeModules.GradeSenseDocQuad as
   | undefined;
 
 function isPoint(value: unknown): value is { x: number; y: number } {
-  if (!value || typeof value !== 'object') return false;
-  const point = value as { x?: unknown; y?: unknown };
-  return typeof point.x === 'number' && typeof point.y === 'number';
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'x' in value &&
+    'y' in value &&
+    typeof (value as any).x === 'number' &&
+    typeof (value as any).y === 'number'
+  );
 }
 
 function isQuadrilateral(value: unknown): value is Quadrilateral {
-  if (!value || typeof value !== 'object') return false;
-  const quad = value as Partial<Quadrilateral>;
   return (
-    isPoint(quad.topLeft) &&
-    isPoint(quad.topRight) &&
-    isPoint(quad.bottomRight) &&
-    isPoint(quad.bottomLeft)
+    typeof value === 'object' &&
+    value !== null &&
+    'topLeft' in value &&
+    'topRight' in value &&
+    'bottomRight' in value &&
+    'bottomLeft' in value &&
+    isPoint((value as any).topLeft) &&
+    isPoint((value as any).topRight) &&
+    isPoint((value as any).bottomRight) &&
+    isPoint((value as any).bottomLeft)
   );
 }
 
 export async function detectDocumentWithDocQuad(
   imageUri: string
 ): Promise<DocQuadDetectionResult | null> {
-  if (Platform.OS !== 'android' || !nativeDocQuad?.detect) return null;
-
-  const result = await nativeDocQuad.detect(imageUri);
-  if (!result?.detected || !isQuadrilateral(result.quadrilateral)) return null;
-
-  const width = typeof result.width === 'number' ? result.width : 0;
-  const height = typeof result.height === 'number' ? result.height : 0;
-  if (width <= 0 || height <= 0) return null;
-
-  return {
-    quadrilateral: result.quadrilateral,
-    confidence: typeof result.confidence === 'number' ? result.confidence : undefined,
-    source: 'docquad',
-    dimensions: { width, height },
-  };
+  if (Platform.OS !== 'android' || !nativeDocQuad) return null;
+  try {
+    const res = await nativeDocQuad.detect(imageUri);
+    if (!res?.detected || !res.quadrilateral) {
+      return null;
+    }
+    return {
+      quadrilateral: res.quadrilateral,
+      confidence: res.confidence,
+      source: 'docquad',
+      dimensions: { width: res.width ?? 0, height: res.height ?? 0 },
+    };
+  } catch (err) {
+    console.warn('[DocQuad] Native corner detection failed:', err);
+    return null;
+  }
 }
 
 export async function detectTextOrientationAndBounds(
@@ -97,11 +109,27 @@ export async function detectDocumentWithDocAligner(
     return null;
   }
 
+  let uploadUri = imageUri;
+  let manipulated: ImageManipulator.ImageResult | null = null;
+  
+  try {
+    // Downscale image to max width 720px before upload to reduce payload size and latency.
+    // This reduces file size from 5-10MB to ~60KB, making network transmission instant.
+    manipulated = await ImageManipulator.manipulateAsync(
+      imageUri,
+      [{ resize: { width: 720 } }],
+      { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG }
+    );
+    uploadUri = manipulated.uri;
+  } catch (err) {
+    console.warn('[DocAligner] Failed to downscale image for upload:', err);
+  }
+
   try {
     const formData = new FormData();
     // @ts-ignore
     formData.append('file', {
-      uri: imageUri,
+      uri: uploadUri,
       name: 'detect_capture.jpg',
       type: 'image/jpeg',
     });
@@ -113,6 +141,18 @@ export async function detectDocumentWithDocAligner(
         'Accept': 'application/json',
       },
     });
+
+    // Clean up temporary downscaled file immediately after sending the request
+    if (manipulated) {
+      try {
+        const fileObj = new File(manipulated.uri);
+        if (fileObj.exists) {
+          fileObj.delete();
+        }
+      } catch (delErr) {
+        console.warn('[DocAligner] Failed to delete temp upload file:', delErr);
+      }
+    }
 
     if (!response.ok) {
       throw new Error(`Server returned status ${response.status}`);
@@ -130,6 +170,15 @@ export async function detectDocumentWithDocAligner(
       dimensions: { width: result.width, height: result.height },
     };
   } catch (err) {
+    // Clean up temporary downscaled file on error
+    if (manipulated) {
+      try {
+        const fileObj = new File(manipulated.uri);
+        if (fileObj.exists) {
+          fileObj.delete();
+        }
+      } catch (_) {}
+    }
     console.warn('[DocAligner] Backend corner detection failed:', err);
     return null;
   }
@@ -138,12 +187,13 @@ export async function detectDocumentWithDocAligner(
 export async function detectDocumentCorners(
   imageUri: string
 ): Promise<DocQuadDetectionResult | null> {
-  // 1. Try DocAligner on backend first
-  const docAlignerResult = await detectDocumentWithDocAligner(imageUri);
-  if (docAlignerResult) {
-    return docAlignerResult;
+  // 1. Try local native DocQuad first (Fast, runs on device)
+  const localRes = await detectDocumentWithDocQuad(imageUri);
+  if (localRes) {
+    return localRes;
   }
   
-  // 2. Fall back to local native DocQuad
-  return await detectDocumentWithDocQuad(imageUri);
+  // 2. Fall back to DocAligner on backend if local fails
+  return await detectDocumentWithDocAligner(imageUri);
 }
+

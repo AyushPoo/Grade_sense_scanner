@@ -3247,7 +3247,11 @@ def process_enhance(base64_str: str, mode: str = "enhanced", points: Optional[li
             # Division-based background normalization (similar to ML Kit document enhancement)
             blur = cv2.GaussianBlur(gray, (71, 71), 0)
             divided = cv2.divide(gray, blur, scale=255)
-            final = cv2.convertScaleAbs(divided, alpha=1.40, beta=-80)
+            # Unsharp mask to sharpen handwriting strokes
+            sharpen_blur = cv2.GaussianBlur(divided, (5, 5), 0)
+            sharp = cv2.addWeighted(divided, 1.6, sharpen_blur, -0.6, 0)
+            # Contrast adjustment: make text extra dark, paper background pure white
+            final = cv2.convertScaleAbs(sharp, alpha=1.55, beta=-115)
         else: # DEFAULT: "enhanced" - HANDWRITING PRESERVING
             # Lighting Normalization (CLAHE) - Softer settings
             clahe = cv2.createCLAHE(clipLimit=1.2, tileGridSize=(12, 12))
@@ -3351,7 +3355,11 @@ async def enhance_image_file_endpoint(
         elif mode == "high_contrast":
             blur = cv2.GaussianBlur(gray, (71, 71), 0)
             divided = cv2.divide(gray, blur, scale=255)
-            final = cv2.convertScaleAbs(divided, alpha=1.40, beta=-80)
+            # Unsharp mask to sharpen handwriting strokes
+            sharpen_blur = cv2.GaussianBlur(divided, (5, 5), 0)
+            sharp = cv2.addWeighted(divided, 1.6, sharpen_blur, -0.6, 0)
+            # Contrast adjustment: make text extra dark, paper background pure white
+            final = cv2.convertScaleAbs(sharp, alpha=1.55, beta=-115)
         else: # enhanced
             clahe = cv2.createCLAHE(clipLimit=1.2, tileGridSize=(12, 12))
             normalized = clahe.apply(gray)

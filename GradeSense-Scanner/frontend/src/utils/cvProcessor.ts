@@ -1463,7 +1463,15 @@ export async function applyFilter(imageUri: string, mode: FilterMode): Promise<s
         const blurSize = OpenCV.createObject(ObjectType.Size, 71, 71);
         (OpenCV as any).invoke('GaussianBlur', grayMat, blurMat, blurSize, 0);
         (OpenCV as any).invoke('divide', grayMat, blurMat, dstMat, 255);
-        (OpenCV as any).invoke('convertScaleAbs', dstMat, dstMat, 1.40, -80);
+        
+        // Unsharp mask to sharpen handwriting strokes
+        sharpMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
+        const sharpBlurSize = OpenCV.createObject(ObjectType.Size, 5, 5);
+        (OpenCV as any).invoke('GaussianBlur', dstMat, sharpMat, sharpBlurSize, 0);
+        (OpenCV as any).invoke('addWeighted', dstMat, 1.6, sharpMat, -0.6, 0.0, dstMat);
+        
+        // Contrast adjustment: make text extra dark, paper background pure white
+        (OpenCV as any).invoke('convertScaleAbs', dstMat, dstMat, 1.55, -115);
       } catch (enhanceErr) {
         console.warn('[CV] high_contrast division normalization failed, using fallback:', enhanceErr);
         (OpenCV as any).invoke('convertScaleAbs', grayMat, dstMat, 1.28, -18);
