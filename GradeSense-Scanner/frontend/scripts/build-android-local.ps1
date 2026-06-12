@@ -15,6 +15,7 @@ EXPO_PUBLIC_BACKEND_URL="https://gradesense-scanner-backend.onrender.com"
 EXPO_PUBLIC_WEBAPP_URL="https://app.gradesense.in"
 EXPO_PUBLIC_GOOGLE_CLIENT_ID="952978433882-f15al0p4202d9m5lj7n7c1n1j25o7pcg.apps.googleusercontent.com"
 EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID="952978433882-paueq6l9gqjgioc5f22nlrggt9dp29o0.apps.googleusercontent.com"
+EXPO_PUBLIC_DOCTR_URL="https://grade-sense-scanner-323601156671.asia-south2.run.app"
 "@
 
 if (-not (Test-Path $CredentialsPath)) {
@@ -86,6 +87,7 @@ $env:EXPO_PUBLIC_BACKEND_URL = "https://gradesense-scanner-backend.onrender.com"
 $env:EXPO_PUBLIC_WEBAPP_URL = "https://app.gradesense.in"
 $env:EXPO_PUBLIC_GOOGLE_CLIENT_ID = "952978433882-f15al0p4202d9m5lj7n7c1n1j25o7pcg.apps.googleusercontent.com"
 $env:EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID = "952978433882-paueq6l9gqjgioc5f22nlrggt9dp29o0.apps.googleusercontent.com"
+$env:EXPO_PUBLIC_DOCTR_URL = "https://grade-sense-scanner-323601156671.asia-south2.run.app"
 
 $GradleArgs = @("--no-daemon", "--no-parallel", "--max-workers=1", "-PreactNativeParallelCxxBuilds=false", "-Pandroid.cxxFlags=-g0")
 if ($Arm64Only) {
