@@ -12,6 +12,8 @@ RUN apt-get update && apt-get install -y \
     libopenblas-dev \
     liblapack-dev \
     pkg-config \
+    libturbojpeg0 \
+    libturbojpeg0-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
