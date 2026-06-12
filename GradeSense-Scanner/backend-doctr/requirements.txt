@@ -10,4 +10,6 @@ scikit-image==0.22.0
 python-multipart==0.0.9
 docaligner-docsaid
 gdown
+PyTurboJPEG<2.0.0
+
 
