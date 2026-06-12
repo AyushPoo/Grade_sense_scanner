@@ -3,6 +3,7 @@ import { View, Text, ActivityIndicator, StyleSheet } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { COLORS, getBackendUrl } from '../../src/config';
 import { useAuthStore } from '../../src/store/authStore';
+import { fetchWithTimeout } from '../../src/utils/fetchWithTimeout';
 
 export default function CallbackScreen() {
   const router = useRouter();
@@ -28,13 +29,13 @@ export default function CallbackScreen() {
           if (sessionId) {
             console.log('Processing session from callback...');
             
-            const response = await fetch(`${getBackendUrl()}/api/auth/session`, {
+            const response = await fetchWithTimeout(`${getBackendUrl()}/api/auth/session`, {
               method: 'GET',
               headers: {
                 'X-Session-ID': sessionId,
                 'Content-Type': 'application/json',
               },
-            });
+            }, 12000);
 
             if (response.ok) {
               const data = await response.json();

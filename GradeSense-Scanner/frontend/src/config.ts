@@ -1,20 +1,28 @@
 import { useAuthStore } from './store/authStore';
 
+const PRODUCTION_BACKEND_URL = 'https://gradesense-scanner-backend.onrender.com';
+const PRODUCTION_WEBAPP_URL = 'https://app.gradesense.in';
+const ALLOW_RUNTIME_CUSTOM_URLS = process.env.NODE_ENV !== 'production';
+
 // Dynamic URL Getters
 export const getBackendUrl = (): string => {
-  try {
-    const custom = useAuthStore.getState().customBackendUrl;
-    if (custom) return custom;
-  } catch (_) {}
-  return process.env.EXPO_PUBLIC_BACKEND_URL || 'https://gradesense-scanner-backend.onrender.com';
+  if (ALLOW_RUNTIME_CUSTOM_URLS) {
+    try {
+      const custom = useAuthStore.getState().customBackendUrl;
+      if (custom) return custom;
+    } catch (_) {}
+  }
+  return process.env.EXPO_PUBLIC_BACKEND_URL || PRODUCTION_BACKEND_URL;
 };
 
 export const getWebappUrl = (): string => {
-  try {
-    const custom = useAuthStore.getState().customWebappUrl;
-    if (custom) return custom;
-  } catch (_) {}
-  return process.env.EXPO_PUBLIC_WEBAPP_URL || "http://8.231.83.249:8000";
+  if (ALLOW_RUNTIME_CUSTOM_URLS) {
+    try {
+      const custom = useAuthStore.getState().customWebappUrl;
+      if (custom) return custom;
+    } catch (_) {}
+  }
+  return process.env.EXPO_PUBLIC_WEBAPP_URL || PRODUCTION_WEBAPP_URL;
 };
 
 // Backwards compatibility static mappings with dynamic evaluation

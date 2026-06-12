@@ -19,17 +19,18 @@ import * as WebBrowser from 'expo-web-browser';
 import * as Google from 'expo-auth-session/providers/google';
 import * as Application from 'expo-application';
 import Constants from 'expo-constants';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { COLORS, getBackendUrl } from '../../src/config';
 import { useAuthStore } from '../../src/store/authStore';
 import { roleHomeRoute } from '../../src/utils/roleRouting';
+import { fetchWithTimeout } from '../../src/utils/fetchWithTimeout';
 import appIcon from '../../assets/images/icon.png';
 
 // Required for OAuth flows in Expo
 WebBrowser.maybeCompleteAuthSession();
 
 const GOOGLE_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID;
-const CONTACT_EMAIL = 'ayush@gradesense.in';
+const CONTACT_EMAIL = 'hello@gradesense.in';
 
 type AccessRequestState = {
   email: string;
@@ -46,6 +47,7 @@ export default function LoginScreen() {
   const [error, setError] = useState<string | null>(null);
   const [focusedField, setFocusedField] = useState<'email' | 'password' | null>(null);
   const router = useRouter();
+  const params = useLocalSearchParams<{ auth_error?: string }>();
   const { setUser, setSessionToken, setIsAuthenticated } = useAuthStore();
 
   // Native Google OAuth
@@ -81,6 +83,12 @@ export default function LoginScreen() {
       setIsLoading(false);
     }
   }, [response]);
+
+  React.useEffect(() => {
+    if (typeof params.auth_error === 'string' && params.auth_error.trim()) {
+      setError(params.auth_error);
+    }
+  }, [params.auth_error]);
 
   const buildClientContext = () => ({
     source: 'mobile',
@@ -127,17 +135,19 @@ export default function LoginScreen() {
 
   const fetchUserInfoAndAuth = async (accessToken: string) => {
     try {
-      const tokenInfoRes = await fetch(
-        `https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${accessToken}`
+      const tokenInfoRes = await fetchWithTimeout(
+        `https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${accessToken}`,
+        {},
+        10000
       );
       if (!tokenInfoRes.ok) throw new Error('Failed to verify Google access token');
       const tokenInfo = await tokenInfoRes.json();
 
-      const backendRes = await fetch(`${getBackendUrl()}/api/auth/google-idtoken`, {
+      const backendRes = await fetchWithTimeout(`${getBackendUrl()}/api/auth/google-idtoken`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Bypass-Tunnel-Reminder': 'true' },
         body: JSON.stringify({ access_token: accessToken, token_info: tokenInfo, client_context: buildClientContext() }),
-      });
+      }, 15000);
       if (!backendRes.ok) {
         const errData = await backendRes.json().catch(() => ({}));
         const authError = extractAuthError(errData);
@@ -153,11 +163,11 @@ export default function LoginScreen() {
 
   const handleGoogleIdToken = async (idToken: string) => {
     try {
-      const res = await fetch(`${getBackendUrl()}/api/auth/google-idtoken`, {
+      const res = await fetchWithTimeout(`${getBackendUrl()}/api/auth/google-idtoken`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Bypass-Tunnel-Reminder': 'true' },
         body: JSON.stringify({ id_token: idToken, client_context: buildClientContext() }),
-      });
+      }, 15000);
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
         const authError = extractAuthError(errData);
@@ -175,11 +185,11 @@ export default function LoginScreen() {
     if (!email.trim() || !password.trim()) { setError('Please enter both email and password'); return; }
     try {
       setIsLoading(true); setError(null);
-      const res = await fetch(`${getBackendUrl()}/api/auth/login`, {
+      const res = await fetchWithTimeout(`${getBackendUrl()}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Bypass-Tunnel-Reminder': 'true' },
         body: JSON.stringify({ email: email.trim(), password }),
-      });
+      }, 15000);
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
         throw new Error(errData.detail || 'Authentication failed');
