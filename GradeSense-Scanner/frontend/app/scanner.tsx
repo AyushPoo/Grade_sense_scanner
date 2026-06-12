@@ -126,10 +126,7 @@ function shouldSplitAsDoublePage(width: number, height: number): boolean {
     return ratio >= 1.30 || ratio <= 0.77;
 }
 
-function isLandscapeDeviceOrientation(orientation?: ScreenOrientation.Orientation): boolean {
-    return orientation === ScreenOrientation.Orientation.LANDSCAPE_LEFT ||
-        orientation === ScreenOrientation.Orientation.LANDSCAPE_RIGHT;
-}
+
 
 async function checkIfTwoPagesVisible(
     uri: string,
@@ -244,16 +241,11 @@ async function normalizeDoublePageSource(
     height: number,
     captureOrientation?: ScreenOrientation.Orientation,
 ): Promise<PreparedImagePart> {
-    if (isLandscapeDeviceOrientation(captureOrientation) && height > width * 1.08) {
-        const rotate = captureOrientation === ScreenOrientation.Orientation.LANDSCAPE_RIGHT ? -90 : 90;
-        const rotated = await ImageManipulator.manipulateAsync(
-            uri,
-            [{ rotate }],
-            { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG },
-        );
-        return { uri: rotated.uri, width: rotated.width, height: rotated.height };
-    }
-    if (!isLandscapeDeviceOrientation(captureOrientation) && width > height * 1.08 && captureOrientation !== undefined) {
+    // In double-page mode, we always want the combined spread image to be landscape-oriented (width > height)
+    // so it represents two pages side-by-side (left and right).
+    // If it is portrait (height > width), the book is captured sideways in the frame.
+    // We rotate it 90 degrees to lay it out landscape.
+    if (height > width) {
         const rotated = await ImageManipulator.manipulateAsync(
             uri,
             [{ rotate: 90 }],
