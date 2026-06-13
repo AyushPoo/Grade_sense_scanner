@@ -50,7 +50,7 @@ If you have the `gcloud` CLI installed on your machine and configured for your p
 
 2. Deploy the `backend-doctr` sub-folder directly:
    ```bash
-   gcloud run deploy gradesense-doctr-service --source ./backend-doctr --platform managed --region asia-southeast1 --allow-unauthenticated --memory 2Gi --cpu 2
+   gcloud run deploy gradesense-doctr-service --source ./backend-doctr --platform managed --region asia-southeast1 --allow-unauthenticated --memory 2Gi --cpu 2 --min-instances 1 --cpu-boost
    ```
 
    > [!IMPORTANT]

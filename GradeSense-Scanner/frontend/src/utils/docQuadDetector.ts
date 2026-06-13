@@ -2,6 +2,7 @@ import { NativeModules, Platform } from 'react-native';
 import type { Quadrilateral } from './cvProcessor';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { File } from 'expo-file-system';
+import { fetchWithTimeout } from './fetchWithTimeout';
 
 interface NativeDocQuadResult {
   detected?: boolean;
@@ -134,13 +135,13 @@ export async function detectDocumentWithDocAligner(
       type: 'image/jpeg',
     });
 
-    const response = await fetch(`${doctrUrl}/detect-corners`, {
+    const response = await fetchWithTimeout(`${doctrUrl}/detect-corners`, {
       method: 'POST',
       body: formData,
       headers: {
         'Accept': 'application/json',
       },
-    });
+    }, 1500);
 
     // Clean up temporary downscaled file immediately after sending the request
     if (manipulated) {

@@ -67,7 +67,7 @@ try:
     GeoTr_Seg_model.eval()
     
     # Compile model for PyTorch 2.x acceleration
-    GeoTr_Seg_model = torch.compile(GeoTr_Seg_model)
+    # GeoTr_Seg_model = torch.compile(GeoTr_Seg_model)
     doctr_loaded = True
 except Exception as e:
     print(f"Error loading DocTr models: {e}")

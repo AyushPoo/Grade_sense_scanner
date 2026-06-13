@@ -37,7 +37,7 @@ import { useMotionStability } from '../src/hooks/useMotionStability';
 import { createImportedPdfPage, createNativeScannedImagePage, isPdfScannedPage } from '../src/utils/scannedPageAssets';
 import { useLocalSearchParams } from 'expo-router';
 import { evaluateAutoCropCandidate } from '../src/utils/cropQuality';
-import { detectTextOrientationAndBounds, detectDocumentCorners } from '../src/utils/docQuadDetector';
+import { detectTextOrientationAndBounds, detectDocumentCorners, detectDocumentWithDocQuad } from '../src/utils/docQuadDetector';
 import type { ScannedPage } from '../src/types';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -135,7 +135,8 @@ async function checkIfTwoPagesVisible(
     height: number,
 ): Promise<{ visible: boolean; confidence?: number; detectorUsed: 'docquad' | 'opencv' | 'none'; reason?: string; quad?: Quadrilateral }> {
     try {
-        const docQuadResult = await detectDocumentCorners(uri);
+        // Run only local native DocQuad detector (Fast, on-device) to avoid backend latency
+        const docQuadResult = await detectDocumentWithDocQuad(uri);
         if (docQuadResult?.quadrilateral) {
             const quad = docQuadResult.quadrilateral;
             const qPoints = [quad.topLeft, quad.topRight, quad.bottomRight, quad.bottomLeft];
@@ -163,10 +164,10 @@ async function checkIfTwoPagesVisible(
             });
             
             if (quadAspect < 1.05) {
-                return { visible: false, confidence: docQuadResult.confidence, detectorUsed: 'docquad', reason: `Single portrait page detected (aspect ratio ${quadAspect.toFixed(2)})`, quad };
+                return { visible: true, confidence: docQuadResult.confidence, detectorUsed: 'none', reason: `Single portrait page detected (aspect ratio ${quadAspect.toFixed(2)}), forcing split`, quad };
             }
             if (quadWidthRatio < 0.72) {
-                return { visible: false, confidence: docQuadResult.confidence, detectorUsed: 'docquad', reason: `Single narrow page detected (width coverage ${quadWidthRatio.toFixed(2)})`, quad };
+                return { visible: true, confidence: docQuadResult.confidence, detectorUsed: 'none', reason: `Single narrow page detected (width coverage ${quadWidthRatio.toFixed(2)}), forcing split`, quad };
             }
             
             return { visible: true, confidence: docQuadResult.confidence, detectorUsed: 'docquad', quad };
@@ -221,10 +222,10 @@ async function checkIfTwoPagesVisible(
             });
             
             if (quadAspect < 1.05) {
-                return { visible: false, confidence: cvResult.confidence, detectorUsed: 'opencv', reason: `Single portrait page detected via OpenCV (aspect ratio ${quadAspect.toFixed(2)})`, quad };
+                return { visible: true, confidence: cvResult.confidence, detectorUsed: 'none', reason: `Single portrait page detected via OpenCV (aspect ratio ${quadAspect.toFixed(2)}), forcing split`, quad };
             }
             if (quadWidthRatio < 0.72) {
-                return { visible: false, confidence: cvResult.confidence, detectorUsed: 'opencv', reason: `Single narrow page detected via OpenCV (width coverage ${quadWidthRatio.toFixed(2)})`, quad };
+                return { visible: true, confidence: cvResult.confidence, detectorUsed: 'none', reason: `Single narrow page detected via OpenCV (width coverage ${quadWidthRatio.toFixed(2)}), forcing split`, quad };
             }
             
             return { visible: true, confidence: cvResult.confidence, detectorUsed: 'opencv', quad };
@@ -263,6 +264,38 @@ async function autoOrientPageImage(
     width: number,
     height: number,
 ): Promise<OrientationResult> {
+    try {
+        const orientationRes = await detectTextOrientationAndBounds(uri);
+        if (orientationRes && orientationRes.hasText) {
+            const rot = orientationRes.rotationNeeded;
+            console.log('[autoOrientPageImage] ML Kit Text Orientation rotationNeeded:', rot);
+            if (rot !== 0) {
+                const rotated = await ImageManipulator.manipulateAsync(
+                    uri,
+                    [{ rotate: rot }],
+                    { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG }
+                );
+                return {
+                    uri: rotated.uri,
+                    width: rotated.width,
+                    height: rotated.height,
+                    orientationDegrees: rot,
+                    needsReview: false,
+                };
+            } else {
+                return {
+                    uri,
+                    width,
+                    height,
+                    orientationDegrees: 0,
+                    needsReview: false,
+                };
+            }
+        }
+    } catch (err) {
+        console.warn('[autoOrientPageImage] ML Kit orientation detection failed, falling back to dimension check:', err);
+    }
+
     if (shouldAutoPortraitRotate(width, height)) {
         const rotated = await ImageManipulator.manipulateAsync(
             uri,
