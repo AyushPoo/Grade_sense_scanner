@@ -59,14 +59,10 @@ export default function ReviewGradingScreen() {
   const [isEditingFeedback, setIsEditingFeedback] = useState(false);
 
   useEffect(() => {
-    const showSub = Keyboard.addListener('keyboardDidShow', () => {
-      setIsEditingFeedback(true);
-    });
     const hideSub = Keyboard.addListener('keyboardDidHide', () => {
       setIsEditingFeedback(false);
     });
     return () => {
-      showSub.remove();
       hideSub.remove();
     };
   }, []);
@@ -678,63 +674,69 @@ export default function ReviewGradingScreen() {
       </View>
 
       {/* Student Switcher Row */}
-      <View style={styles.studentSwitcher}>
-        <TouchableOpacity
-          style={[styles.switchArrow, currentSubIndex === 0 && styles.switchArrowDisabled]}
-          onPress={() => currentSubIndex > 0 && setCurrentSubIndex(prev => prev - 1)}
-          disabled={currentSubIndex === 0}
-        >
-          <Ionicons name="chevron-back" size={22} color={currentSubIndex === 0 ? COLORS.textMuted : COLORS.primary} />
-        </TouchableOpacity>
+      {!isEditingFeedback && (
+        <View style={styles.studentSwitcher}>
+          <TouchableOpacity
+            style={[styles.switchArrow, currentSubIndex === 0 && styles.switchArrowDisabled]}
+            onPress={() => currentSubIndex > 0 && setCurrentSubIndex(prev => prev - 1)}
+            disabled={currentSubIndex === 0}
+          >
+            <Ionicons name="chevron-back" size={22} color={currentSubIndex === 0 ? COLORS.textMuted : COLORS.primary} />
+          </TouchableOpacity>
 
-        <View style={styles.studentDetails}>
-          <Text style={styles.studentLabel}>Active paper</Text>
-          <Text style={styles.studentName}>{activeSub?.studentName || 'Unknown Student'}</Text>
-          <Text style={styles.studentRoll}>Roll: {activeSub?.studentRollNumber || 'N/A'}</Text>
-          <Text style={styles.studentScore}>
-            Score: {formatMarks(activeTotalScore)} / {formatMarks(activeTotalMarks)}
-          </Text>
-        </View>
+          <View style={styles.studentDetails}>
+            <Text style={styles.studentLabel}>Active paper</Text>
+            <Text style={styles.studentName}>{activeSub?.studentName || 'Unknown Student'}</Text>
+            <Text style={styles.studentRoll}>Roll: {activeSub?.studentRollNumber || 'N/A'}</Text>
+            <Text style={styles.studentScore}>
+              Score: {formatMarks(activeTotalScore)} / {formatMarks(activeTotalMarks)}
+            </Text>
+          </View>
 
-        <TouchableOpacity
-          style={[styles.switchArrow, currentSubIndex === submissions.length - 1 && styles.switchArrowDisabled]}
-          onPress={() => currentSubIndex < submissions.length - 1 && setCurrentSubIndex(prev => prev + 1)}
-          disabled={currentSubIndex === submissions.length - 1}
-        >
-          <Ionicons name="chevron-forward" size={22} color={currentSubIndex === submissions.length - 1 ? COLORS.textMuted : COLORS.primary} />
-        </TouchableOpacity>
-      </View>
+          <TouchableOpacity
+            style={[styles.switchArrow, currentSubIndex === submissions.length - 1 && styles.switchArrowDisabled]}
+            onPress={() => currentSubIndex < submissions.length - 1 && setCurrentSubIndex(prev => prev + 1)}
+            disabled={currentSubIndex === submissions.length - 1}
+          >
+            <Ionicons name="chevron-forward" size={22} color={currentSubIndex === submissions.length - 1 ? COLORS.textMuted : COLORS.primary} />
+          </TouchableOpacity>
+        </View>
+      )}
 
-      <View style={styles.reviewProgressCard}>
-        <View style={styles.reviewProgressTop}>
-          <Text style={styles.reviewProgressLabel}>Review progress</Text>
-          <Text style={styles.reviewProgressValue}>
-            {reviewedCount}/{submissions.length} papers - {reviewProgressPercent}%
-          </Text>
+      {!isEditingFeedback && (
+        <View style={styles.reviewProgressCard}>
+          <View style={styles.reviewProgressTop}>
+            <Text style={styles.reviewProgressLabel}>Review progress</Text>
+            <Text style={styles.reviewProgressValue}>
+              {reviewedCount}/{submissions.length} papers - {reviewProgressPercent}%
+            </Text>
+          </View>
+          <View style={styles.reviewProgressTrack}>
+            <View style={[styles.reviewProgressFill, { width: `${reviewProgressPercent}%` }]} />
+          </View>
         </View>
-        <View style={styles.reviewProgressTrack}>
-          <View style={[styles.reviewProgressFill, { width: `${reviewProgressPercent}%` }]} />
-        </View>
-      </View>
+      )}
 
       {/* Tabs */}
-      <View style={styles.tabContainer}>
-        <TouchableOpacity
-          style={[styles.tab, activeTab === 'sheet' && styles.activeTab]}
-          onPress={() => setActiveTab('sheet')}
-        >
-          <Ionicons name="document-text" size={18} color={activeTab === 'sheet' ? COLORS.primary : COLORS.textLight} />
-          <Text style={[styles.tabText, activeTab === 'sheet' && styles.activeTabText]}>Answer Sheet</Text>
-        </TouchableOpacity>
+      {!isEditingFeedback && (
+        <View style={styles.tabContainer}>
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'sheet' && styles.activeTab]}
+            onPress={() => setActiveTab('sheet')}
+          >
+            <Ionicons name="document-text" size={18} color={activeTab === 'sheet' ? COLORS.primary : COLORS.textLight} />
+            <Text style={[styles.tabText, activeTab === 'sheet' && styles.activeTabText]}>Answer Sheet</Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          style={[styles.tab, activeTab === 'rubric' && styles.activeTab]}
-          onPress={() => setActiveTab('rubric')}
-        >
-          <Ionicons name="bulb" size={18} color={activeTab === 'rubric' ? COLORS.primary : COLORS.textLight} />
-          <Text style={[styles.tabText, activeTab === 'rubric' && styles.activeTabText]}>Rubric & AI</Text>
-        </TouchableOpacity>
-      </View>
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'rubric' && styles.activeTab]}
+            onPress={() => setActiveTab('rubric')}
+          >
+            <Ionicons name="bulb" size={18} color={activeTab === 'rubric' ? COLORS.primary : COLORS.textLight} />
+            <Text style={[styles.tabText, activeTab === 'rubric' && styles.activeTabText]}>Rubric & AI</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* Content Area */}
       {isLoadingDetail ? (
@@ -778,6 +780,7 @@ export default function ReviewGradingScreen() {
               onFeedbackBlur={() => setIsEditingFeedback(false)}
               onImproveAI={() => setShowImproveAIModal(true)}
               isImprovingAI={isSubmittingImprovement}
+              isEditingFeedback={isEditingFeedback}
             />
 
             {!isEditingFeedback && activeScore && (

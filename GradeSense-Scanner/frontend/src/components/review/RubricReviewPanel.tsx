@@ -22,6 +22,7 @@ interface RubricReviewPanelProps {
   onFeedbackBlur?: () => void;
   onImproveAI?: () => void;
   isImprovingAI?: boolean;
+  isEditingFeedback?: boolean;
 }
 
 export function RubricReviewPanel({
@@ -36,6 +37,7 @@ export function RubricReviewPanel({
   onFeedbackBlur,
   onImproveAI,
   isImprovingAI = false,
+  isEditingFeedback = false,
 }: RubricReviewPanelProps) {
   const activeScore = scores[activeScoreIndex];
   const densityConfig = useMemo(() => getReviewDensityConfig(density), [density]);
@@ -44,39 +46,41 @@ export function RubricReviewPanel({
 
   return (
     <View style={styles.container}>
-      <View style={[styles.questionListPanel, densityStyles.questionListPanel]}>
-        <View style={styles.questionToolbar}>
-          <Text style={[styles.sectionTitle, densityStyles.sectionTitle]}>QUESTIONS</Text>
-          <ReviewDensityControl value={density} onChange={onDensityChange} />
-        </View>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.questionListContent}>
-          {scores.map((score, index) => (
-            <TouchableOpacity
-              key={score.id}
-              style={[
-                styles.questionRow,
-                densityStyles.questionRow,
-                activeScoreIndex === index && styles.activeQuestionRow,
-              ]}
-              onPress={() => onSelectScore(index)}
-              activeOpacity={0.8}
-            >
-              <Text
+      {!isEditingFeedback && (
+        <View style={[styles.questionListPanel, densityStyles.questionListPanel]}>
+          <View style={styles.questionToolbar}>
+            <Text style={[styles.sectionTitle, densityStyles.sectionTitle]}>QUESTIONS</Text>
+            <ReviewDensityControl value={density} onChange={onDensityChange} />
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.questionListContent}>
+            {scores.map((score, index) => (
+              <TouchableOpacity
+                key={score.id}
                 style={[
-                  styles.questionNumber,
-                  densityStyles.questionNumber,
-                  activeScoreIndex === index && styles.activeQuestionNumber,
+                  styles.questionRow,
+                  densityStyles.questionRow,
+                  activeScoreIndex === index && styles.activeQuestionRow,
                 ]}
+                onPress={() => onSelectScore(index)}
+                activeOpacity={0.8}
               >
-                Q{score.questionNumber}
-              </Text>
-              <Text style={[styles.questionMarks, densityStyles.questionMarks]}>
-                {score.obtainedMarks} / {score.maxMarks}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </View>
+                <Text
+                  style={[
+                    styles.questionNumber,
+                    densityStyles.questionNumber,
+                    activeScoreIndex === index && styles.activeQuestionNumber,
+                  ]}
+                >
+                  Q{score.questionNumber}
+                </Text>
+                <Text style={[styles.questionMarks, densityStyles.questionMarks]}>
+                  {score.obtainedMarks} / {score.maxMarks}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      )}
 
       <View style={styles.detailPanel}>
         {activeScore ? (
