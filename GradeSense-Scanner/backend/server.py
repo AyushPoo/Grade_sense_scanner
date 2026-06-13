@@ -3251,7 +3251,7 @@ def process_enhance(base64_str: str, mode: str = "enhanced", points: Optional[li
             sharpen_blur = cv2.GaussianBlur(divided, (5, 5), 0)
             sharp = cv2.addWeighted(divided, 1.6, sharpen_blur, -0.6, 0)
             # Contrast adjustment: make text extra dark, paper background pure white
-            final = cv2.convertScaleAbs(sharp, alpha=1.55, beta=-115)
+            final = cv2.convertScaleAbs(sharp, alpha=1.45, beta=-85)
         else: # DEFAULT: "enhanced" - HANDWRITING PRESERVING
             # Lighting Normalization (CLAHE) - Softer settings
             clahe = cv2.createCLAHE(clipLimit=1.2, tileGridSize=(12, 12))
@@ -3359,7 +3359,7 @@ async def enhance_image_file_endpoint(
             sharpen_blur = cv2.GaussianBlur(divided, (5, 5), 0)
             sharp = cv2.addWeighted(divided, 1.6, sharpen_blur, -0.6, 0)
             # Contrast adjustment: make text extra dark, paper background pure white
-            final = cv2.convertScaleAbs(sharp, alpha=1.55, beta=-115)
+            final = cv2.convertScaleAbs(sharp, alpha=1.45, beta=-85)
         else: # enhanced
             clahe = cv2.createCLAHE(clipLimit=1.2, tileGridSize=(12, 12))
             normalized = clahe.apply(gray)

@@ -1073,12 +1073,12 @@ export default function ScannerScreen() {
                 }
             }
 
-            // Step 2b: Resize if perspective correction didn't run
-            if (finalUri === uprightUri) {
+            // Step 2b: Resize if perspective correction didn't run (only for single page mode)
+            if (finalUri === uprightUri && useScanStore.getState().currentSession?.settings.page_mode !== 'double') {
                 const resized = await ImageManipulator.manipulateAsync(
                     finalUri,
-                    [{ resize: { width: 1200 } }],
-                    { compress: 0.88, format: ImageManipulator.SaveFormat.JPEG },
+                    [{ resize: { width: 1600 } }],
+                    { compress: 0.90, format: ImageManipulator.SaveFormat.JPEG },
                 );
                 finalUri = resized.uri;
                 finalDims = { width: resized.width, height: resized.height };

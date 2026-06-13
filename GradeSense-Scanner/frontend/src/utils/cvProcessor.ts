@@ -1429,8 +1429,8 @@ export async function applyFilter(imageUri: string, mode: FilterMode): Promise<s
     const tStart = performance.now();
     const resized = await ImageManipulator.manipulateAsync(
       imageUri,
-      [{ resize: { width: 1200 } }],
-      { compress: 0.82, format: ImageManipulator.SaveFormat.JPEG, base64: false }
+      [{ resize: { width: 1600 } }],
+      { compress: 0.90, format: ImageManipulator.SaveFormat.JPEG, base64: false }
     );
     const tResize = performance.now() - tStart;
     resizedUri = resized.uri;
@@ -1471,7 +1471,7 @@ export async function applyFilter(imageUri: string, mode: FilterMode): Promise<s
         (OpenCV as any).invoke('addWeighted', dstMat, 1.6, sharpMat, -0.6, 0.0, dstMat);
         
         // Contrast adjustment: make text extra dark, paper background pure white
-        (OpenCV as any).invoke('convertScaleAbs', dstMat, dstMat, 1.55, -115);
+        (OpenCV as any).invoke('convertScaleAbs', dstMat, dstMat, 1.45, -85);
       } catch (enhanceErr) {
         console.warn('[CV] high_contrast division normalization failed, using fallback:', enhanceErr);
         (OpenCV as any).invoke('convertScaleAbs', grayMat, dstMat, 1.28, -18);
