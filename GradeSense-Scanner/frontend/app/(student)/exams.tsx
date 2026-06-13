@@ -1,11 +1,13 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Linking, StyleSheet, Text, View } from 'react-native';
+import { useRouter } from 'expo-router';
 import { COLORS } from '../../src/config';
 import { fetchStudentExamFiles, fetchStudentExams, StudentExamSummary } from '../../src/api/studentPortal';
 import { useAuthStore } from '../../src/store/authStore';
 import { PortalActionButton, PortalCard, PortalScreen, PortalState, SectionTitle, StatusPill } from '../../src/components/portal/PortalKit';
 
 export default function StudentExamsScreen() {
+  const router = useRouter();
   const token = useAuthStore(state => state.sessionToken);
   const [exams, setExams] = useState<StudentExamSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -44,6 +46,13 @@ export default function StudentExamsScreen() {
     }
   };
 
+  const startExamSubmission = (examId: string, examName: string) => {
+    router.push({
+      pathname: '/(student)/submit-exam',
+      params: { examId, examName }
+    } as any);
+  };
+
   return (
     <PortalScreen title="Assigned Exams" subtitle="Question papers and published result status" onRefresh={load} refreshing={isLoading}>
       {isLoading && !exams.length ? (
@@ -70,6 +79,14 @@ export default function StudentExamsScreen() {
                 tone="secondary"
                 disabled={openingExamId === exam.id}
               />
+              {!exam.resultsPublished && (
+                <PortalActionButton
+                  label={exam.status === 'submitted' ? 'Resubmit Answer Sheet' : 'Submit Answer Sheet'}
+                  icon="camera-outline"
+                  onPress={() => startExamSubmission(exam.id, exam.name)}
+                  tone="primary"
+                />
+              )}
             </PortalCard>
           )) : (
             <PortalState title="No assigned exams" message="Assigned exams from the webapp will appear here." />

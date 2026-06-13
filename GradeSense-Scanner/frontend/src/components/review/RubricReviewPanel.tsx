@@ -18,6 +18,8 @@ interface RubricReviewPanelProps {
   onSelectScore: (index: number) => void;
   onDensityChange: (density: ReviewDensity) => void;
   onFeedbackChange?: (scoreId: string, feedback: string) => void;
+  onFeedbackFocus?: () => void;
+  onFeedbackBlur?: () => void;
   onImproveAI?: () => void;
   isImprovingAI?: boolean;
 }
@@ -30,6 +32,8 @@ export function RubricReviewPanel({
   onSelectScore,
   onDensityChange,
   onFeedbackChange,
+  onFeedbackFocus,
+  onFeedbackBlur,
   onImproveAI,
   isImprovingAI = false,
 }: RubricReviewPanelProps) {
@@ -116,6 +120,8 @@ export function RubricReviewPanel({
                   multiline
                   scrollEnabled
                   textAlignVertical="top"
+                  onFocus={onFeedbackFocus}
+                  onBlur={onFeedbackBlur}
                 />
               </View>
             ) : null}

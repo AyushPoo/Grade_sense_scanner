@@ -151,3 +151,18 @@ export async function createStudentReEvaluation(
   });
   return data && typeof data === 'object' ? data as Record<string, unknown> : {};
 }
+
+export async function submitStudentExam(
+  options: StudentPortalRequestOptions,
+  examId: string,
+  payload: { session_id: string; pages: any[] }
+): Promise<any> {
+  const data = await fetchPortalJson({
+    ...portalOptions(options),
+    method: 'POST',
+    scannerPath: `/api/v1/student/exams/${examId}/submit`,
+    webappPath: `/api/v1/student/exams/${examId}/submit`,
+    body: payload,
+  });
+  return data;
+}

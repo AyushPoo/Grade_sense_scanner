@@ -25,5 +25,5 @@ export function useKeyboardLift(bottomInset = 0): number {
     };
   }, [bottomInset]);
 
-  return Platform.OS === 'android' ? keyboardHeight : 0;
+  return 0;
 }

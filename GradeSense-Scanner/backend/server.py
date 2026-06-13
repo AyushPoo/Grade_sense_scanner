@@ -3251,7 +3251,7 @@ def process_enhance(base64_str: str, mode: str = "enhanced", points: Optional[li
             sharpen_blur = cv2.GaussianBlur(divided, (5, 5), 0)
             sharp = cv2.addWeighted(divided, 1.6, sharpen_blur, -0.6, 0)
             # Contrast adjustment: make text extra dark, paper background pure white
-            final = cv2.convertScaleAbs(sharp, alpha=1.45, beta=-85)
+            final = cv2.convertScaleAbs(sharp, alpha=2.15, beta=-220)
         else: # DEFAULT: "enhanced" - HANDWRITING PRESERVING
             # Lighting Normalization (CLAHE) - Softer settings
             clahe = cv2.createCLAHE(clipLimit=1.2, tileGridSize=(12, 12))
@@ -3359,7 +3359,7 @@ async def enhance_image_file_endpoint(
             sharpen_blur = cv2.GaussianBlur(divided, (5, 5), 0)
             sharp = cv2.addWeighted(divided, 1.6, sharpen_blur, -0.6, 0)
             # Contrast adjustment: make text extra dark, paper background pure white
-            final = cv2.convertScaleAbs(sharp, alpha=1.45, beta=-85)
+            final = cv2.convertScaleAbs(sharp, alpha=2.15, beta=-220)
         else: # enhanced
             clahe = cv2.createCLAHE(clipLimit=1.2, tileGridSize=(12, 12))
             normalized = clahe.apply(gray)
@@ -5155,6 +5155,234 @@ async def create_student_re_evaluation_proxy(
         request=request,
         json_body=data,
     )
+
+
+class StudentSubmitRequest(BaseModel):
+    session_id: str
+    pages: list[PageMetadata]
+
+
+@api_router.post("/v1/student/exams/{exam_id}/submit")
+async def student_submit_exam(
+    exam_id: str,
+    data: StudentSubmitRequest,
+    authorization: Optional[str] = Header(None)
+):
+    """
+    Allow a student to compile and submit their scanned pages as an exam answer sheet.
+    Inserts a 'pending' submission record directly into the webapp database.
+    """
+    logger.info(f"Student submit: exam={exam_id}, session={data.session_id}")
+    user = await get_current_user(authorization)
+    
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if not webapp_db_url:
+        logger.error("WEBAPP_DB_URL is not set")
+        raise HTTPException(status_code=500, detail="Database configuration error")
+
+    # Helper to download a page file from storage (Local or GCS)
+    async def download_file_locally(p_metadata: dict, temp_dir: str) -> Optional[Path]:
+        file_url = p_metadata.get("file_url") or p_metadata.get("file_path")
+        if not file_url:
+            return None
+        
+        filename = file_url.split("/")[-1]
+        local_temp_path = Path(temp_dir) / filename
+        
+        provider = os.environ.get("STORAGE_PROVIDER", "local").lower()
+        if provider == "gcs":
+            try:
+                blob_path = f"{data.session_id}/{filename}"
+                blob = storage.bucket.blob(blob_path)
+                
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, blob.download_to_filename, str(local_temp_path))
+                return local_temp_path
+            except Exception as ex:
+                logger.error(f"Failed to download from GCS: {blob_path} - {ex}")
+                return None
+        else:
+            local_src_path = storage.get_file_path(data.session_id, filename)
+            if local_src_path and local_src_path.exists():
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, shutil.copy, local_src_path, local_temp_path)
+                return local_temp_path
+            return None
+
+    def is_pdf_page(p_metadata: dict) -> bool:
+        source = " ".join(
+            str(p_metadata.get(key) or "")
+            for key in ("content_type", "original_name", "file_url", "file_path")
+        ).lower()
+        return "application/pdf" in source or ".pdf" in source
+
+    # Helper to compile page metadata into a single PDF
+    async def compile_pages_to_pdf(pages_metadata: list, output_path: Path, compile_temp_dir: str) -> bool:
+        images = []
+        sorted_pages = sorted(pages_metadata, key=lambda x: x.get("page_number", 0))
+        
+        for p_meta in sorted_pages:
+            local_img_path = await download_file_locally(p_meta, compile_temp_dir)
+            if local_img_path and local_img_path.exists():
+                try:
+                    img = Image.open(local_img_path)
+                    if img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    img.load()
+                    images.append(img)
+                except Exception as ex:
+                    logger.error(f"Error opening image {local_img_path}: {ex}")
+                    
+        if images:
+            loop = asyncio.get_event_loop()
+            def save_pdf():
+                images[0].save(
+                    output_path,
+                    save_all=True,
+                    append_images=images[1:]
+                )
+            await loop.run_in_executor(None, save_pdf)
+            
+            for img in images:
+                try:
+                    img.close()
+                except Exception:
+                    pass
+            return True
+        return False
+
+    # Perform submit
+    conn = await asyncpg.connect(webapp_db_url)
+    try:
+        # 1. Fetch student user profile details from users table
+        user_row = await conn.fetchrow(
+            "SELECT name, email, roll_number FROM users WHERE id = $1 LIMIT 1",
+            user.user_id
+        )
+        student_name = user_row["name"] if user_row else user.name
+        student_email = user_row["email"] if user_row else user.email
+        student_roll = user_row["roll_number"] if user_row else None
+        
+        # 2. Fetch exam info to get total marks
+        exam_row = await conn.fetchrow(
+            "SELECT total_marks FROM exams WHERE id = $1 LIMIT 1",
+            exam_id
+        )
+        if not exam_row:
+            raise HTTPException(status_code=404, detail="Exam not found")
+        total_marks = float(exam_row["total_marks"]) if exam_row["total_marks"] is not None else 100.0
+
+        # 3. Create temp directory for compiling PDF
+        with tempfile.TemporaryDirectory() as compile_temp_dir:
+            temp_dir_path = Path(compile_temp_dir)
+            pdf_name = f"student_submission_{user.user_id}.pdf"
+            pdf_path = temp_dir_path / pdf_name
+            
+            pages_list = [p.model_dump() for p in data.pages]
+            logger.info(f"Compiling student submission PDF with {len(pages_list)} pages...")
+            
+            pdf_pages = [page for page in pages_list if is_pdf_page(page)]
+            
+            success = False
+            if len(pages_list) == 1 and pdf_pages:
+                local_pdf_path = await download_file_locally(pdf_pages[0], compile_temp_dir)
+                if local_pdf_path and local_pdf_path.exists():
+                    loop = asyncio.get_event_loop()
+                    if local_pdf_path.resolve() != pdf_path.resolve():
+                        await loop.run_in_executor(None, shutil.copy, local_pdf_path, pdf_path)
+                    success = True
+            else:
+                success = await compile_pages_to_pdf(pages_list, pdf_path, compile_temp_dir)
+                
+            if not success:
+                raise HTTPException(status_code=500, detail="Failed to compile pages to PDF")
+                
+            sub_id = generate_drizzle_id("sbm_")
+            sub_rand = generate_drizzle_id("")
+            sub_size = pdf_path.stat().st_size
+            
+            provider = os.environ.get("STORAGE_PROVIDER", "local").lower()
+            if provider == "gcs":
+                sub_gcs_key = f"submissions/{sub_id}/answer-sheets/file_{sub_rand}_student_answer_paper.pdf"
+                logger.info(f"Uploading Student PDF to GCS bucket at {sub_gcs_key}...")
+                blob = storage.bucket.blob(sub_gcs_key)
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, blob.upload_from_filename, str(pdf_path), "application/pdf")
+            else:
+                filename = f"student_answer_paper_{sub_id}.pdf"
+                logger.info(f"Saving Student PDF locally to uploads as {filename}...")
+                with open(pdf_path, "rb") as f:
+                    storage.save_file("submissions", filename, f, content_type="application/pdf")
+                sub_gcs_key = f"submissions/submissions/{filename}"
+
+            # 4. Check for existing submission
+            old_sub = await conn.fetchrow(
+                "SELECT id FROM submissions WHERE exam_id = $1 AND student_id = $2 LIMIT 1",
+                exam_id, user.user_id
+            )
+            if old_sub:
+                old_sub_id = old_sub["id"]
+                logger.info(f"Replacing existing student submission {old_sub_id}...")
+                await conn.execute("DELETE FROM submission_files WHERE submission_id = $1", old_sub_id)
+                await conn.execute("DELETE FROM submissions WHERE id = $1", old_sub_id)
+
+            # 5. Insert new submission
+            now_iso = datetime.utcnow().isoformat() + 'Z'
+            await conn.execute(
+                '''
+                INSERT INTO submissions (
+                    id, exam_id, student_id, student_name, student_email, source, status,
+                    total_score, total_marks, percentage, ai_feedback, teacher_feedback,
+                    reviewed_at, published_at, created_at, updated_at, student_roll_number
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+                ''',
+                sub_id,
+                exam_id,
+                user.user_id,
+                student_name,
+                student_email,
+                "student_portal",
+                "pending",
+                0.0,
+                total_marks,
+                0.0,
+                None,
+                None,
+                None,
+                None,
+                now_iso,
+                now_iso,
+                student_roll,
+            )
+            
+            # 6. Insert submission file
+            await conn.execute(
+                '''
+                INSERT INTO submission_files (
+                    id, submission_id, kind, original_name, content_type, gcs_key,
+                    object_size_bytes, content_hash, created_at, updated_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                ''',
+                generate_drizzle_id("sfl_"),
+                sub_id,
+                "answer_sheet",
+                "student_answer_paper.pdf",
+                "application/pdf",
+                sub_gcs_key,
+                sub_size,
+                None,
+                now_iso,
+                now_iso,
+            )
+            
+            logger.info(f"Student submission created successfully: {sub_id}")
+            return {"status": "success", "submission_id": sub_id}
+            
+    except Exception as e:
+        logger.error(f"Error creating student submission: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to submit paper: {str(e)}")
+    finally:
+        await conn.close()
 
 
 # ==================== ADMIN PORTAL WEBAPP PROXY ====================

@@ -24,7 +24,7 @@ const OUTPUT_LONG_SIDE = 2048;
 const MIN_OUTPUT_SIDE = 960;
 const MIN_PAGE_ASPECT = 0.55;
 const MAX_PAGE_ASPECT = 1.65;
-const CROP_PADDING_RATIO = 0.03; // 3% padding
+const CROP_PADDING_RATIO = 0.05; // 5% padding
 
 /**
  * Order corners deterministically: Top-Left, Top-Right, Bottom-Right, Bottom-Left

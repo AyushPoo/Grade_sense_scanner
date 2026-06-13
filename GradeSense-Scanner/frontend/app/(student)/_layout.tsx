@@ -31,6 +31,7 @@ export default function StudentTabsLayout() {
       <Tabs.Screen name="re-evaluation" options={{ title: 'Re-eval', tabBarIcon: ({ color, focused }) => <TabIcon name={focused ? 'chatbubble-ellipses' : 'chatbubble-ellipses-outline'} color={color} focused={focused} /> }} />
       <Tabs.Screen name="profile" options={{ title: 'Profile', tabBarIcon: ({ color, focused }) => <TabIcon name={focused ? 'person-circle' : 'person-circle-outline'} color={color} focused={focused} /> }} />
       <Tabs.Screen name="result-detail" options={{ href: null }} />
+      <Tabs.Screen name="submit-exam" options={{ href: null }} />
     </Tabs>
   );
 }

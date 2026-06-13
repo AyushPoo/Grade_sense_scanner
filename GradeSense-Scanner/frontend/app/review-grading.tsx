@@ -55,6 +55,7 @@ export default function ReviewGradingScreen() {
   const [isSubmittingImprovement, setIsSubmittingImprovement] = useState(false);
   const [reviewSettings, setReviewSettings] = useState<ReviewSettings>(DEFAULT_REVIEW_SETTINGS);
   const { density: reviewDensity, setDensity: setReviewDensity } = useReviewDensityPreference();
+  const [isEditingFeedback, setIsEditingFeedback] = useState(false);
 
   const handleReevaluate = () => {
     if (!examId || !token) return;
@@ -759,11 +760,13 @@ export default function ReviewGradingScreen() {
               onSelectScore={setActiveScoreIndex}
               onDensityChange={setReviewDensity}
               onFeedbackChange={handleFeedbackChange}
+              onFeedbackFocus={() => setIsEditingFeedback(true)}
+              onFeedbackBlur={() => setIsEditingFeedback(false)}
               onImproveAI={() => setShowImproveAIModal(true)}
               isImprovingAI={isSubmittingImprovement}
             />
 
-            {activeScore && (
+            {!isEditingFeedback && activeScore && (
               <GradingControlPanel
                 activeScore={activeScore}
                 isSaving={isSaving}
