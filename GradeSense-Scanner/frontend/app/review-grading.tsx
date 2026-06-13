@@ -9,6 +9,7 @@ import {
   Animated,
   KeyboardAvoidingView,
   Platform,
+  Keyboard,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -56,6 +57,19 @@ export default function ReviewGradingScreen() {
   const [reviewSettings, setReviewSettings] = useState<ReviewSettings>(DEFAULT_REVIEW_SETTINGS);
   const { density: reviewDensity, setDensity: setReviewDensity } = useReviewDensityPreference();
   const [isEditingFeedback, setIsEditingFeedback] = useState(false);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener('keyboardDidShow', () => {
+      setIsEditingFeedback(true);
+    });
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+      setIsEditingFeedback(false);
+    });
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   const handleReevaluate = () => {
     if (!examId || !token) return;

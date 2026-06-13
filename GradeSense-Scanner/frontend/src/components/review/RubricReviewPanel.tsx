@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../../config';
@@ -40,6 +40,7 @@ export function RubricReviewPanel({
   const activeScore = scores[activeScoreIndex];
   const densityConfig = useMemo(() => getReviewDensityConfig(density), [density]);
   const densityStyles = useMemo(() => createDensityStyles(densityConfig), [densityConfig]);
+  const scrollViewRef = useRef<ScrollView>(null);
 
   return (
     <View style={styles.container}>
@@ -79,7 +80,7 @@ export function RubricReviewPanel({
 
       <View style={styles.detailPanel}>
         {activeScore ? (
-          <ScrollView contentContainerStyle={[styles.detailContent, densityStyles.detailContent]}>
+          <ScrollView ref={scrollViewRef} contentContainerStyle={[styles.detailContent, densityStyles.detailContent]}>
             <View style={styles.detailHeader}>
               <View style={styles.detailTitleGroup}>
                 <Text style={[styles.sectionTitle, densityStyles.sectionTitle]}>REVIEWING</Text>
@@ -120,7 +121,12 @@ export function RubricReviewPanel({
                   multiline
                   scrollEnabled
                   textAlignVertical="top"
-                  onFocus={onFeedbackFocus}
+                  onFocus={() => {
+                    onFeedbackFocus?.();
+                    setTimeout(() => {
+                      scrollViewRef.current?.scrollToEnd({ animated: true });
+                    }, 150);
+                  }}
                   onBlur={onFeedbackBlur}
                 />
               </View>
