@@ -39,6 +39,7 @@ export interface ScannedPage {
   original_name?: string;
   original_file_path?: string; // pristine colored crop
   raw_file_path?: string; // absolute raw camera image (uncropped)
+  raw_file_url?: string; // GCS URL for raw photo (uncropped)
   crop_quad?: {
     topLeft: { x: number; y: number };
     topRight: { x: number; y: number };

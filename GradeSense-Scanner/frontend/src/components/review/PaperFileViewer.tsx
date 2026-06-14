@@ -61,6 +61,7 @@ export function PaperFileViewer({
   onRetry,
   onViewerStateChange,
 }: PaperFileViewerProps) {
+  const [showOriginal, setShowOriginal] = React.useState(false);
   const groups = useMemo(() => buildDocumentGroups(slides), [slides]);
   const compareMode = viewerState?.compareMode ?? false;
   const scrollOffsets = viewerState?.scrollOffsets ?? {};
@@ -68,6 +69,10 @@ export function PaperFileViewer({
   const activeGroup = groups.find(group => group.type === activeType) || groups[0];
   const compareGroups = groups.filter(group => group.type === 'student' || group.type === 'model');
   const canCompare = compareGroups.length > 1;
+
+  const hasAnnotationUrl = useMemo(() => {
+    return activeGroup?.slides.some(slide => Boolean(slide.annotationSignedUrl)) ?? false;
+  }, [activeGroup]);
 
   const setCompareMode = useCallback((nextValue: boolean) => {
     onViewerStateChange?.({ compareMode: nextValue });
@@ -138,6 +143,19 @@ export function PaperFileViewer({
               <Text style={[styles.documentTabText, compareMode && styles.activeDocumentTabText]}>Compare</Text>
             </TouchableOpacity>
           ) : null}
+
+          {hasAnnotationUrl ? (
+            <TouchableOpacity
+              style={[styles.documentTab, showOriginal && styles.activeDocumentTabOriginal]}
+              onPress={() => setShowOriginal(!showOriginal)}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="image-outline" size={13} color={showOriginal ? '#fff' : '#E7E7E7'} />
+              <Text style={[styles.documentTabText, showOriginal && styles.activeDocumentTabText]}>
+                {showOriginal ? 'Show Crop' : 'Show Raw Photo'}
+              </Text>
+            </TouchableOpacity>
+          ) : null}
         </ScrollView>
       </View>
 
@@ -149,6 +167,7 @@ export function PaperFileViewer({
           onImageError={onImageError}
           onRetry={onRetry}
           onScrollOffsetChange={setScrollOffset}
+          showOriginal={showOriginal}
         />
       ) : (
         <DocumentGroupView
@@ -159,6 +178,7 @@ export function PaperFileViewer({
           onImageError={onImageError}
           onRetry={onRetry}
           onScrollOffsetChange={setScrollOffset}
+          showOriginal={showOriginal}
         />
       )}
     </View>
@@ -172,6 +192,7 @@ function CompareDocumentView({
   onImageError,
   onRetry,
   onScrollOffsetChange,
+  showOriginal = false,
 }: {
   groups: DocumentGroup[];
   failedImageIds: Record<string, boolean>;
@@ -179,6 +200,7 @@ function CompareDocumentView({
   onImageError: (slideId: string) => void;
   onRetry: () => void;
   onScrollOffsetChange: (key: string, offset: number) => void;
+  showOriginal?: boolean;
 }) {
   const studentGroup = groups.find(group => group.type === 'student');
   const modelGroup = groups.find(group => group.type === 'model');
@@ -193,6 +215,7 @@ function CompareDocumentView({
         onImageError={onImageError}
         onRetry={onRetry}
         onScrollOffsetChange={onScrollOffsetChange}
+        showOriginal={showOriginal}
       />
       <SplitComparePane
         title="Model Answer"
@@ -202,6 +225,7 @@ function CompareDocumentView({
         onImageError={onImageError}
         onRetry={onRetry}
         onScrollOffsetChange={onScrollOffsetChange}
+        showOriginal={showOriginal}
       />
     </View>
   );
@@ -215,6 +239,7 @@ function SplitComparePane({
   onImageError,
   onRetry,
   onScrollOffsetChange,
+  showOriginal = false,
 }: {
   title: string;
   group?: DocumentGroup;
@@ -223,6 +248,7 @@ function SplitComparePane({
   onImageError: (slideId: string) => void;
   onRetry: () => void;
   onScrollOffsetChange: (key: string, offset: number) => void;
+  showOriginal?: boolean;
 }) {
   if (!group) {
     return (
@@ -248,6 +274,7 @@ function SplitComparePane({
         onImageError={onImageError}
         onRetry={onRetry}
         onScrollOffsetChange={onScrollOffsetChange}
+        showOriginal={showOriginal}
       />
     </View>
   );
@@ -262,6 +289,7 @@ function DocumentGroupView({
   onImageError,
   onRetry,
   onScrollOffsetChange,
+  showOriginal = false,
 }: {
   group: DocumentGroup;
   compact?: boolean;
@@ -271,6 +299,7 @@ function DocumentGroupView({
   onImageError: (slideId: string) => void;
   onRetry: () => void;
   onScrollOffsetChange: (key: string, offset: number) => void;
+  showOriginal?: boolean;
 }) {
   const scrollRef = useRef<ScrollView>(null);
 
@@ -307,6 +336,7 @@ function DocumentGroupView({
             hasError={Boolean(failedImageIds[slide.id])}
             onImageError={onImageError}
             onRetry={onRetry}
+            showOriginal={showOriginal}
           />
         </View>
       ))}
@@ -320,14 +350,18 @@ function PaperPage({
   hasError,
   onImageError,
   onRetry,
+  showOriginal = false,
 }: {
   slide: ReviewFileSlide;
   compact: boolean;
   hasError: boolean;
   onImageError: (slideId: string) => void;
   onRetry: () => void;
+  showOriginal?: boolean;
 }) {
-  const imageUrl = slide.annotationSignedUrl || slide.signedUrl;
+  const imageUrl = showOriginal && slide.annotationSignedUrl
+    ? slide.annotationSignedUrl
+    : (slide.signedUrl || slide.annotationSignedUrl);
   const openExternal = () => {
     if (imageUrl) {
       Linking.openURL(imageUrl).catch(() => onRetry());
@@ -555,6 +589,10 @@ const styles = StyleSheet.create({
   activeDocumentTab: {
     backgroundColor: COLORS.primary,
     borderColor: COLORS.primary,
+  },
+  activeDocumentTabOriginal: {
+    backgroundColor: COLORS.info,
+    borderColor: COLORS.info,
   },
   documentTabText: {
     color: '#E7E7E7',

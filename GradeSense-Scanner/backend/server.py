@@ -240,6 +240,8 @@ class PageMetadata(BaseModel):
     source_type: Optional[str] = None
     content_type: Optional[str] = None
     original_name: Optional[str] = None
+    raw_file_url: Optional[str] = None
+    raw_file_path: Optional[str] = None
 
 class QuestionPaperInfo(BaseModel):
     page_count: int = 0
@@ -2626,6 +2628,25 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                         blob = storage.bucket.blob(sub_gcs_key)
                         blob.upload_from_filename(str(st_pdf_path), content_type="application/pdf")
 
+                        # Compile raw pages to PDF if they exist (fall back to enhanced if raw missing)
+                        raw_pages = []
+                        for p in st_pages:
+                            raw_pages.append({
+                                **p,
+                                "file_url": p.get("raw_file_url") or p.get("file_url") or p.get("file_path")
+                            })
+                        
+                        raw_pdf_name = f"{clean_label}_raw.pdf"
+                        raw_pdf_path = temp_dir_path / raw_pdf_name
+                        raw_sub_gcs_key = None
+                        
+                        logger.info(f"Compiling Student {clean_label} Raw PDF...")
+                        if await resolve_document_pdf(raw_pages, raw_pdf_path, compile_temp_dir):
+                            raw_sub_gcs_key = f"submissions/{sub_id}/answer-sheets/file_{sub_rand}_raw_student_answer_paper.pdf"
+                            logger.info(f"Uploading Student Raw PDF to GCS bucket at {raw_sub_gcs_key}...")
+                            raw_blob = storage.bucket.blob(raw_sub_gcs_key)
+                            raw_blob.upload_from_filename(str(raw_pdf_path), content_type="application/pdf")
+
                         conn = await asyncpg.connect(webapp_db_url)
                         try:
                             await conn.execute(
@@ -2654,24 +2675,56 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                                 datetime.utcnow().isoformat() + 'Z',
                                 student.get("roll_number"),
                             )
-                            await conn.execute(
+
+                            # Check if annotation_gcs_key column exists
+                            has_ann_col = await conn.fetchval(
                                 '''
-                                INSERT INTO submission_files (
-                                    id, submission_id, kind, original_name, content_type, gcs_key,
-                                    object_size_bytes, content_hash, created_at, updated_at
-                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                                ''',
-                                generate_drizzle_id("sfl_"),
-                                sub_id,
-                                "answer_sheet",
-                                pdf_name,
-                                "application/pdf",
-                                sub_gcs_key,
-                                sub_size,
-                                None,
-                                datetime.utcnow().isoformat() + 'Z',
-                                datetime.utcnow().isoformat() + 'Z',
+                                SELECT EXISTS (
+                                    SELECT 1 
+                                    FROM information_schema.columns 
+                                    WHERE table_name = 'submission_files' AND column_name = 'annotation_gcs_key'
+                                )
+                                '''
                             )
+                            if has_ann_col:
+                                await conn.execute(
+                                    '''
+                                    INSERT INTO submission_files (
+                                        id, submission_id, kind, original_name, content_type, gcs_key,
+                                        annotation_gcs_key, object_size_bytes, content_hash, created_at, updated_at
+                                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                                    ''',
+                                    generate_drizzle_id("sfl_"),
+                                    sub_id,
+                                    "answer_sheet",
+                                    pdf_name,
+                                    "application/pdf",
+                                    sub_gcs_key,
+                                    raw_sub_gcs_key,
+                                    sub_size,
+                                    None,
+                                    datetime.utcnow().isoformat() + 'Z',
+                                    datetime.utcnow().isoformat() + 'Z',
+                                )
+                            else:
+                                await conn.execute(
+                                    '''
+                                    INSERT INTO submission_files (
+                                        id, submission_id, kind, original_name, content_type, gcs_key,
+                                        object_size_bytes, content_hash, created_at, updated_at
+                                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                                    ''',
+                                    generate_drizzle_id("sfl_"),
+                                    sub_id,
+                                    "answer_sheet",
+                                    pdf_name,
+                                    "application/pdf",
+                                    sub_gcs_key,
+                                    sub_size,
+                                    None,
+                                    datetime.utcnow().isoformat() + 'Z',
+                                    datetime.utcnow().isoformat() + 'Z',
+                                )
                         finally:
                             await conn.close()
 

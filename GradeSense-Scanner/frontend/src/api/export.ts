@@ -87,7 +87,8 @@ async function uploadPageFile(
   page: ScannedPage,
   phase: ScanPhase,
   studentIndex?: number,
-  retries = 3
+  retries = 3,
+  mode = 'enhanced'
 ): Promise<UploadedPageFile> {
   const token = useAuthStore.getState().sessionToken;
   const backendUrl = getBackendUrl();
@@ -113,7 +114,7 @@ async function uploadPageFile(
 
       formData.append('page_number', page.page_number.toString());
       formData.append('phase', phase);
-      formData.append('mode', 'enhanced');
+      formData.append('mode', mode);
       if (studentIndex !== undefined) {
         formData.append('student_index', studentIndex.toString());
       }
@@ -156,12 +157,33 @@ async function uploadPageTasks(
   sessionId: string,
   tasks: UploadPageTask[],
   onPageUploaded: (label: string) => void
-): Promise<(UploadedPageFile & { page: ScannedPage; pageIndex: number; studentIndex?: number })[]> {
+): Promise<(UploadedPageFile & { rawFileUrl?: string | null; page: ScannedPage; pageIndex: number; studentIndex?: number })[]> {
   return mapWithConcurrency(tasks, MAX_PARALLEL_PAGE_UPLOADS, async task => {
-    const uploaded = await uploadPageFile(sessionId, task.page, task.phase, task.studentIndex);
+    const uploaded = await uploadPageFile(sessionId, task.page, task.phase, task.studentIndex, 3, 'enhanced');
     onPageUploaded(task.label);
+
+    let rawFileUrl: string | null = null;
+    if (task.page.raw_file_path) {
+      try {
+        console.log(`[Upload] Uploading raw uncropped photo for page ${task.page.page_number}...`);
+        const rawPage = { ...task.page, file_path: task.page.raw_file_path };
+        const uploadedRaw = await uploadPageFile(
+          sessionId,
+          rawPage,
+          task.phase,
+          task.studentIndex,
+          3,
+          'original'
+        );
+        rawFileUrl = uploadedRaw.fileUrl;
+      } catch (err) {
+        console.warn(`[Upload] Failed to upload raw file for page ${task.page.page_number}:`, err);
+      }
+    }
+
     return {
       ...uploaded,
+      rawFileUrl,
       page: task.page,
       pageIndex: task.pageIndex,
       studentIndex: task.studentIndex,
@@ -254,6 +276,7 @@ export async function uploadSessionToWebApp(
       const updatedPages = uploadedPages.map(uploaded => ({
         ...uploaded.page,
         file_url: uploaded.fileUrl,
+        raw_file_url: uploaded.rawFileUrl || null,
         content_type: uploaded.contentType,
         original_name: uploaded.originalName,
       }));
@@ -285,6 +308,7 @@ export async function uploadSessionToWebApp(
       const updatedPages = uploadedPages.map(uploaded => ({
         ...uploaded.page,
         file_url: uploaded.fileUrl,
+        raw_file_url: uploaded.rawFileUrl || null,
         content_type: uploaded.contentType,
         original_name: uploaded.originalName,
       }));
@@ -331,6 +355,7 @@ export async function uploadSessionToWebApp(
       const updatedPages = (uploadedByStudent.get(studentIndex) || []).map(uploaded => ({
         ...uploaded.page,
         file_url: uploaded.fileUrl,
+        raw_file_url: uploaded.rawFileUrl || null,
         content_type: uploaded.contentType,
         original_name: uploaded.originalName,
       }));

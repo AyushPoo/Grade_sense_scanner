@@ -26,8 +26,6 @@ interface GradingControlPanelProps {
   keyboardLift?: number;
   bottomInset?: number;
   onScoreChange: (scoreId: string, obtainedMarks: number) => void;
-  onCommentChange: (scoreId: string, comment: string) => void;
-  onOpenDictation: () => void;
   onSaveAndNext: () => void;
 }
 
@@ -39,22 +37,10 @@ export function GradingControlPanel({
   keyboardLift = 0,
   bottomInset = 0,
   onScoreChange,
-  onCommentChange,
-  onOpenDictation,
   onSaveAndNext,
 }: GradingControlPanelProps) {
-  const teacherNote = activeScore.teacherCorrection || '';
   const densityConfig = useMemo(() => getReviewDensityConfig(density), [density]);
   const densityStyles = useMemo(() => createDensityStyles(densityConfig), [densityConfig]);
-  const [isNoteFocused, setIsNoteFocused] = useState(false);
-  const [noteContentHeight, setNoteContentHeight] = useState(0);
-  const minNoteHeight = densityConfig.noteMinHeight;
-  const focusedMinNoteHeight = Math.max(minNoteHeight * 1.9, 82);
-  const maxNoteHeight = Math.max(minNoteHeight * 3.4, 132);
-  const noteHeight = Math.min(
-    Math.max(isNoteFocused ? focusedMinNoteHeight : minNoteHeight, noteContentHeight + 14),
-    maxNoteHeight
-  );
   const hardwareBottomPadding = useHardwareAwareBottomInset(bottomInset, 0);
 
   return (
@@ -92,27 +78,7 @@ export function GradingControlPanel({
         </View>
       </View>
 
-      <Text style={[styles.commentLabel, densityStyles.commentLabel]}>Teacher note</Text>
-      <View style={[styles.commentRow, densityStyles.commentRow]}>
-        <TextInput
-          style={[styles.commentInput, densityStyles.commentInput, { height: noteHeight }]}
-          value={teacherNote}
-          onChangeText={comment => onCommentChange(activeScore.id, comment)}
-          onFocus={() => setIsNoteFocused(true)}
-          onBlur={() => setIsNoteFocused(false)}
-          onContentSizeChange={event => setNoteContentHeight(event.nativeEvent.contentSize.height)}
-          placeholder="Add a short correction or override note..."
-          placeholderTextColor={COLORS.textMuted}
-          multiline
-          scrollEnabled={noteHeight >= maxNoteHeight}
-          textAlignVertical="top"
-          returnKeyType="default"
-          blurOnSubmit={false}
-        />
-        <TouchableOpacity style={[styles.micButton, densityStyles.micButton]} onPress={onOpenDictation} activeOpacity={0.75}>
-          <Ionicons name="mic-outline" size={densityConfig.micIconSize} color={COLORS.primary} />
-        </TouchableOpacity>
-      </View>
+      <View style={{ height: 10 }} />
 
       <TouchableOpacity
         style={[styles.saveButton, densityStyles.saveButton, isSaving && styles.saveButtonDisabled]}

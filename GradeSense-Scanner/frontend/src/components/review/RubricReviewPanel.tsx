@@ -18,6 +18,8 @@ interface RubricReviewPanelProps {
   onSelectScore: (index: number) => void;
   onDensityChange: (density: ReviewDensity) => void;
   onFeedbackChange?: (scoreId: string, feedback: string) => void;
+  onCommentChange?: (scoreId: string, comment: string) => void;
+  onOpenDictation?: () => void;
   onFeedbackFocus?: () => void;
   onFeedbackBlur?: () => void;
   onImproveAI?: () => void;
@@ -33,6 +35,8 @@ export function RubricReviewPanel({
   onSelectScore,
   onDensityChange,
   onFeedbackChange,
+  onCommentChange,
+  onOpenDictation,
   onFeedbackFocus,
   onFeedbackBlur,
   onImproveAI,
@@ -133,6 +137,44 @@ export function RubricReviewPanel({
                   }}
                   onBlur={onFeedbackBlur}
                 />
+              </View>
+            ) : null}
+
+            {onCommentChange ? (
+              <View style={[styles.teacherNoteBox, densityStyles.teacherNoteBox]}>
+                <View style={styles.feedbackHeader}>
+                  <Ionicons name="document-text-outline" size={density === 'compact' ? 14 : 16} color={COLORS.info} />
+                  <Text style={[styles.teacherNoteTitle, densityStyles.teacherNoteTitle]}>Teacher Note</Text>
+                  <Text style={styles.editableBadgeBlue}>Editable</Text>
+                </View>
+                <View style={styles.commentInputRow}>
+                  <TextInput
+                    style={[styles.feedbackInput, densityStyles.feedbackInput, { flex: 1 }]}
+                    value={activeScore.teacherCorrection || ''}
+                    onChangeText={comment => onCommentChange(activeScore.id, comment)}
+                    placeholder="Add a correction or override note..."
+                    placeholderTextColor={COLORS.textMuted}
+                    multiline
+                    scrollEnabled
+                    textAlignVertical="top"
+                    onFocus={() => {
+                      onFeedbackFocus?.();
+                      setTimeout(() => {
+                        scrollViewRef.current?.scrollToEnd({ animated: true });
+                      }, 150);
+                    }}
+                    onBlur={onFeedbackBlur}
+                  />
+                  {onOpenDictation ? (
+                    <TouchableOpacity
+                      style={styles.micButtonInline}
+                      onPress={onOpenDictation}
+                      activeOpacity={0.75}
+                    >
+                      <Ionicons name="mic-outline" size={density === 'compact' ? 16 : 18} color={COLORS.info} />
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
               </View>
             ) : null}
 
@@ -284,6 +326,39 @@ const styles = StyleSheet.create({
     margin: 0,
     padding: 0,
   },
+  teacherNoteBox: {
+    backgroundColor: '#F0F6FF',
+    borderColor: `${COLORS.info}24`,
+    borderWidth: 1,
+  },
+  teacherNoteTitle: {
+    color: COLORS.info,
+    fontWeight: '800',
+  },
+  editableBadgeBlue: {
+    backgroundColor: COLORS.infoLight,
+    borderRadius: 999,
+    color: COLORS.info,
+    fontSize: 10,
+    fontWeight: '800',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  commentInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  micButtonInline: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.infoLight,
+    borderRadius: 9,
+    width: 32,
+    height: 32,
+    borderWidth: 1,
+    borderColor: `${COLORS.info}20`,
+  },
   editableBadge: {
     backgroundColor: COLORS.primaryXLight,
     borderRadius: 999,
@@ -386,6 +461,13 @@ function createDensityStyles(config: ReviewDensityConfig) {
     feedbackText: {
       fontSize: config.feedbackTextFontSize,
       lineHeight: config.feedbackLineHeight,
+    },
+    teacherNoteBox: {
+      borderRadius: config.blockRadius,
+      padding: config.blockPadding,
+    },
+    teacherNoteTitle: {
+      fontSize: config.feedbackTitleFontSize,
     },
     feedbackInput: {
       fontSize: config.feedbackTextFontSize,

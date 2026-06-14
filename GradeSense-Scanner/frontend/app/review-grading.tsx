@@ -782,6 +782,8 @@ export default function ReviewGradingScreen() {
               onSelectScore={setActiveScoreIndex}
               onDensityChange={setReviewDensity}
               onFeedbackChange={handleFeedbackChange}
+              onCommentChange={handleCommentChange}
+              onOpenDictation={startVoiceDictation}
               onFeedbackFocus={() => setIsEditingFeedback(true)}
               onFeedbackBlur={() => setIsEditingFeedback(false)}
               onImproveAI={() => setShowImproveAIModal(true)}
@@ -798,8 +800,6 @@ export default function ReviewGradingScreen() {
                 keyboardLift={keyboardLift}
                 bottomInset={insets.bottom}
                 onScoreChange={handleScoreChange}
-                onCommentChange={handleCommentChange}
-                onOpenDictation={startVoiceDictation}
                 onSaveAndNext={handleSaveAndNext}
               />
             )}
