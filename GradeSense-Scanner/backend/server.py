@@ -2426,6 +2426,12 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
             if local_img_path and local_img_path.exists():
                 try:
                     img = Image.open(local_img_path)
+                    # Resize to max 1600px to avoid Out-Of-Memory (OOM) on 512MB RAM containers
+                    max_dim = 1600
+                    if max(img.width, img.height) > max_dim:
+                        ratio = max_dim / max(img.width, img.height)
+                        new_size = (int(img.width * ratio), int(img.height * ratio))
+                        img = img.resize(new_size, Image.Resampling.LANCZOS)
                     if img.mode != 'RGB':
                         img = img.convert('RGB')
                     img.load()
@@ -5279,6 +5285,12 @@ async def student_submit_exam(
             if local_img_path and local_img_path.exists():
                 try:
                     img = Image.open(local_img_path)
+                    # Resize to max 1600px to avoid Out-Of-Memory (OOM) on 512MB RAM containers
+                    max_dim = 1600
+                    if max(img.width, img.height) > max_dim:
+                        ratio = max_dim / max(img.width, img.height)
+                        new_size = (int(img.width * ratio), int(img.height * ratio))
+                        img = img.resize(new_size, Image.Resampling.LANCZOS)
                     if img.mode != 'RGB':
                         img = img.convert('RGB')
                     img.load()
