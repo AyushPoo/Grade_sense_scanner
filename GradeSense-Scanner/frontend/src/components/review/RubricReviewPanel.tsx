@@ -22,7 +22,7 @@ interface RubricReviewPanelProps {
   onFeedbackBlur?: () => void;
   onImproveAI?: () => void;
   isImprovingAI?: boolean;
-  isEditingFeedback?: boolean;
+  isKeyboardVisible?: boolean;
 }
 
 export function RubricReviewPanel({
@@ -37,7 +37,7 @@ export function RubricReviewPanel({
   onFeedbackBlur,
   onImproveAI,
   isImprovingAI = false,
-  isEditingFeedback = false,
+  isKeyboardVisible = false,
 }: RubricReviewPanelProps) {
   const activeScore = scores[activeScoreIndex];
   const densityConfig = useMemo(() => getReviewDensityConfig(density), [density]);
@@ -46,7 +46,7 @@ export function RubricReviewPanel({
 
   return (
     <View style={styles.container}>
-      {!isEditingFeedback && (
+      {!isKeyboardVisible && (
         <View style={[styles.questionListPanel, densityStyles.questionListPanel]}>
           <View style={styles.questionToolbar}>
             <Text style={[styles.sectionTitle, densityStyles.sectionTitle]}>QUESTIONS</Text>

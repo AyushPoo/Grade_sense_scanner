@@ -57,12 +57,18 @@ export default function ReviewGradingScreen() {
   const [reviewSettings, setReviewSettings] = useState<ReviewSettings>(DEFAULT_REVIEW_SETTINGS);
   const { density: reviewDensity, setDensity: setReviewDensity } = useReviewDensityPreference();
   const [isEditingFeedback, setIsEditingFeedback] = useState(false);
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
 
   useEffect(() => {
+    const showSub = Keyboard.addListener('keyboardDidShow', () => {
+      setIsKeyboardVisible(true);
+    });
     const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+      setIsKeyboardVisible(false);
       setIsEditingFeedback(false);
     });
     return () => {
+      showSub.remove();
       hideSub.remove();
     };
   }, []);
@@ -674,7 +680,7 @@ export default function ReviewGradingScreen() {
       </View>
 
       {/* Student Switcher Row */}
-      {!isEditingFeedback && (
+      {!isKeyboardVisible && (
         <View style={styles.studentSwitcher}>
           <TouchableOpacity
             style={[styles.switchArrow, currentSubIndex === 0 && styles.switchArrowDisabled]}
@@ -703,7 +709,7 @@ export default function ReviewGradingScreen() {
         </View>
       )}
 
-      {!isEditingFeedback && (
+      {!isKeyboardVisible && (
         <View style={styles.reviewProgressCard}>
           <View style={styles.reviewProgressTop}>
             <Text style={styles.reviewProgressLabel}>Review progress</Text>
@@ -718,7 +724,7 @@ export default function ReviewGradingScreen() {
       )}
 
       {/* Tabs */}
-      {!isEditingFeedback && (
+      {!isKeyboardVisible && (
         <View style={styles.tabContainer}>
           <TouchableOpacity
             style={[styles.tab, activeTab === 'sheet' && styles.activeTab]}
@@ -780,7 +786,7 @@ export default function ReviewGradingScreen() {
               onFeedbackBlur={() => setIsEditingFeedback(false)}
               onImproveAI={() => setShowImproveAIModal(true)}
               isImprovingAI={isSubmittingImprovement}
-              isEditingFeedback={isEditingFeedback}
+              isKeyboardVisible={isKeyboardVisible}
             />
 
             {!isEditingFeedback && activeScore && (

@@ -92,8 +92,8 @@ android {
         applicationId 'com.ayushp123.gradesensescanner'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 53
-        versionName "1.0.45"
+        versionCode 54
+        versionName "1.0.46"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }
@@ -193,6 +193,7 @@ dependencies {
         implementation jscFlavor
     }
 }
+
 
 
 
