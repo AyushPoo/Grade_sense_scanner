@@ -95,8 +95,8 @@ if ($Arm64Only) {
 }
 $GradleArgs += ":app:bundleRelease"
 
-Write-Host "Pre-cleaning build caches and C++ .cxx build directories for the app module to ensure compile accuracy..."
-Remove-Item -Path (Join-Path $AndroidDir "app\build"), (Join-Path $AndroidDir "app\.cxx"), (Join-Path $AndroidDir ".gradle"), (Join-Path $AndroidDir "build") -Recurse -Force -ErrorAction SilentlyContinue
+# Write-Host "Pre-cleaning build caches and C++ .cxx build directories for the app module to ensure compile accuracy..."
+# Remove-Item -Path (Join-Path $AndroidDir "app\build"), (Join-Path $AndroidDir "app\.cxx"), (Join-Path $AndroidDir ".gradle"), (Join-Path $AndroidDir "build") -Recurse -Force -ErrorAction SilentlyContinue
 
 
 if (Test-Path $EnvBackupPath) {
@@ -153,16 +153,16 @@ Write-Host $DestAabPath
 Write-Host ("Size: {0:N2} MB" -f $OriginalSize)
 
 # Clean up build caches to prevent bloat
-Write-Host "Cleaning up Gradle build caches and temporary files to prevent bloat..."
-Remove-Item -Path (Join-Path $AndroidDir "app\build"), (Join-Path $AndroidDir "app\.cxx"), (Join-Path $AndroidDir ".gradle"), (Join-Path $AndroidDir "build") -Recurse -Force -ErrorAction SilentlyContinue
+# Write-Host "Cleaning up Gradle build caches and temporary files to prevent bloat..."
+# Remove-Item -Path (Join-Path $AndroidDir "app\build"), (Join-Path $AndroidDir "app\.cxx"), (Join-Path $AndroidDir ".gradle"), (Join-Path $AndroidDir "build") -Recurse -Force -ErrorAction SilentlyContinue
 
-Get-ChildItem -Path (Join-Path $ProjectRoot "node_modules") -Filter "build" -Directory -Recurse -ErrorAction SilentlyContinue | 
-  Where-Object { $_.Parent.Name -eq "android" } | 
-  Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+# Get-ChildItem -Path (Join-Path $ProjectRoot "node_modules") -Filter "build" -Directory -Recurse -ErrorAction SilentlyContinue | 
+#   Where-Object { $_.Parent.Name -eq "android" } | 
+#   Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
-Get-ChildItem -Path (Join-Path $ProjectRoot "node_modules") -Filter ".cxx" -Directory -Recurse -ErrorAction SilentlyContinue | 
-  Where-Object { $_.Parent.Name -eq "android" } | 
-  Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+# Get-ChildItem -Path (Join-Path $ProjectRoot "node_modules") -Filter ".cxx" -Directory -Recurse -ErrorAction SilentlyContinue | 
+#   Where-Object { $_.Parent.Name -eq "android" } | 
+#   Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
 
 $ScannerRoot = Resolve-Path (Join-Path $ProjectRoot "..")

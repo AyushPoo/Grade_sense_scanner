@@ -1470,11 +1470,13 @@ export async function applyFilter(imageUri: string, mode: FilterMode): Promise<s
         (OpenCV as any).invoke('GaussianBlur', dstMat, sharpMat, sharpBlurSize, 0);
         (OpenCV as any).invoke('addWeighted', dstMat, 1.6, sharpMat, -0.6, 0.0, dstMat);
         
-        // Contrast adjustment: make text extra dark, paper background pure white
-        (OpenCV as any).invoke('convertScaleAbs', dstMat, dstMat, 2.15, -220);
+        // Contrast adjustment: make text extra dark, paper background pure white.
+        // We use addWeighted instead of convertScaleAbs to perform a saturated clamp to [0, 255]
+        // without wrapping negative values into positive (which hollows out handwriting strokes).
+        (OpenCV as any).invoke('addWeighted', dstMat, 1.9, dstMat, 0.0, -160.0, dstMat);
       } catch (enhanceErr) {
         console.warn('[CV] high_contrast division normalization failed, using fallback:', enhanceErr);
-        (OpenCV as any).invoke('convertScaleAbs', grayMat, dstMat, 1.28, -18);
+        (OpenCV as any).invoke('addWeighted', grayMat, 1.28, grayMat, 0.0, -18.0, dstMat);
       }
     } else if (mode === 'adaptive_threshold') {
       // Adobe-like document cleanup: smooth small sensor noise, then create
