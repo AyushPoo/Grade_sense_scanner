@@ -833,7 +833,7 @@ test('auth login screen uses GradeSense brand assets without scanner copy', () =
 test('local Play bundle script uses production endpoints instead of LAN env', () => {
   const buildScript = fs.readFileSync(path.join(__dirname, '..', 'scripts/build-android-local.ps1'), 'utf8');
 
-  assert.equal(buildScript.includes('https://gradesense-scanner-backend.onrender.com'), true);
+  assert.equal(buildScript.includes('https://grade-sense-scanner-323601156671.asia-south2.run.app'), true);
   assert.equal(buildScript.includes('https://app.gradesense.in'), true);
   assert.equal(buildScript.includes('192.168.'), false);
   assert.equal(buildScript.includes('.env.local-build-backup'), true);

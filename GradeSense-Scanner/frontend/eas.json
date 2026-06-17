@@ -14,17 +14,17 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_BACKEND_URL": "https://gradesense-scanner-backend.onrender.com",
-        "EXPO_PUBLIC_WEBAPP_URL": "http://8.231.83.249:8000",
-        "EXPO_PUBLIC_DOCTR_URL": "https://grade-sense-scanner-323601156671.asia-south2.run.app"
+        "EXPO_PUBLIC_BACKEND_URL": "https://grade-sense-scanner-323601156671.asia-south2.run.app",
+        "EXPO_PUBLIC_WEBAPP_URL": "https://app.gradesense.in",
+        "EXPO_PUBLIC_DOCTR_URL": "https://gradesense-doctr-service-323601156671.asia-south2.run.app"
       }
     },
     "production": {
       "autoIncrement": true,
       "env": {
-        "EXPO_PUBLIC_BACKEND_URL": "https://gradesense-scanner-backend.onrender.com",
-        "EXPO_PUBLIC_WEBAPP_URL": "http://8.231.83.249:8000",
-        "EXPO_PUBLIC_DOCTR_URL": "https://grade-sense-scanner-323601156671.asia-south2.run.app"
+        "EXPO_PUBLIC_BACKEND_URL": "https://grade-sense-scanner-323601156671.asia-south2.run.app",
+        "EXPO_PUBLIC_WEBAPP_URL": "https://app.gradesense.in",
+        "EXPO_PUBLIC_DOCTR_URL": "https://gradesense-doctr-service-323601156671.asia-south2.run.app"
       }
     }
   },
