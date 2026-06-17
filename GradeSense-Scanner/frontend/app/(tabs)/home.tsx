@@ -348,6 +348,8 @@ function SessionRow({ session, onPress }: { session: any; onPress: () => void })
         return { icon: 'sync-circle' as const, color: COLORS.primary, bg: COLORS.primaryXLight, label: 'Grading' };
       case 'graded':
         return { icon: 'checkmark-circle' as const, color: COLORS.success, bg: COLORS.successLight, label: 'Graded' };
+      case 'uploading':
+        return { icon: 'sync' as const, color: COLORS.primary, bg: COLORS.primaryXLight, label: `Uploading (${session.upload_progress || 0}%)` };
       case 'syncing':
         return { icon: 'sync' as const, color: COLORS.primary, bg: COLORS.primaryXLight, label: 'Syncing' };
       case 'sync_failed':
@@ -776,7 +778,9 @@ export default function HomeScreen() {
                     key={session.session_id}
                     session={session}
                     onPress={() => {
-                      if (session.status === 'uploaded' && session.exam_id) {
+                      if (session.status === 'uploading' || session.status === 'syncing') {
+                        router.push({ pathname: '/upload', params: { sessionId: session.session_id } });
+                      } else if (session.status === 'uploaded' && session.exam_id) {
                         router.push({ pathname: '/review-grading' as any, params: { examId: session.exam_id, sessionName: session.session_name } });
                       } else {
                         router.push({ pathname: '/review', params: { sessionId: session.session_id } });

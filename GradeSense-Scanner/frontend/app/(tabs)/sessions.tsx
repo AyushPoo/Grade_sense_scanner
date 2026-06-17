@@ -96,12 +96,26 @@ export default function SessionsScreen() {
   };
 
   const renderDraftItem = ({ item }: { item: ScanSession }) => {
-    const cfg = STATUS_MAP[item.status] ?? STATUS_MAP['scanning'];
+    let cfg = STATUS_MAP[item.status] ?? STATUS_MAP['scanning'];
+    if (item.status === 'uploading') {
+      cfg = {
+        ...cfg,
+        label: `Uploading (${item.upload_progress || 0}%)`,
+      };
+    }
 
     return (
       <TouchableOpacity
         style={styles.card}
-        onPress={() => router.push({ pathname: '/review', params: { sessionId: item.session_id } })}
+        onPress={() => {
+          if (item.status === 'uploading' || item.status === 'syncing') {
+            router.push({ pathname: '/upload', params: { sessionId: item.session_id } });
+          } else if ((item.status === 'uploaded' || item.status === 'grading' || item.status === 'graded') && item.exam_id) {
+            router.push({ pathname: '/review-grading' as any, params: { examId: item.exam_id, sessionName: item.session_name } });
+          } else {
+            router.push({ pathname: '/review', params: { sessionId: item.session_id } });
+          }
+        }}
         activeOpacity={0.78}
       >
         {/* Top row */}
@@ -151,7 +165,7 @@ export default function SessionsScreen() {
               <Text style={styles.uploadCTAText}>Upload</Text>
             </TouchableOpacity>
           )}
-          {item.status === 'uploaded' && item.exam_id && (
+          {(item.status === 'uploaded' || item.status === 'grading' || item.status === 'graded') && item.exam_id && (
             <TouchableOpacity
               style={styles.reviewCTA}
               onPress={() => router.push({ pathname: '/review-grading' as any, params: { examId: item.exam_id, sessionName: item.session_name } })}

@@ -820,6 +820,8 @@ async function refineSplitPartCrop(part: PreparedImagePart): Promise<PreparedIma
             const gate = evaluateAutoCropCandidate(docQuadResult.quadrilateral, docQuadResult.dimensions, {
                 confidence: docQuadResult.confidence,
                 profile: 'docquad',
+                textBlocks,
+                textBlocksSourceDims: partDims,
             });
             if (gate.accepted) {
                 const scaled = scaleQuadToDimensions(docQuadResult.quadrilateral, docQuadResult.dimensions, partDims);
@@ -852,6 +854,8 @@ async function refineSplitPartCrop(part: PreparedImagePart): Promise<PreparedIma
                 const gate = evaluateAutoCropCandidate(cvResult.quadrilateral, detectionDims, {
                     confidence: cvResult.confidence,
                     areaScore: cvResult.areaScore,
+                    textBlocks,
+                    textBlocksSourceDims: partDims,
                 });
                 if (gate.accepted) {
                     const scaled = scaleQuadToDimensions(cvResult.quadrilateral, detectionDims, partDims);
@@ -904,6 +908,8 @@ async function refineSplitPartCrop(part: PreparedImagePart): Promise<PreparedIma
         const gate = isFallbackQuad ? { accepted: true } : evaluateAutoCropCandidate(scaledQuad, partDims, {
             confidence: cropConfidence,
             profile: cropProfile,
+            textBlocks,
+            textBlocksSourceDims: partDims,
         });
         if (!gate.accepted) return part;
 
@@ -1266,7 +1272,12 @@ export default function ScannerScreen() {
                             const docQuadGate = evaluateAutoCropCandidate(
                                 docQuadResult.quadrilateral,
                                 docQuadResult.dimensions,
-                                { confidence: docQuadResult.confidence, profile: 'docquad' }
+                                {
+                                    confidence: docQuadResult.confidence,
+                                    profile: 'docquad',
+                                    textBlocks: rotatedBlocks,
+                                    textBlocksSourceDims: uprightDims,
+                                }
                             );
                             if (docQuadGate.accepted) {
                                 const scaled = scaleQuadToDimensions(docQuadResult.quadrilateral, docQuadResult.dimensions, uprightDims);
@@ -1325,7 +1336,12 @@ export default function ScannerScreen() {
                                 const cropGate = evaluateAutoCropCandidate(
                                     cvResult.quadrilateral,
                                     { width: downscaled.width, height: downscaled.height },
-                                    { confidence: cvResult.confidence, areaScore: cvResult.areaScore }
+                                    {
+                                        confidence: cvResult.confidence,
+                                        areaScore: cvResult.areaScore,
+                                        textBlocks: rotatedBlocks,
+                                        textBlocksSourceDims: uprightDims,
+                                    }
                                 );
                                 if (!cropGate.accepted) {
                                     console.warn('[commitCapture] Auto-crop rejected. Falling back to full image.', {
@@ -1410,6 +1426,8 @@ export default function ScannerScreen() {
                     };
                     const scaledCropGate = (isFallbackQuad ? { accepted: true } : evaluateAutoCropCandidate(scaledQuad, uprightDims, {
                         profile: cropProfile,
+                        textBlocks: rotatedBlocks,
+                        textBlocksSourceDims: uprightDims,
                     })) as CropQualityResult;
                     if (!scaledCropGate.accepted) {
                         console.warn('[commitCapture] Scaled auto-crop rejected before warp. Falling back to full image.', {

@@ -124,8 +124,12 @@ export default function UploadScreen() {
     
     Alert.alert(
       'Upload Started',
-      'Your exam papers are uploading in the background. You can track progress on the Home screen.',
+      'Your exam papers are uploading. You can stay here to view progress or track it from the Home screen.',
       [
+        {
+          text: 'Stay & View',
+          style: 'cancel',
+        },
         {
           text: 'Go to Home',
           onPress: () => router.replace('/(tabs)/home'),
@@ -379,12 +383,20 @@ export default function UploadScreen() {
               <Text style={styles.nextStepsItem}>ΓÇó When done, tap the card to review student marks on your phone.</Text>
             </View>
 
-            <TouchableOpacity
+             <TouchableOpacity
               style={styles.openWebappButton}
               onPress={() => router.replace('/(tabs)/home')}
             >
               <Ionicons name="home" size={20} color="#fff" />
               <Text style={styles.openWebappText}>Back to Home & Track Progress</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.addMoreButton}
+              onPress={() => router.replace({ pathname: '/review', params: { sessionId: session.session_id } })}
+            >
+              <Ionicons name="add" size={20} color={COLORS.primary} />
+              <Text style={styles.addMoreText}>Add More Papers</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -1081,6 +1093,25 @@ const styles = StyleSheet.create({
   },
   openWebappText: {
     color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  addMoreButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    backgroundColor: 'transparent',
+    borderWidth: 1.5,
+    borderColor: COLORS.primary,
+    paddingVertical: 16,
+    paddingHorizontal: 32,
+    borderRadius: 12,
+    width: '100%',
+    marginBottom: 16,
+  },
+  addMoreText: {
+    color: COLORS.primary,
     fontSize: 16,
     fontWeight: '600',
   },

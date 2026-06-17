@@ -13,7 +13,8 @@ type CropRejectReason =
   | 'diagonal_ratio'
   | 'angle_outlier'
   | 'low_confidence'
-  | 'low_area_score';
+  | 'low_area_score'
+  | 'text_cut_off';
 
 export interface CropQualityMetrics {
   areaRatio: number;
@@ -32,6 +33,8 @@ export interface CropQualityInput {
   confidence?: number;
   areaScore?: number;
   profile?: 'standard' | 'docquad';
+  textBlocks?: Array<{ left: number; top: number; right: number; bottom: number }>;
+  textBlocksSourceDims?: { width: number; height: number };
 }
 
 export interface CropQualityResult {
@@ -131,6 +134,23 @@ function angle(
   return Math.acos(cosine) * 180 / Math.PI;
 }
 
+function isPointInsideQuad(p: { x: number; y: number }, quad: Quadrilateral): boolean {
+  const pts = [quad.topLeft, quad.topRight, quad.bottomRight, quad.bottomLeft];
+  let prevSign = 0;
+  for (let i = 0; i < 4; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % 4];
+    const cross = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+    if (cross === 0) continue;
+    const sign = Math.sign(cross);
+    if (prevSign !== 0 && sign !== prevSign) {
+      return false;
+    }
+    prevSign = sign;
+  }
+  return true;
+}
+
 export function evaluateAutoCropCandidate(
   quad: Quadrilateral | null | undefined,
   dimensions: { width: number; height: number },
@@ -220,7 +240,34 @@ export function evaluateAutoCropCandidate(
     return { accepted: false, reason: 'low_confidence', metrics };
   }
   if (detection.areaScore !== undefined && detection.areaScore < MIN_AREA_SCORE) {
-    return { accepted: false, reason: 'low_area_score', metrics };
+    return { accepted: false, reason: 'low_area_score', metrics: DEFAULT_METRICS };
+  }
+
+  if (detection.textBlocks && detection.textBlocks.length > 0) {
+    const srcWidth = detection.textBlocksSourceDims?.width ?? dimensions.width;
+    const srcHeight = detection.textBlocksSourceDims?.height ?? dimensions.height;
+    const scaleX = dimensions.width / srcWidth;
+    const scaleY = dimensions.height / srcHeight;
+
+    let cutOffCount = 0;
+    for (const block of detection.textBlocks) {
+      const left = block.left * scaleX;
+      const right = block.right * scaleX;
+      const top = block.top * scaleY;
+      const bottom = block.bottom * scaleY;
+
+      const center = {
+        x: (left + right) / 2,
+        y: (top + bottom) / 2,
+      };
+      if (!isPointInsideQuad(center, quad)) {
+        cutOffCount++;
+      }
+    }
+    const cutOffRatio = cutOffCount / detection.textBlocks.length;
+    if (cutOffRatio > 0.05 && cutOffCount >= 2) {
+      return { accepted: false, reason: 'text_cut_off', metrics: DEFAULT_METRICS };
+    }
   }
 
   return { accepted: true, metrics };

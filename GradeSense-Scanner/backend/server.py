@@ -2797,26 +2797,32 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                     logger.info("Polling blueprint extraction job status...")
                     while (datetime.utcnow() - poll_start).total_seconds() < 300:
                         await asyncio.sleep(3.0)
-                        conn = await asyncpg.connect(webapp_db_url)
-                        j_row = await conn.fetchrow(
-                            "SELECT status, error, success_count, processed_items FROM grading_jobs WHERE id = $1",
-                            blueprint_job_id,
-                        )
-                        await conn.close()
-                        if j_row:
-                            status = j_row["status"]
-                            if status == "completed" and is_successful_blueprint_job(dict(j_row)):
-                                blueprint_extracted_and_locked = True
-                                logger.info("Blueprint extraction completed successfully by worker!")
-                                break
-                            elif status == "completed":
-                                blueprint_failure_message = "Blueprint extraction completed without producing a usable exam blueprint."
-                                logger.error(blueprint_failure_message)
-                                break
-                            elif status == "failed":
-                                blueprint_failure_message = f"Blueprint extraction failed: {j_row['error'] or 'unknown error'}"
-                                logger.error(blueprint_failure_message)
-                                break
+                        conn = None
+                        try:
+                            conn = await asyncpg.connect(webapp_db_url)
+                            j_row = await conn.fetchrow(
+                                "SELECT status, error, success_count, processed_items FROM grading_jobs WHERE id = $1",
+                                blueprint_job_id,
+                            )
+                            if j_row:
+                                status = j_row["status"]
+                                if status == "completed" and is_successful_blueprint_job(dict(j_row)):
+                                    blueprint_extracted_and_locked = True
+                                    logger.info("Blueprint extraction completed successfully by worker!")
+                                    break
+                                elif status == "completed":
+                                    blueprint_failure_message = "Blueprint extraction completed without producing a usable exam blueprint."
+                                    logger.error(blueprint_failure_message)
+                                    break
+                                elif status == "failed":
+                                    blueprint_failure_message = f"Blueprint extraction failed: {j_row['error'] or 'unknown error'}"
+                                    logger.error(blueprint_failure_message)
+                                    break
+                        except Exception as poll_err:
+                            logger.warning(f"Failed to poll blueprint job {blueprint_job_id} status (will retry): {poll_err}")
+                        finally:
+                            if conn:
+                                await conn.close()
 
                     if not blueprint_extracted_and_locked:
                         failure_message = (
