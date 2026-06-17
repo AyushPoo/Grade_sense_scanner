@@ -44,30 +44,15 @@ export function minimumEdgeLengthValid(
 }
 
 export function getFallbackA4Quad(width: number, height: number): Quadrilateral {
-  const isPortrait = width < height;
-  if (isPortrait) {
-    const targetH = height * 0.82;
-    const targetW = Math.min(width * 0.88, targetH / 1.4142);
-    const actualH = targetW * 1.4142;
-    const padX = (width - targetW) / 2;
-    const padY = (height - actualH) / 2;
-    return {
-      topLeft:     { x: padX, y: padY },
-      topRight:    { x: width - padX, y: padY },
-      bottomRight: { x: width - padX, y: height - padY },
-      bottomLeft:  { x: padX, y: height - padY }
-    };
-  } else {
-    const targetW = width * 0.82;
-    const targetH = Math.min(height * 0.88, targetW / 1.4142);
-    const actualW = targetH * 1.4142;
-    const padX = (width - actualW) / 2;
-    const padY = (height - targetH) / 2;
-    return {
-      topLeft:     { x: padX, y: padY },
-      topRight:    { x: width - padX, y: padY },
-      bottomRight: { x: width - padX, y: height - padY },
-      bottomLeft:  { x: padX, y: height - padY }
-    };
-  }
+  // Non-destructive fallback: return the full image with a tiny 2% margin.
+  // This prevents cutting off document text when the document is off-center or detection fails.
+  const padX = width * 0.02;
+  const padY = height * 0.02;
+  return {
+    topLeft:     { x: padX, y: padY },
+    topRight:    { x: width - padX, y: padY },
+    bottomRight: { x: width - padX, y: height - padY },
+    bottomLeft:  { x: padX, y: height - padY }
+  };
 }
+
