@@ -84,6 +84,7 @@ def build_managed_exams(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
             "gradingMode": row.get("grading_mode"),
             "customInstructions": row.get("grading_instructions") or "",
             "feedbackEnabled": row.get("feedback_enabled"),
+            "annotationsEnabled": bool(row.get("annotations_enabled")) if row.get("annotations_enabled") is not None else False,
             "resultsPublished": bool(row.get("results_published")),
             "publishedAt": as_iso(row.get("published_at")),
             "submissionCount": int(row.get("submission_count") or 0),
@@ -119,5 +120,8 @@ def normalize_exam_update_payload(data: dict[str, Any]) -> dict[str, Any]:
         status = str(data.get("status") or "").strip().lower()
         if status in VALID_EXAM_STATUSES:
             payload["status"] = status
+
+    if "annotationsEnabled" in data or "annotations_enabled" in data:
+        payload["annotations_enabled"] = bool(data.get("annotationsEnabled", data.get("annotations_enabled")))
 
     return payload

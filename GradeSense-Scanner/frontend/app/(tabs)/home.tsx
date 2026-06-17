@@ -8,6 +8,7 @@ import {
   RefreshControl,
   Animated,
   Alert,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -428,6 +429,9 @@ export default function HomeScreen() {
   const { savedSessions, fetchSessions } = useScanStore();
   const [refreshing, setRefreshing] = useState(false);
   const [gradingProgress, setGradingProgress] = useState<Record<string, { progress: number, processed: number, total: number, status: string, type?: string, error?: string | null }>>({});
+  const hasAcceptedDPDPConsent = useAuthStore(state => state.hasAcceptedDPDPConsent);
+  const setHasAcceptedDPDPConsent = useAuthStore(state => state.setHasAcceptedDPDPConsent);
+  const [localConsentChecked, setLocalConsentChecked] = useState(false);
   const [exams, setExams] = useState<any[]>([]);
   const [dismissedExamIds, setDismissedExamIds] = useState<string[]>([]);
   const [retryingExamIds, setRetryingExamIds] = useState<string[]>([]);
@@ -587,7 +591,8 @@ export default function HomeScreen() {
 
   const firstName = user?.name?.split(' ')[0] || 'Teacher';
   const visibleStatusSessions = sessions.filter(session =>
-    shouldShowGradingStatus(session, gradingProgress[session.session_id])
+    shouldShowGradingStatus(session, gradingProgress[session.session_id]) &&
+    (!session.exam_id || !dismissedExamIds.includes(String(session.exam_id)))
   );
   const readyExams = exams.filter(exam => !dismissedExamIds.includes(String(exam.id)));
 
@@ -597,6 +602,18 @@ export default function HomeScreen() {
     setDismissedExamIds(nextDismissed);
     AsyncStorage.setItem('gradesense.dismissedReviewExamIds', JSON.stringify(nextDismissed)).catch(() => {});
     router.push({ pathname: '/review-grading' as any, params: { examId: exam.id, sessionName: exam.name } });
+  };
+
+  const openCompletedGradingSession = async (session: any) => {
+    if (!session.exam_id) return;
+    const examId = String(session.exam_id);
+    const nextDismissed = Array.from(new Set([...dismissedExamIds, examId]));
+    setDismissedExamIds(nextDismissed);
+    AsyncStorage.setItem('gradesense.dismissedReviewExamIds', JSON.stringify(nextDismissed)).catch(() => {});
+    router.push({
+      pathname: '/review-grading' as any,
+      params: { examId: session.exam_id, sessionName: session.session_name }
+    });
   };
 
   const retryGrading = async (session: any) => {
@@ -703,10 +720,7 @@ export default function HomeScreen() {
                       job={job}
                       onRetry={() => retryGrading(session)}
                       isRetrying={retryingExamIds.includes(String(session.exam_id))}
-                      onPress={isComplete ? () => router.push({
-                        pathname: '/review-grading' as any,
-                        params: { examId: session.exam_id, sessionName: session.session_name }
-                      }) : undefined}
+                      onPress={isComplete ? () => openCompletedGradingSession(session) : undefined}
                     />
                   );
                 })}
@@ -786,6 +800,63 @@ export default function HomeScreen() {
 
         <View style={{ height: 32 }} />
       </ScrollView>
+
+      {/* DPDP Act 2023 Consent Modal */}
+      <Modal
+        visible={!hasAcceptedDPDPConsent}
+        transparent={true}
+        animationType="fade"
+      >
+        <View style={styles.consentModalOverlay}>
+          <View style={styles.consentModalContent}>
+            <View style={styles.consentHeader}>
+              <View style={styles.consentIconBadge}>
+                <Ionicons name="shield-checkmark" size={32} color={COLORS.primary} />
+              </View>
+              <Text style={styles.consentModalTitle}>Legal Compliance Confirmation</Text>
+            </View>
+
+            <ScrollView style={styles.consentBody} showsVerticalScrollIndicator={false}>
+              <Text style={styles.consentNoticeText}>
+                In accordance with the Digital Personal Data Protection (DPDP) Act, 2023 of India, educational institutions and educators acting as Data Fiduciaries are responsible for securing appropriate parental/guardian consent before uploading or processing the personal data and academic records of minors.
+              </Text>
+              <Text style={styles.consentNoticeText}>
+                GradeSense operates solely as a Data Processor and evaluates papers strictly under your direction.
+              </Text>
+
+              <TouchableOpacity
+                style={styles.consentCheckboxRow}
+                onPress={() => setLocalConsentChecked(!localConsentChecked)}
+                activeOpacity={0.8}
+              >
+                <View style={[
+                  styles.consentCheckbox,
+                  localConsentChecked && styles.consentCheckboxChecked
+                ]}>
+                  {localConsentChecked && (
+                    <Ionicons name="checkmark" size={16} color="#fff" />
+                  )}
+                </View>
+                <Text style={styles.consentCheckboxLabel}>
+                  I confirm that my school/institution has obtained the required student/parental consent under the DPDP Act, 2023 for uploading and processing academic papers on GradeSense.
+                </Text>
+              </TouchableOpacity>
+            </ScrollView>
+
+            <TouchableOpacity
+              style={[
+                styles.consentConfirmBtn,
+                !localConsentChecked && styles.consentConfirmBtnDisabled
+              ]}
+              disabled={!localConsentChecked}
+              onPress={() => setHasAcceptedDPDPConsent(true)}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.consentConfirmBtnText}>CONFIRM & CONTINUE</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -983,5 +1054,101 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 11,
     fontWeight: '700',
+  },
+  // Consent Modal Styles
+  consentModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  consentModalContent: {
+    backgroundColor: COLORS.background,
+    borderRadius: 24,
+    width: '100%',
+    maxHeight: '85%',
+    padding: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  consentHeader: {
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  consentIconBadge: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: COLORS.primaryXLight,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  consentModalTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: COLORS.text,
+    textAlign: 'center',
+  },
+  consentBody: {
+    marginBottom: 24,
+  },
+  consentNoticeText: {
+    fontSize: 14,
+    color: COLORS.textLight,
+    lineHeight: 20,
+    marginBottom: 14,
+  },
+  consentCheckboxRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: COLORS.backgroundDark,
+    borderRadius: 12,
+    padding: 12,
+    marginTop: 8,
+    gap: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  consentCheckbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: COLORS.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
+  consentCheckboxChecked: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  consentCheckboxLabel: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.text,
+    lineHeight: 18,
+  },
+  consentConfirmBtn: {
+    backgroundColor: COLORS.primary,
+    paddingVertical: 16,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  consentConfirmBtnDisabled: {
+    backgroundColor: COLORS.textMuted,
+  },
+  consentConfirmBtnText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
+    letterSpacing: 0.5,
   },
 });

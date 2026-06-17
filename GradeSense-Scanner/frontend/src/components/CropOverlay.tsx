@@ -12,8 +12,7 @@ import { Image as ExpoImage } from 'expo-image';
 import { Quadrilateral } from '../utils/cvProcessor';
 import Svg, { Polygon, Line, Circle } from 'react-native-svg';
 import * as ImageManipulator from 'expo-image-manipulator';
-import { isConvexQuad, hasConsistentWinding, minimumEdgeLengthValid } from '../utils/geometryUtils';
-import { evaluateAutoCropCandidate } from '../utils/cropQuality';
+import { isConvexQuad, hasConsistentWinding, minimumEdgeLengthValid, getFallbackA4Quad } from '../utils/geometryUtils';
 
 const ENABLE_MANUAL_CROP_VALIDATION = true;
 const ENABLE_EXIF_NORMALIZATION = true;
@@ -27,6 +26,8 @@ interface CropOverlayProps {
 
 const CORNER_HIT_SIZE = 52; // touch target size
 const CORNER_DOT_SIZE = 22; // visual dot size
+const LOUPE_SIZE = 120;
+const ZOOM_FACTOR = 2.5;
 
 type Corner = keyof Quadrilateral;
 
@@ -36,6 +37,7 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
     const [imageDims, setImageDims] = useState<{ width: number; height: number } | null>(null);
     const [containerDims, setContainerDims] = useState<{ width: number; height: number; scale: number } | null>(null);
     const [points, setPoints] = useState<Quadrilateral | null>(null);
+    const [activeCorner, setActiveCorner] = useState<Corner | null>(null);
 
     // All refs that PanResponders need to see up-to-date
     const pointsRef = useRef<Quadrilateral | null>(null);
@@ -103,9 +105,7 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
                 p.y < -finalHeight * 0.1 || p.y > finalHeight * 1.1
             );
 
-            const initialCropGate = evaluateAutoCropCandidate(rawQ, { width: finalWidth, height: finalHeight });
-
-            if (isOffScreen || !initialCropGate.accepted || (ENABLE_MANUAL_CROP_VALIDATION && (!isConvexQuad(rawQ) || !hasConsistentWinding(rawQ)))) {
+            if (isOffScreen || (ENABLE_MANUAL_CROP_VALIDATION && (!isConvexQuad(rawQ) || !hasConsistentWinding(rawQ)))) {
                 console.warn("[CropOverlay] initialQuad is invalid or off-screen. Falling back to default pad.");
                 applyFallback();
             } else {
@@ -127,14 +127,7 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
         }
 
         function applyFallback() {
-            const padX = finalWidth * 0.08;
-            const padY = finalHeight * 0.08;
-            const q = {
-                topLeft:     { x: padX,               y: padY },
-                topRight:    { x: finalWidth - padX,  y: padY },
-                bottomRight: { x: finalWidth - padX,  y: finalHeight - padY },
-                bottomLeft:  { x: padX,               y: finalHeight - padY },
-            };
+            const q = getFallbackA4Quad(finalWidth, finalHeight);
             setPoints(q);
             pointsRef.current = q;
         }
@@ -148,6 +141,7 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
             const corner = activeCornerRef.current;
             if (!corner || !pointsRef.current) return;
             dragStartRef.current = { ...pointsRef.current[corner] };
+            setActiveCorner(corner);
         },
         onPanResponderMove: (evt, gestureState) => {
             const corner = activeCornerRef.current;
@@ -175,10 +169,12 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
         onPanResponderRelease: () => {
             activeCornerRef.current = null;
             dragStartRef.current = null;
+            setActiveCorner(null);
         },
         onPanResponderTerminate: () => {
             activeCornerRef.current = null;
             dragStartRef.current = null;
+            setActiveCorner(null);
         },
     }), []); // created once, reads everything from refs
 
@@ -217,6 +213,49 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
         { corner: 'bottomRight', p: points.bottomRight },
         { corner: 'bottomLeft',  p: points.bottomLeft },
     ];
+
+    const activePoint = activeCorner ? points[activeCorner] : null;
+    let loupeStyle: any = null;
+    let zoomedImageStyle: any = null;
+
+    if (activeCorner && activePoint) {
+        const px = activePoint.x;
+        const py = activePoint.y;
+
+        const offset = 45; // gap above/below touch point
+        const preferredY = py - LOUPE_SIZE - offset;
+        const loupeY = preferredY >= 10 ? preferredY : py + offset;
+
+        const loupeX = Math.max(10, Math.min(px - LOUPE_SIZE / 2, containerDims.width - LOUPE_SIZE - 10));
+        const clampedY = Math.max(10, Math.min(loupeY, containerDims.height - LOUPE_SIZE - 10));
+
+        loupeStyle = {
+            position: 'absolute',
+            left: loupeX,
+            top: clampedY,
+            width: LOUPE_SIZE,
+            height: LOUPE_SIZE,
+            borderRadius: LOUPE_SIZE / 2,
+            borderWidth: 2,
+            borderColor: '#2196F3',
+            backgroundColor: '#000',
+            overflow: 'hidden',
+            elevation: 8,
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 4 },
+            shadowOpacity: 0.4,
+            shadowRadius: 5,
+            zIndex: 9999,
+        };
+
+        zoomedImageStyle = {
+            position: 'absolute',
+            width: containerDims.width * ZOOM_FACTOR,
+            height: containerDims.height * ZOOM_FACTOR,
+            left: -px * ZOOM_FACTOR + LOUPE_SIZE / 2,
+            top: -py * ZOOM_FACTOR + LOUPE_SIZE / 2,
+        };
+    }
 
     return (
         <View style={styles.root}>
@@ -286,6 +325,21 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
                             ]}
                         />
                     ))}
+
+                    {/* Magnifying glass loupe */}
+                    {activeCorner && activePoint && (
+                        <View style={loupeStyle} pointerEvents="none">
+                            <ExpoImage
+                                source={{ uri: normalizedImageUri || imageUri }}
+                                style={zoomedImageStyle}
+                                contentFit="fill"
+                            />
+                            {/* Crosshair lines */}
+                            <View style={styles.crosshairV} />
+                            <View style={styles.crosshairH} />
+                            <View style={styles.crosshairDot} />
+                        </View>
+                    )}
                 </View>
             </View>
 
@@ -317,4 +371,33 @@ const styles = StyleSheet.create({
     cornerHit:       { position: 'absolute', width: CORNER_HIT_SIZE, height: CORNER_HIT_SIZE },
     hint:            { paddingVertical: 14, alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.8)' },
     hintText:        { color: '#888', fontSize: 13 },
+    crosshairV: {
+        position: 'absolute',
+        left: LOUPE_SIZE / 2 - 0.5,
+        top: 0,
+        bottom: 0,
+        width: 1,
+        backgroundColor: '#2196F3',
+        opacity: 0.7,
+    },
+    crosshairH: {
+        position: 'absolute',
+        top: LOUPE_SIZE / 2 - 0.5,
+        left: 0,
+        right: 0,
+        height: 1,
+        backgroundColor: '#2196F3',
+        opacity: 0.7,
+    },
+    crosshairDot: {
+        position: 'absolute',
+        left: LOUPE_SIZE / 2 - 3,
+        top: LOUPE_SIZE / 2 - 3,
+        width: 6,
+        height: 6,
+        borderRadius: 3,
+        backgroundColor: '#2196F3',
+        borderWidth: 1,
+        borderColor: '#fff',
+    },
 });

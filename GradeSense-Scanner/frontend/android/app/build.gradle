@@ -57,7 +57,7 @@ react {
     // hermesCommand = "$rootDir/my-custom-hermesc/bin/hermesc"
     //
     //   The list of flags to pass to the Hermes compiler. By default is "-O", "-output-source-map"
-    hermesFlags = ["-O"]
+    // hermesFlags = ["-O", "-output-source-map"]
 
     /* Autolinking */
     autolinkLibrariesWithApp()
@@ -81,6 +81,8 @@ def enableMinifyInReleaseBuilds = (findProperty('android.enableMinifyInReleaseBu
  */
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 
+apply from: new File(["node", "--print", "require('path').dirname(require.resolve('@sentry/react-native/package.json'))"].execute().text.trim(), "sentry.gradle")
+
 android {
     ndkVersion rootProject.ext.ndkVersion
 
@@ -92,8 +94,8 @@ android {
         applicationId 'com.ayushp123.gradesensescanner'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 56
-        versionName "1.0.48"
+        versionCode 86
+        versionName "1.0.86"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }
@@ -105,16 +107,16 @@ android {
             keyPassword 'android'
         }
         release {
-            def uploadStoreFile = System.getenv("GRADESENSE_UPLOAD_STORE_FILE")
-            def uploadStorePassword = System.getenv("GRADESENSE_UPLOAD_STORE_PASSWORD")
-            def uploadKeyAlias = System.getenv("GRADESENSE_UPLOAD_KEY_ALIAS")
-            def uploadKeyPassword = System.getenv("GRADESENSE_UPLOAD_KEY_PASSWORD")
-
-            if (uploadStoreFile && uploadStorePassword && uploadKeyAlias && uploadKeyPassword) {
-                storeFile file(uploadStoreFile)
-                storePassword uploadStorePassword
-                keyAlias uploadKeyAlias
-                keyPassword uploadKeyPassword
+            if (System.getenv("GRADESENSE_UPLOAD_STORE_FILE") != null) {
+                storeFile file(System.getenv("GRADESENSE_UPLOAD_STORE_FILE"))
+                storePassword System.getenv("GRADESENSE_UPLOAD_STORE_PASSWORD")
+                keyAlias System.getenv("GRADESENSE_UPLOAD_KEY_ALIAS")
+                keyPassword System.getenv("GRADESENSE_UPLOAD_KEY_PASSWORD")
+            } else {
+                storeFile file('debug.keystore')
+                storePassword 'android'
+                keyAlias 'androiddebugkey'
+                keyPassword 'android'
             }
         }
     }
@@ -123,6 +125,8 @@ android {
             signingConfig signingConfigs.debug
         }
         release {
+            // Caution! In production, you need to generate your own keystore file.
+            // see https://reactnative.dev/docs/signed-apk-android.
             signingConfig signingConfigs.release
             def enableShrinkResources = findProperty('android.enableShrinkResourcesInReleaseBuilds') ?: 'false'
             shrinkResources enableShrinkResources.toBoolean()
@@ -193,12 +197,6 @@ dependencies {
         implementation jscFlavor
     }
 }
-
-
-
-
-
-
 
 
 

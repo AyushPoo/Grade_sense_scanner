@@ -1332,7 +1332,10 @@ function getAngle(A: Point, B: Point, C: Point): number {
  * Returns the URI of the grayscale file.
  * Falls back to the original URI if OpenCV conversion fails.
  */
-export async function convertToGrayscale(imageUri: string): Promise<string> {
+export async function convertToGrayscale(
+  imageUri: string,
+  options?: { compress?: number; maxWidth?: number }
+): Promise<string> {
   let srcMat: any = null;
   let grayMat: any = null;
   let resizedUri: string | null = null;
@@ -1340,10 +1343,12 @@ export async function convertToGrayscale(imageUri: string): Promise<string> {
   try {
     const tStart = performance.now();
     // 1. Resize and save to disk
+    const compress = options?.compress ?? 0.85;
+    const maxWidth = options?.maxWidth ?? 1200;
     const resized = await ImageManipulator.manipulateAsync(
       imageUri,
-      [{ resize: { width: 1200 } }],
-      { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG, base64: false }
+      [{ resize: { width: maxWidth } }],
+      { compress: compress, format: ImageManipulator.SaveFormat.JPEG, base64: false }
     );
     const tResize = performance.now() - tStart;
 
@@ -1409,11 +1414,15 @@ export type FilterMode = 'original' | 'grayscale' | 'high_contrast' | 'adaptive_
  * adaptive_threshold → Full binarization. Converts to pure black text on white.
  *                      Best for typed text, printed documents, and Tesseract/Google OCR.
  */
-export async function applyFilter(imageUri: string, mode: FilterMode): Promise<string> {
+export async function applyFilter(
+  imageUri: string,
+  mode: FilterMode,
+  options?: { compress?: number; maxWidth?: number }
+): Promise<string> {
   if (mode === 'original') return imageUri;
 
   if (mode === 'grayscale') {
-    return convertToGrayscale(imageUri);
+    return convertToGrayscale(imageUri, options);
   }
 
   let srcMat: any = null;   // 4-channel RGBA decoded from JPEG
@@ -1427,10 +1436,12 @@ export async function applyFilter(imageUri: string, mode: FilterMode): Promise<s
 
   try {
     const tStart = performance.now();
+    const compress = options?.compress ?? 0.90;
+    const maxWidth = options?.maxWidth ?? 1600;
     const resized = await ImageManipulator.manipulateAsync(
       imageUri,
-      [{ resize: { width: 1600 } }],
-      { compress: 0.90, format: ImageManipulator.SaveFormat.JPEG, base64: false }
+      [{ resize: { width: maxWidth } }],
+      { compress: compress, format: ImageManipulator.SaveFormat.JPEG, base64: false }
     );
     const tResize = performance.now() - tStart;
     resizedUri = resized.uri;

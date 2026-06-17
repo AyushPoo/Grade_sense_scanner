@@ -2,7 +2,7 @@
   "expo": {
     "name": "GradeSense",
     "slug": "gradesense-scanner",
-    "version": "1.0.31",
+    "version": "1.0.86",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": [
@@ -26,6 +26,7 @@
       }
     },
     "android": {
+      "versionCode": 86,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#FFFFFF"
@@ -41,7 +42,10 @@
         "android.permission.ACCESS_NETWORK_STATE",
         "android.permission.WAKE_LOCK"
       ],
-      "package": "com.ayushp123.gradesensescanner"
+      "package": "com.ayushp123.gradesensescanner",
+      "gradleProperties": {
+        "org.gradle.jvmargs": "-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError"
+      }
     },
     "web": {
       "bundler": "metro",
@@ -55,7 +59,7 @@
         "expo-splash-screen",
         {
           "image": "./assets/images/splash-icon.png",
-          "imageWidth": 320,
+          "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#FFFFFF"
         }
@@ -90,7 +94,14 @@
           ]
         }
       ],
-      "expo-web-browser"
+      "expo-web-browser",
+      [
+        "@sentry/react-native",
+        {
+          "organization": "ayush-poo",
+          "project": "gradesense-scanner"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
@@ -103,3 +114,19 @@
     }
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

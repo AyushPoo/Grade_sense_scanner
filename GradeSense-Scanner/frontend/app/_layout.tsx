@@ -6,8 +6,21 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useAuthStore } from '../src/store/authStore';
 import { useScanStore } from '../src/store/scanStore';
 import { roleHomeRoute, shouldRedirectRoleGroup } from '../src/utils/roleRouting';
+import * as Sentry from '@sentry/react-native';
+import { fetchWithTimeout } from '../src/utils/fetchWithTimeout';
 
-export default function RootLayout() {
+// ── Sentry Crash Reporting ────────────────────────────────────────────────────
+// Initialised once at module load, before any React tree mounts.
+// Disabled in __DEV__ to avoid polluting the production project during development.
+const sentryDsn = process.env.EXPO_PUBLIC_SENTRY_DSN;
+Sentry.init({
+  dsn: sentryDsn || '',
+  environment: __DEV__ ? 'development' : 'production',
+  tracesSampleRate: 0.2, // capture 20% of transactions for performance monitoring
+  enabled: !__DEV__ && !!sentryDsn,
+});
+
+function RootLayout() {
   const segments = useSegments();
   const router = useRouter();
   const navigationState = useRootNavigationState();
@@ -23,6 +36,27 @@ export default function RootLayout() {
   const isAppReady = authHasHydrated && scanHasHydrated && !!navigationState?.key;
 
   console.log(`[TRACE] RootLayout: rendering at ${Date.now()}. isAppReady: ${isAppReady}, isAuthenticated: ${isAuthenticated}, segments: ${JSON.stringify(segments)}`);
+
+  // ── Cloud Run Warmup Ping ─────────────────────────────────────────────────
+  // Fires immediately on app mount (before any navigation).
+  // Cloud Run scales to zero when idle; first request after a cold start can
+  // take 10–15 s. This silent GET to the health route warms the DocAligner
+  // instance so it is ready by the time the teacher opens the scanner (~30–60 s
+  // after app launch).
+  useEffect(() => {
+    const doctrUrl = process.env.EXPO_PUBLIC_DOCTR_URL;
+    if (!doctrUrl) return;
+    const warmUp = async () => {
+      try {
+        await fetchWithTimeout(`${doctrUrl}/`, {}, 8000);
+        console.log('[Warmup] DocAligner Cloud Run instance is warm.');
+      } catch (_) {
+        // Silent — warmup failure is non-critical; DocAligner will still be
+        // called on the first scan, just with a cold-start latency penalty.
+      }
+    };
+    warmUp();
+  }, []);
 
   // 1. BOOTSTRAP SEQUENCE: Side effects only after full hydration
   useEffect(() => {
@@ -100,4 +134,6 @@ export default function RootLayout() {
   );
 }
 
-
+// Wrap with Sentry for automatic crash boundary, breadcrumb tracking,
+// and navigation transaction instrumentation.
+export default Sentry.wrap(RootLayout);

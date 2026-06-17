@@ -62,8 +62,12 @@ interface ScanState {
   pendingRetake: PendingRetake | null;
   hasHydrated: boolean;
 
+  // Upload queue state
+  uploadQueue: string[];
+  isProcessingQueue: boolean;
+
   // Actions
-  addPage: (page: ScannedPage) => void;
+  addPage: (page: ScannedPage, phaseOverride?: ScanPhase, studentIndexOverride?: number) => void;
   removePage: (pageNumber: number, phase?: string, studentIndex?: number) => void;
   undoLastPage: () => void;
   setCurrentPhase: (phase: 'question_paper' | 'model_answer' | 'students') => void;
@@ -74,6 +78,19 @@ interface ScanState {
   clearCurrentSession: () => void;
   deleteSession: (sessionId: string) => Promise<void>;
   loadSession: (sessionId: string) => void;
+  updatePageUrls: (
+    sessionId: string,
+    pageId: string,
+    phase: ScanPhase,
+    studentIndex: number | undefined,
+    urls: {
+      file_url?: string;
+      raw_file_url?: string;
+      content_type?: string;
+      original_name?: string;
+      sync_status?: 'synced' | 'unsynced' | 'failed';
+    }
+  ) => void;
   prepareSessionForScanning: (sessionId: string, phase: ScanPhase) => void;
   updateSessionStatus: (sessionId: string, status: ScanSession['status'], progress: number, examId?: string) => void;
   fetchSessions: () => Promise<void>;
@@ -106,6 +123,8 @@ interface ScanState {
   checkFileSystemIntegrity: () => Promise<void>;
   setHasHydrated: (val: boolean) => void;
   performPostHydrationCleanup: () => Promise<void>;
+  addToUploadQueue: (sessionId: string) => void;
+  processUploadQueue: () => Promise<void>;
   // Batch actions
   addBatch: (batch: Batch) => void;
   deleteBatch: (batchId: string) => void;
@@ -235,8 +254,63 @@ export const useScanStore = create<ScanState>()(
       autoCropEnabled: false,
       pendingRetake: null,
       hasHydrated: false,
+      uploadQueue: [],
+      isProcessingQueue: false,
 
       setHasHydrated: (val) => set({ hasHydrated: val }),
+
+      addToUploadQueue: (sessionId: string) => {
+        const { uploadQueue } = get();
+        if (!uploadQueue.includes(sessionId)) {
+          set({ uploadQueue: [...uploadQueue, sessionId] });
+        }
+        get().processUploadQueue().catch(err => {
+          console.error('[Queue] Error processing queue:', err);
+        });
+      },
+
+      processUploadQueue: async () => {
+        const { uploadQueue, isProcessingQueue } = get();
+        if (isProcessingQueue || uploadQueue.length === 0) return;
+
+        set({ isProcessingQueue: true });
+        
+        try {
+          const { uploadSessionToWebApp } = await import('../api/export');
+          
+          while (get().uploadQueue.length > 0) {
+            const queue = get().uploadQueue;
+            const nextSessionId = queue[0];
+            const session = get().savedSessions.find(s => s.session_id === nextSessionId);
+            if (!session) {
+              set(state => ({
+                uploadQueue: state.uploadQueue.filter(id => id !== nextSessionId)
+              }));
+              continue;
+            }
+
+            try {
+              get().updateSessionStatus(nextSessionId, 'uploading', 0);
+              
+              await uploadSessionToWebApp(session, (currentItem, progress) => {
+                // Progress is already updated via updateSessionStatus in uploadSessionToWebApp
+              });
+
+              set(state => ({
+                uploadQueue: state.uploadQueue.filter(id => id !== nextSessionId)
+              }));
+            } catch (err) {
+              console.error(`[Queue] Failed uploading session ${nextSessionId}:`, err);
+              set(state => ({
+                uploadQueue: state.uploadQueue.filter(id => id !== nextSessionId)
+              }));
+              get().updateSessionStatus(nextSessionId, 'failed', 0);
+            }
+          }
+        } finally {
+          set({ isProcessingQueue: false });
+        }
+      },
 
       createSession: async (
         name: string,
@@ -347,19 +421,25 @@ export const useScanStore = create<ScanState>()(
         }
       },
 
-      addPage: (page) => {
+      addPage: (page, phaseOverride, studentIndexOverride) => {
         const { currentSession, currentPhase, currentStudentIndex, savedSessions, pendingRetake } = get();
         if (!currentSession) return;
+
+        // Use snapshot values from shutter-release if provided, otherwise fall back to
+        // current live store state. This prevents race conditions where the user
+        // changes phase or student between capture and processing completion.
+        const effectivePhase: ScanPhase = phaseOverride ?? currentPhase;
+        const effectiveStudentIndex: number = studentIndexOverride ?? currentStudentIndex;
 
         // IDENTITY PROTECTION: Prevent duplicate page insertions by ID
         const isDuplicate = (pages: ScannedPage[]) => (pages || []).some(p => p.id === page.id);
 
         const updatedSession = { ...currentSession };
 
-        // GUARD: ensure the current student slot exists
-        if (currentPhase === 'students' && !updatedSession.students[currentStudentIndex]) {
+        // GUARD: ensure the effective student slot exists
+        if (effectivePhase === 'students' && !updatedSession.students[effectiveStudentIndex]) {
           const students = [...updatedSession.students];
-          while (students.length <= currentStudentIndex) {
+          while (students.length <= effectiveStudentIndex) {
             students.push({
               id: generateUUID(),
               student_index: students.length,
@@ -417,14 +497,14 @@ export const useScanStore = create<ScanState>()(
           // ==========================================
           // NORMAL APPEND FLOW
           // ==========================================
-          if (currentPhase === 'question_paper') {
+          if (effectivePhase === 'question_paper') {
             if (!updatedSession.question_paper.pages) updatedSession.question_paper.pages = [];
             if (isDuplicate(updatedSession.question_paper.pages)) return;
             page.page_number = updatedSession.question_paper.pages.length + 1;
             page.ui_id = `${updatedSession.session_id}_qp_${page.file_path}`;
             updatedSession.question_paper.pages = [...updatedSession.question_paper.pages, page];
             updatedSession.question_paper.page_count = updatedSession.question_paper.pages.length;
-          } else if (currentPhase === 'model_answer') {
+          } else if (effectivePhase === 'model_answer') {
             if (!updatedSession.model_answer.pages) updatedSession.model_answer.pages = [];
             if (isDuplicate(updatedSession.model_answer.pages)) return;
             page.page_number = updatedSession.model_answer.pages.length + 1;
@@ -433,7 +513,7 @@ export const useScanStore = create<ScanState>()(
             updatedSession.model_answer.page_count = updatedSession.model_answer.pages.length;
           } else {
             const updatedStudents = [...(updatedSession.students || [])];
-            const student = { ...updatedStudents[currentStudentIndex] };
+            const student = { ...updatedStudents[effectiveStudentIndex] };
             if (student) {
               if (!student.pages) student.pages = [];
               if (isDuplicate(student.pages)) return;
@@ -442,7 +522,7 @@ export const useScanStore = create<ScanState>()(
               student.pages = [...student.pages, page];
               student.page_count = student.pages.length;
               if (page.is_blurry) student.has_blurry_pages = true;
-              updatedStudents[currentStudentIndex] = student;
+              updatedStudents[effectiveStudentIndex] = student;
               updatedSession.students = updatedStudents;
             }
           }
@@ -756,6 +836,66 @@ export const useScanStore = create<ScanState>()(
           currentSession: currentSession?.session_id === oldId
             ? updateSessionObj(currentSession)
             : currentSession,
+        });
+      },
+
+      updatePageUrls: (sessionId, pageId, phase, studentIndex, urls) => {
+        const { currentSession, savedSessions } = get();
+        const targetSession = currentSession?.session_id === sessionId 
+          ? currentSession 
+          : savedSessions.find(s => s.session_id === sessionId);
+        
+        if (!targetSession) return;
+        const updatedSession = { ...targetSession };
+
+        const updatePageInArray = (pages: ScannedPage[]) => {
+          const idx = pages.findIndex(p => p.id === pageId);
+          if (idx > -1) {
+            pages[idx] = { 
+              ...pages[idx], 
+              ...urls 
+            };
+            return true;
+          }
+          return false;
+        };
+
+        let updated = false;
+        if (phase === 'question_paper') {
+          const pages = [...updatedSession.question_paper.pages];
+          updated = updatePageInArray(pages);
+          if (updated) {
+            updatedSession.question_paper.pages = pages;
+          }
+        } else if (phase === 'model_answer') {
+          const pages = [...updatedSession.model_answer.pages];
+          updated = updatePageInArray(pages);
+          if (updated) {
+            updatedSession.model_answer.pages = pages;
+          }
+        } else {
+          const idx = studentIndex ?? get().currentStudentIndex;
+          const student = updatedSession.students[idx];
+          if (student) {
+            const studentCopy = { ...student };
+            const pages = [...studentCopy.pages];
+            updated = updatePageInArray(pages);
+            if (updated) {
+              studentCopy.pages = pages;
+              updatedSession.students[idx] = studentCopy;
+            }
+          }
+        }
+
+        if (!updated) return;
+
+        const newSavedSessions = savedSessions.map(s => 
+          s.session_id === sessionId ? updatedSession : s
+        );
+
+        set({
+          savedSessions: newSavedSessions,
+          currentSession: currentSession?.session_id === sessionId ? updatedSession : currentSession,
         });
       },
 
@@ -1293,11 +1433,15 @@ export const useScanStore = create<ScanState>()(
         const state = get();
         console.log(`[TRACE] performPostHydrationCleanup: START at ${Date.now()}`);
 
-        // 1. Hardening: Reset interrupted uploads (moved from hydration callback)
-        if (state.currentSession?.status === 'uploading') {
-          console.log('[Persistence] Resetting stuck "uploading" session status');
-          state.updateSessionStatus(state.currentSession.session_id, 'scanning', 0);
-        }
+        // 1. Hardening: Reset interrupted uploads and place them back in the queue
+        let resumedAny = false;
+        state.savedSessions.forEach(s => {
+          if (s.status === 'uploading' || s.status === 'syncing') {
+            console.log(`[Queue] Resuming stuck session ${s.session_id} in status ${s.status}`);
+            state.addToUploadQueue(s.session_id);
+            resumedAny = true;
+          }
+        });
 
         // 2. Scheduled Integrity Check
         await state.checkFileSystemIntegrity();
@@ -1583,7 +1727,7 @@ export const useScanStore = create<ScanState>()(
       })),
       partialize: (state) => {
         // HYDRATION ISOLATION: Do not persist hydration, transient UI flags, or retake context
-        const { hasHydrated, isScanning, pendingRetake, autoCropEnabled, ...persistentState } = state;
+        const { hasHydrated, isScanning, pendingRetake, autoCropEnabled, isProcessingQueue, ...persistentState } = state;
 
         // Deeply strip base64 from sessions before persisting
         const cleanupSession = (session: any) => {

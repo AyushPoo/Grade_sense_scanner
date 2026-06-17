@@ -142,12 +142,21 @@ def derive_scan_session_reconciliation(
     job_rows: Iterable[dict[str, Any]],
     submission_count: int,
     *,
+    exam_status: str | None = None,
     now: datetime | None = None,
     stale_after_seconds: int = 600,
 ) -> dict[str, Any] | None:
     status = str(session.get("status") or "")
     if status not in SYNCING_SESSION_STATUSES:
         return None
+
+    if exam_status and str(exam_status).lower() in ("graded", "published", "closed"):
+        return {
+            "status": "graded",
+            "grading_status": "completed",
+            "grading_progress": 100.0,
+            "last_sync_error": None,
+        }
 
     rows = list(job_rows)
     grading_job = select_primary_grading_job(rows)

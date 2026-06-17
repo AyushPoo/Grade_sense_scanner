@@ -11,11 +11,11 @@ $BundlePath = Join-Path $AndroidDir "app\build\outputs\bundle\release\app-releas
 $EnvPath = Join-Path $ProjectRoot ".env"
 $EnvBackupPath = Join-Path $ProjectRoot ".env.local-build-backup"
 $ReleaseEnvContent = @"
-EXPO_PUBLIC_BACKEND_URL="https://gradesense-scanner-backend.onrender.com"
+EXPO_PUBLIC_BACKEND_URL="https://grade-sense-scanner-323601156671.asia-south2.run.app"
 EXPO_PUBLIC_WEBAPP_URL="https://app.gradesense.in"
 EXPO_PUBLIC_GOOGLE_CLIENT_ID="952978433882-f15al0p4202d9m5lj7n7c1n1j25o7pcg.apps.googleusercontent.com"
 EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID="952978433882-paueq6l9gqjgioc5f22nlrggt9dp29o0.apps.googleusercontent.com"
-EXPO_PUBLIC_DOCTR_URL="https://grade-sense-scanner-323601156671.asia-south2.run.app"
+EXPO_PUBLIC_DOCTR_URL="https://gradesense-doctr-service-323601156671.asia-south2.run.app"
 "@
 
 if (-not (Test-Path $CredentialsPath)) {
@@ -46,6 +46,32 @@ $KeystorePath = Resolve-Path (Join-Path $ProjectRoot $Credentials.android.keysto
 $BuildGradlePath = Join-Path $AndroidDir "app\build.gradle"
 $BuildGradleContent = Get-Content $BuildGradlePath -Raw
 
+# Ensure release signing configuration is present in build.gradle
+if ($BuildGradleContent -notmatch "release\s*\{[^\}]*System\.getenv\(\`"GRADESENSE_UPLOAD_STORE_FILE\`"\)") {
+  Write-Host "Release signing config is missing or was wiped. Injecting release signing config..."
+  
+  # Inject the release block inside signingConfigs
+  $SigningConfigsMatch = [regex]::Match($BuildGradleContent, 'signingConfigs\s*\{')
+  if ($SigningConfigsMatch.Success) {
+    $InsertIndex = $SigningConfigsMatch.Index + $SigningConfigsMatch.Length
+    $ReleaseSigningConfig = "`r`n        release {`r`n            if (System.getenv(`"GRADESENSE_UPLOAD_STORE_FILE`") != null) {`r`n                storeFile file(System.getenv(`"GRADESENSE_UPLOAD_STORE_FILE`"))`r`n                storePassword System.getenv(`"GRADESENSE_UPLOAD_STORE_PASSWORD`")`r`n                keyAlias System.getenv(`"GRADESENSE_UPLOAD_KEY_ALIAS`")`r`n                keyPassword System.getenv(`"GRADESENSE_UPLOAD_KEY_PASSWORD`")`r`n            } else {`r`n                storeFile file('debug.keystore')`r`n                storePassword 'android'`r`n                keyAlias 'androiddebugkey'`r`n                keyPassword 'android'`r`n            }`r`n        }"
+    $BuildGradleContent = $BuildGradleContent.Insert($InsertIndex, $ReleaseSigningConfig)
+  }
+  
+  # Change signingConfig under buildTypes.release to use signingConfigs.release
+  $ReleaseBuildTypeRegex = 'release\s*\{[^}]*signingConfig\s+signingConfigs\.debug'
+  if ($BuildGradleContent -match $ReleaseBuildTypeRegex) {
+    $ReleaseBuildTypeMatch = [regex]::Match($BuildGradleContent, $ReleaseBuildTypeRegex)
+    if ($ReleaseBuildTypeMatch.Success) {
+       $NewReleaseBlock = $ReleaseBuildTypeMatch.Value -replace 'signingConfigs\.debug', 'signingConfigs.release'
+       $BuildGradleContent = $BuildGradleContent.Replace($ReleaseBuildTypeMatch.Value, $NewReleaseBlock)
+    }
+  }
+  
+  Set-Content -Path $BuildGradlePath -Value $BuildGradleContent
+  Write-Host "Successfully injected release signing config into build.gradle."
+}
+
 $VersionCode = [regex]::Match($BuildGradleContent, 'versionCode\s+(\d+)').Groups[1].Value
 $VersionName = [regex]::Match($BuildGradleContent, 'versionName\s+"([^"]+)"').Groups[1].Value
 
@@ -71,6 +97,16 @@ $BuildGradleContent = $BuildGradleContent -replace "versionCode\s+$VersionCode",
 $BuildGradleContent = $BuildGradleContent -replace "versionName\s+`"$VersionName`"", "versionName `"$NewVersionName`""
 Set-Content -Path $BuildGradlePath -Value $BuildGradleContent
 
+# Also update app.json so npx expo prebuild doesn't revert version numbers
+$AppJsonPath = Join-Path $ProjectRoot "app.json"
+if (Test-Path $AppJsonPath) {
+  $AppJsonContent = Get-Content $AppJsonPath -Raw
+  $AppJsonContent = $AppJsonContent -replace '"version":\s*"[^"]+"', "`"version`": `"$NewVersionName`""
+  $AppJsonContent = $AppJsonContent -replace '"versionCode":\s*\d+', "`"versionCode`": $NewVersionCode"
+  Set-Content -Path $AppJsonPath -Value $AppJsonContent
+  Write-Host "Updated app.json to version $NewVersionName and versionCode $NewVersionCode"
+}
+
 # Update local script variables with the newly incremented values
 $VersionCode = $NewVersionCode
 $VersionName = $NewVersionName
@@ -83,11 +119,17 @@ $env:GRADESENSE_UPLOAD_KEY_PASSWORD = $Credentials.android.keystore.keyPassword
 $env:NODE_ENV = "production"
 $env:GRADLE_OPTS = "-Dfile.encoding=UTF-8"
 $env:CMAKE_BUILD_PARALLEL_LEVEL = "1"
-$env:EXPO_PUBLIC_BACKEND_URL = "https://gradesense-scanner-backend.onrender.com"
+$env:EXPO_PUBLIC_BACKEND_URL = "https://grade-sense-scanner-323601156671.asia-south2.run.app"
 $env:EXPO_PUBLIC_WEBAPP_URL = "https://app.gradesense.in"
 $env:EXPO_PUBLIC_GOOGLE_CLIENT_ID = "952978433882-f15al0p4202d9m5lj7n7c1n1j25o7pcg.apps.googleusercontent.com"
 $env:EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID = "952978433882-paueq6l9gqjgioc5f22nlrggt9dp29o0.apps.googleusercontent.com"
-$env:EXPO_PUBLIC_DOCTR_URL = "https://grade-sense-scanner-323601156671.asia-south2.run.app"
+$env:EXPO_PUBLIC_DOCTR_URL = "https://gradesense-doctr-service-323601156671.asia-south2.run.app"
+
+# Disable Sentry auto-upload if credentials are not present in environment to prevent build failures
+if (-not $env:SENTRY_ORG -and -not $env:SENTRY_AUTH_TOKEN) {
+  $env:SENTRY_DISABLE_AUTO_UPLOAD = "true"
+  Write-Host "Sentry credentials not detected in environment. Disabling Sentry auto-upload for this build."
+}
 
 $GradleArgs = @("--no-daemon", "--no-parallel", "--max-workers=1", "-PreactNativeParallelCxxBuilds=false", "-Pandroid.cxxFlags=-g0")
 if ($Arm64Only) {

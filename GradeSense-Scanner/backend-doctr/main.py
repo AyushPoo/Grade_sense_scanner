@@ -93,6 +93,11 @@ def order_corners(pts):
     }
 
 
+@app.get("/")
+def read_root():
+    return {"status": "ok", "message": "GradeSense DocTr & DocAligner Service"}
+
+
 @app.get("/health")
 def health_check():
     return {
@@ -100,6 +105,100 @@ def health_check():
         "docaligner_loaded": aligner is not None,
         "doctr_loaded": doctr_loaded
     }
+
+
+def refine_quad_edges(img, quad_corners, search_dist=10, num_samples=15):
+    h, w, _ = img.shape
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    
+    pts = np.array(quad_corners, dtype=np.float32)
+    fitted_lines = []
+    
+    for i in range(4):
+        p1 = pts[i]
+        p2 = pts[(i + 1) % 4]
+        
+        v = p2 - p1
+        length = np.linalg.norm(v)
+        if length < 10:
+            return quad_corners
+            
+        u = v / length
+        n = np.array([-u[1], u[0]], dtype=np.float32)
+        
+        edge_points = []
+        for t in np.linspace(0.1, 0.9, num_samples):
+            s = p1 + t * v
+            gradients = []
+            positions = []
+            
+            for k in range(-search_dist, search_dist + 1):
+                pos = s + k * n
+                px, py = int(round(pos[0])), int(round(pos[1]))
+                
+                if 0 <= px < w and 0 <= py < h:
+                    positions.append(pos)
+                    pos_ahead = pos + n
+                    pos_behind = pos - n
+                    ax, ay = int(round(pos_ahead[0])), int(round(pos_ahead[1]))
+                    bx, by = int(round(pos_behind[0])), int(round(pos_behind[1]))
+                    
+                    if 0 <= ax < w and 0 <= ay < h and 0 <= bx < w and 0 <= by < h:
+                        # n points INSIDE the paper. So pos_ahead is inside, pos_behind is outside.
+                        # We want a transition from bright inside (paper) to darker outside (background).
+                        val_inside = float(gray[ay, ax])
+                        val_outside = float(gray[by, bx])
+                        if val_inside > 150 and val_inside > val_outside + 15:
+                            grad = val_inside - val_outside
+                        else:
+                            grad = 0.0
+                        gradients.append(grad)
+                    else:
+                        gradients.append(0.0)
+                else:
+                    gradients.append(0.0)
+                    positions.append(pos)
+            
+            if gradients:
+                max_idx = np.argmax(gradients)
+                if gradients[max_idx] > 10:
+                    edge_points.append(positions[max_idx])
+                    
+        if len(edge_points) >= num_samples // 2:
+            edge_points = np.array(edge_points, dtype=np.float32)
+            [vx, vy, x0, y0] = cv2.fitLine(edge_points, cv2.DIST_L2, 0, 0.01, 0.01)
+            fitted_lines.append((float(vx), float(vy), float(x0), float(y0)))
+        else:
+            vx, vy = u[0], u[1]
+            x0, y0 = p1[0], p1[1]
+            fitted_lines.append((float(vx), float(vy), float(x0), float(y0)))
+            
+    refined_corners = []
+    for i in range(4):
+        vx1, vy1, x1, y1 = fitted_lines[(i - 1) % 4]
+        vx2, vy2, x2, y2 = fitted_lines[i]
+        
+        A1, B1 = vy1, -vx1
+        C1 = vy1 * x1 - vx1 * y1
+        
+        A2, B2 = vy2, -vx2
+        C2 = vy2 * x2 - vx2 * y2
+        
+        det = A1 * B2 - A2 * B1
+        if abs(det) > 1e-5:
+            ix = (B2 * C1 - B1 * C2) / det
+            iy = (A1 * C2 - A2 * C1) / det
+            
+            orig = pts[i]
+            if np.hypot(ix - orig[0], iy - orig[1]) < search_dist * 1.5:
+                refined_corners.append([float(ix), float(iy)])
+            else:
+                refined_corners.append([float(orig[0]), float(orig[1])])
+        else:
+            refined_corners.append([float(pts[i][0]), float(pts[i][1])])
+            
+    return refined_corners
 
 
 @app.post("/detect-corners")
@@ -120,11 +219,19 @@ async def detect_corners(file: UploadFile = File(...)):
         # Returns a list of 4 points [[x, y], [x, y], [x, y], [x, y]]
         corners_list = aligner(img)
         
-        if not corners_list or len(corners_list) != 4:
+        if corners_list is None or len(corners_list) != 4:
             return {
                 "detected": False,
                 "message": "No document detected or corner counts mismatched"
             }
+            
+        # Refine corners with local edge refinement
+        # Bypassed to prevent bedsheet patterns and text gradients from warping/skewing deep learning corners.
+        # try:
+        #     refined_list = refine_quad_edges(img, corners_list)
+        #     corners_list = refined_list
+        # except Exception as ref_err:
+        #     print(f"[WARNING-REFINEMENT] Edge refinement failed, using raw corners: {ref_err}")
             
         # Order the corners deterministically
         ordered = order_corners(corners_list)
@@ -136,7 +243,10 @@ async def detect_corners(file: UploadFile = File(...)):
             "height": h
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        tb = traceback.format_exc()
+        print(f"[ERROR-DETECTION] Exception in detect-corners:\n{tb}")
+        raise HTTPException(status_code=500, detail=f"Exception: {str(e)}\n{tb}")
 
 
 @app.post("/dewarp")

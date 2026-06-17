@@ -3,6 +3,8 @@ import type { Quadrilateral } from './cvProcessor';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { File } from 'expo-file-system';
 import { fetchWithTimeout } from './fetchWithTimeout';
+import { getNetworkQuality } from './networkUtils';
+import * as Sentry from '@sentry/react-native';
 
 interface NativeDocQuadResult {
   detected?: boolean;
@@ -101,6 +103,38 @@ export async function detectTextOrientationAndBounds(
   }
 }
 
+/**
+ * fetchWithRetry — wraps fetchWithTimeout with a 2-attempt retry loop.
+ * Waits 500 ms between attempts. Throws the last error if both attempts fail.
+ */
+async function fetchWithRetry(
+  url: string,
+  body: FormData,
+  timeoutMs: number
+): Promise<Response> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const response = await fetchWithTimeout(
+        url,
+        { method: 'POST', body, headers: { Accept: 'application/json' } },
+        timeoutMs
+      );
+      if (response.ok) return response;
+      // Non-2xx responses: treat as retriable
+      lastErr = new Error(`DocAligner returned status ${response.status} on attempt ${attempt}`);
+      console.warn(`[DocAligner] Attempt ${attempt} got HTTP ${response.status}. ${attempt < 2 ? 'Retrying...' : 'Giving up.'}`);
+    } catch (err) {
+      lastErr = err;
+      console.warn(`[DocAligner] Attempt ${attempt} failed:`, err, attempt < 2 ? '— retrying in 500ms' : '— giving up');
+    }
+    if (attempt < 2) {
+      await new Promise(r => setTimeout(r, 500));
+    }
+  }
+  throw lastErr;
+}
+
 export async function detectDocumentWithDocAligner(
   imageUri: string
 ): Promise<DocQuadDetectionResult | null> {
@@ -110,21 +144,42 @@ export async function detectDocumentWithDocAligner(
     return null;
   }
 
+  // ── Network-adaptive image sizing ──────────────────────────────────────────
+  // On 2G/3G, use 480px to reduce payload. On WiFi/4G, use 720px for accuracy.
+  const networkQuality = await getNetworkQuality();
+  const isSlowNetwork = networkQuality === '2g' || networkQuality === '3g';
+  const uploadWidth = isSlowNetwork ? 480 : 720;
+  if (isSlowNetwork) {
+    console.log(`[DocAligner] Slow network (${networkQuality}) — using ${uploadWidth}px upload width`);
+  }
+
+  // Increase timeout on slow networks to give more room before falling back.
+  // On good networks DocAligner responds in 800ms–1.5s; 6 s covers 2G uploads.
+  const DOCALIGNER_TIMEOUT_MS = 6000;
+
   let uploadUri = imageUri;
   let manipulated: ImageManipulator.ImageResult | null = null;
-  
+
   try {
-    // Downscale image to max width 720px before upload to reduce payload size and latency.
-    // This reduces file size from 5-10MB to ~60KB, making network transmission instant.
+    // Downscale image before upload to reduce payload size and latency.
     manipulated = await ImageManipulator.manipulateAsync(
       imageUri,
-      [{ resize: { width: 720 } }],
+      [{ resize: { width: uploadWidth } }],
       { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG }
     );
     uploadUri = manipulated.uri;
   } catch (err) {
     console.warn('[DocAligner] Failed to downscale image for upload:', err);
   }
+
+  const cleanup = () => {
+    if (manipulated) {
+      try {
+        const fileObj = new File(manipulated!.uri);
+        if (fileObj.exists) fileObj.delete();
+      } catch (_) {}
+    }
+  };
 
   try {
     const formData = new FormData();
@@ -135,29 +190,13 @@ export async function detectDocumentWithDocAligner(
       type: 'image/jpeg',
     });
 
-    const response = await fetchWithTimeout(`${doctrUrl}/detect-corners`, {
-      method: 'POST',
-      body: formData,
-      headers: {
-        'Accept': 'application/json',
-      },
-    }, 1500);
+    const response = await fetchWithRetry(
+      `${doctrUrl}/detect-corners`,
+      formData,
+      DOCALIGNER_TIMEOUT_MS
+    );
 
-    // Clean up temporary downscaled file immediately after sending the request
-    if (manipulated) {
-      try {
-        const fileObj = new File(manipulated.uri);
-        if (fileObj.exists) {
-          fileObj.delete();
-        }
-      } catch (delErr) {
-        console.warn('[DocAligner] Failed to delete temp upload file:', delErr);
-      }
-    }
-
-    if (!response.ok) {
-      throw new Error(`Server returned status ${response.status}`);
-    }
+    cleanup();
 
     const result = await response.json();
     if (!result?.detected || !result?.corners) {
@@ -171,16 +210,13 @@ export async function detectDocumentWithDocAligner(
       dimensions: { width: result.width, height: result.height },
     };
   } catch (err) {
-    // Clean up temporary downscaled file on error
-    if (manipulated) {
-      try {
-        const fileObj = new File(manipulated.uri);
-        if (fileObj.exists) {
-          fileObj.delete();
-        }
-      } catch (_) {}
-    }
-    console.warn('[DocAligner] Backend corner detection failed:', err);
+    cleanup();
+    console.warn('[DocAligner] Backend corner detection failed after retries:', err);
+    // Report to Sentry so we can track how often DocAligner fails in the field
+    Sentry.captureException(err, {
+      tags: { area: 'docAligner' },
+      extra: { networkQuality, uploadWidth },
+    });
     return null;
   }
 }
@@ -188,13 +224,12 @@ export async function detectDocumentWithDocAligner(
 export async function detectDocumentCorners(
   imageUri: string
 ): Promise<DocQuadDetectionResult | null> {
-  // 1. Try local native DocQuad first (Fast, runs on device)
-  const localRes = await detectDocumentWithDocQuad(imageUri);
-  if (localRes) {
-    return localRes;
+  // 1. Try deployed DocAligner backend first (Highly accurate, fastvit_sa24)
+  const backendRes = await detectDocumentWithDocAligner(imageUri);
+  if (backendRes) {
+    return backendRes;
   }
-  
-  // 2. Fall back to DocAligner on backend if local fails
-  return await detectDocumentWithDocAligner(imageUri);
-}
 
+  // 2. Fall back to local native DocQuad if backend fails or offline
+  return await detectDocumentWithDocQuad(imageUri);
+}

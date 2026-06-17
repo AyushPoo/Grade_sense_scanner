@@ -33,6 +33,7 @@ export interface ScannedPage {
   ui_id: string; // Deterministic ID for UI reconciliation
   page_number: number;
   file_path: string;
+  file_url?: string; // GCS URL for cropped/enhanced page
   source_type?: 'camera' | 'pdf' | 'image';
   scanner_engine?: 'camera' | 'native_document_scanner' | 'import';
   content_type?: string;
@@ -98,6 +99,7 @@ export interface ScanSessionSettings {
   grading_mode?: 'strict' | 'balanced' | 'conceptual' | 'lenient';
   pilot_review_first?: boolean;
   feedback_enabled?: boolean;
+  annotations_enabled?: boolean;
 }
 
 export interface ScanSession {

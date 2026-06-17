@@ -71,6 +71,18 @@ class RuntimeReadinessServiceTest(unittest.TestCase):
         })
 
         self.assertEqual(report["status"], "ready")
+    def test_webapp_sync_allows_cloud_run_default_credentials(self):
+        report = build_readiness_report({
+            "MONGO_URL": "mongodb://example",
+            "DB_NAME": "gradesense",
+            "WEBAPP_DB_URL": "postgresql://example",
+            "WEBAPP_JWT_SECRET": "secret",
+            "STORAGE_PROVIDER": "gcs",
+            "GCS_BUCKET_NAME": "gradesense-prod",
+            "K_SERVICE": "grade-sense-scanner",
+        })
+
+        self.assertEqual(report["status"], "ready")
         self.assertEqual(report["missingRequired"], [])
         self.assertEqual(report["checks"]["fileStorage"]["configured"], True)
 

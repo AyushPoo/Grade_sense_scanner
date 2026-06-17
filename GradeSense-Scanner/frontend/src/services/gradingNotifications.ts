@@ -150,7 +150,6 @@ export async function notifyGradingProgress(
   if (!granted) return;
 
   const notificationId = progressNotificationId(normalizedExamId);
-  await Notifications.dismissNotificationAsync(notificationId).catch(() => {});
   await Notifications.scheduleNotificationAsync({
     identifier: notificationId,
     content: {

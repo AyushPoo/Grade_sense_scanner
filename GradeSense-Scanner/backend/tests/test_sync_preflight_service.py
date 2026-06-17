@@ -29,6 +29,18 @@ class SyncPreflightServiceTest(unittest.TestCase):
             },
         )
 
+    def test_allows_webapp_sync_with_cloud_run_default_credentials(self):
+        assert_webapp_sync_ready(
+            storage_backend="gcs",
+            env={
+                "WEBAPP_DB_URL": "postgresql://example",
+                "WEBAPP_JWT_SECRET": "secret",
+                "STORAGE_PROVIDER": "gcs",
+                "GCS_BUCKET_NAME": "gradesense-prod",
+                "K_SERVICE": "grade-sense-scanner",
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

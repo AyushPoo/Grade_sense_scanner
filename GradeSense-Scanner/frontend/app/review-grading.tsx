@@ -360,15 +360,37 @@ export default function ReviewGradingScreen() {
     const fetchSubmissionsList = async () => {
       try {
         setIsLoadingList(true);
-        const res = await fetch(`${webappUrl}/api/v1/exams/${examId}/submissions`, {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Bypass-Tunnel-Reminder': 'true',
-          },
-        });
-        if (!res.ok) {
-          throw new Error(`Status ${res.status}`);
+        let res: Response | null = null;
+        let lastError: any = null;
+        const retries = 3;
+        const delayMs = 1500;
+
+        for (let i = 0; i < retries; i++) {
+          try {
+            res = await fetch(`${webappUrl}/api/v1/exams/${examId}/submissions`, {
+              headers: {
+                'Authorization': `Bearer ${token}`,
+                'Bypass-Tunnel-Reminder': 'true',
+              },
+            });
+            if (res.ok) {
+              lastError = null;
+              break;
+            }
+            lastError = new Error(`Status ${res.status}`);
+          } catch (err: any) {
+            lastError = err;
+          }
+          if (i < retries - 1) {
+            console.warn(`Failed fetching student list (attempt ${i + 1}/${retries}). Retrying in ${delayMs}ms...`);
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+          }
         }
+
+        if (lastError || !res) {
+          throw lastError || new Error('Failed to fetch student list after retries');
+        }
+
         const json = await res.json();
         const list: SubmissionListItem[] = json.data || [];
         setSubmissions(list);
@@ -419,29 +441,50 @@ export default function ReviewGradingScreen() {
       return pending;
     }
 
-    const request = fetch(`${webappUrl}/api/v1/submissions/${submissionId}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Bypass-Tunnel-Reminder': 'true',
-        },
-      })
-        .then(async res => {
-      if (!res.ok) {
-        throw new Error(`Status ${res.status}`);
+    const request = (async () => {
+      let res: Response | null = null;
+      let lastError: any = null;
+      const retries = 3;
+      const delayMs = 1500;
+
+      for (let i = 0; i < retries; i++) {
+        try {
+          res = await fetch(`${webappUrl}/api/v1/submissions/${submissionId}`, {
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Bypass-Tunnel-Reminder': 'true',
+            },
+          });
+          if (res.ok) {
+            lastError = null;
+            break;
+          }
+          lastError = new Error(`Status ${res.status}`);
+        } catch (err: any) {
+          lastError = err;
+        }
+        if (i < retries - 1) {
+          console.warn(`Failed fetching submission detail ${submissionId} (attempt ${i + 1}/${retries}). Retrying in ${delayMs}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
       }
+
+      if (lastError || !res) {
+        throw lastError || new Error('Failed to fetch detail after retries');
+      }
+
       const json = await res.json();
       const data = json.data || {};
-          const detail: SubmissionReviewDetail = {
-            files: data.files || [],
-            scores: normalizeReviewScores(data.scores || []),
-            teacherFeedback: data.submission?.teacherFeedback || '',
-          };
-          detailCacheRef.current.set(submissionId, detail);
-          return detail;
-        })
-        .finally(() => {
-          detailRequestRef.current.delete(submissionId);
-        });
+      const detail: SubmissionReviewDetail = {
+        files: data.files || [],
+        scores: normalizeReviewScores(data.scores || []),
+        teacherFeedback: data.submission?.teacherFeedback || '',
+      };
+      detailCacheRef.current.set(submissionId, detail);
+      return detail;
+    })().finally(() => {
+      detailRequestRef.current.delete(submissionId);
+    });
 
     detailRequestRef.current.set(submissionId, request);
     return request;

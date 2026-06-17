@@ -108,7 +108,7 @@ export interface UseMotionStabilityReturn {
 
 // ─── Defaults ─────────────────────────────────────────────────────────────────
 
-const DEFAULT_WAIT_TIME = 3500;  // ms
+const DEFAULT_WAIT_TIME = 2500;  // ms
 const DEFAULT_THRESHOLD = 0.04;  // g-units delta (NOT raw magnitude)
 const DEFAULT_SAMPLE_COUNT = 5;
 const DEFAULT_UPDATE_INTERVAL = 100;   // ms — faster = better delta resolution
@@ -217,8 +217,8 @@ export function useMotionStability(
      * This is the critical fix for Bug 3 — if this function rebuilt on every
      * render it would pull the useEffect with it, remounting the listener.
      */
-    const handleStableDetected = useCallback(async () => {
-        // Synchronous double-gate: set both before any await
+    const handleStableDetected = useCallback(() => {
+        // Synchronous double-gate: set both before any timer
         if (hasTriggeredRef.current) return;
         if (isStabilizingRef.current) return;
 
@@ -233,26 +233,26 @@ export function useMotionStability(
             console.log(`[MOTION] Stable! Waiting ${waitTimeRef.current}ms before capture…`);
         }
 
-        await new Promise<void>(resolve => {
-            waitTimeoutRef.current = setTimeout(resolve, waitTimeRef.current);
-        });
+        waitTimeoutRef.current = setTimeout(async () => {
+            waitTimeoutRef.current = null;
 
-        // If disabled while we were waiting, abort silently
-        if (!enabledRef.current) {
-            if (__DEV__) console.log('[MOTION] Disabled during wait — aborting');
-            fullReset();
-            return;
-        }
+            // If disabled while we were waiting, abort silently
+            if (!enabledRef.current) {
+                if (__DEV__) console.log('[MOTION] Disabled during wait — aborting');
+                fullReset();
+                return;
+            }
 
-        if (__DEV__) console.log('[MOTION] Triggering auto-capture');
+            if (__DEV__) console.log('[MOTION] Triggering auto-capture');
 
-        try {
-            await onStableRef.current();
-        } catch (err) {
-            console.warn('[MOTION] onStable threw:', err);
-        } finally {
-            fullReset();
-        }
+            try {
+                await onStableRef.current();
+            } catch (err) {
+                console.warn('[MOTION] onStable threw:', err);
+            } finally {
+                fullReset();
+            }
+        }, waitTimeRef.current);
     }, []); // ← empty: every value read from refs; identity is permanently stable
 
     // ── Accelerometer listener ────────────────────────────────────────────────
@@ -314,11 +314,25 @@ export function useMotionStability(
             setStabilityProgress(detectorRef.current.getProgress() * 100);
             setAverageMotion(result.averageMotion);
 
-            // Single trigger guard — hasTriggeredRef is set synchronously inside
-            // handleStableDetected before any await, so no double-fire possible
-            if (result.isStable && !hasTriggeredRef.current) {
-                if (__DEV__) console.log('[MOTION] ✓ All deltas below threshold — triggering');
-                handleStableDetected();
+            if (isStabilizingRef.current) {
+                // If the device is currently stabilizing, check if it becomes unstable.
+                // If it becomes unstable, cancel/reset the countdown immediately.
+                if (!result.isStable) {
+                    if (__DEV__) {
+                        console.log(
+                            `[MOTION] Device moved! Delta = ${result.averageMotion.toFixed(4)} > ${motionThreshold}. ` +
+                            `Resetting countdown.`
+                        );
+                    }
+                    fullReset();
+                }
+            } else {
+                // Single trigger guard — hasTriggeredRef is set synchronously inside
+                // handleStableDetected before any timer, so no double-fire possible
+                if (result.isStable && !hasTriggeredRef.current) {
+                    if (__DEV__) console.log('[MOTION] ✓ All deltas below threshold — triggering');
+                    handleStableDetected();
+                }
             }
         });
 

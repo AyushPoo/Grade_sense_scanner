@@ -9,6 +9,7 @@ interface AuthState {
   isAuthenticated: boolean;
   isLoading: boolean;
   hasHydrated: boolean;
+  hasAcceptedDPDPConsent: boolean;
   
   // Custom Settings
   customBackendUrl: string | null;
@@ -29,6 +30,7 @@ interface AuthState {
   setCustomWebappUrl: (url: string | null) => void;
   setDefaultGradingMode: (mode: string) => void;
   setCameraResolution: (res: 'low' | 'medium' | 'high') => void;
+  setHasAcceptedDPDPConsent: (val: boolean) => void;
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -45,6 +47,7 @@ export const useAuthStore = create<AuthState>()(
       customWebappUrl: null,
       defaultGradingMode: 'balanced',
       cameraResolution: 'medium',
+      hasAcceptedDPDPConsent: false,
       
       setUser: (user) => set({ user }),
       setSessionToken: (token) => set({ sessionToken: token }),
@@ -67,6 +70,7 @@ export const useAuthStore = create<AuthState>()(
       setCustomWebappUrl: (url) => set({ customWebappUrl: url }),
       setDefaultGradingMode: (mode) => set({ defaultGradingMode: mode }),
       setCameraResolution: (res) => set({ cameraResolution: res }),
+      setHasAcceptedDPDPConsent: (val) => set({ hasAcceptedDPDPConsent: val }),
     }),
     {
       name: 'auth-storage',

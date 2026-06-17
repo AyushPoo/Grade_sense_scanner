@@ -1995,7 +1995,13 @@ async def upload_file(
     filename = f"{phase}_{suffix}p{page_number}_{timestamp}_{uuid.uuid4().hex[:6]}{extension}"
     
     # Save to storage abstraction
-    file_url = storage.save_file(session_id, filename, file.file, content_type=content_type)
+    try:
+        file_url = storage.save_file(session_id, filename, file.file, content_type=content_type)
+    except Exception as e:
+        import traceback
+        err_msg = traceback.format_exc()
+        logger.error(f"Upload failed: {e}\n{err_msg}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}\n{err_msg}")
     
     # Update stats if needed (placeholder for future metrics)
     return {
@@ -2257,6 +2263,7 @@ async def create_exam_on_webapp(session_id: str, user_id: str, token: str) -> st
             
             grading_instructions = settings.get("grading_instructions")
             feedback_enabled = settings.get("feedback_enabled", True)
+            annotations_enabled = settings.get("annotations_enabled", False)
             
             await conn.execute(
                 '''
@@ -2265,8 +2272,8 @@ async def create_exam_on_webapp(session_id: str, user_id: str, token: str) -> st
                     class_standard, section, exam_date, mode, grading_mode,
                     total_marks, status, blueprint_locked, results_published,
                     published_at, created_at, updated_at, grading_instructions,
-                    feedback_enabled, publish_visibility_json
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+                    feedback_enabled, publish_visibility_json, annotations_enabled
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
                 ''',
                 exam_id,
                 user_id,
@@ -2287,7 +2294,8 @@ async def create_exam_on_webapp(session_id: str, user_id: str, token: str) -> st
                 datetime.utcnow().isoformat() + 'Z',
                 grading_instructions,
                 feedback_enabled,
-                "{}"
+                "{}",
+                annotations_enabled
             )
             await conn.close()
             logger.info(f"Exam created successfully via Neon: {exam_id}")
@@ -2315,8 +2323,11 @@ async def create_exam_on_webapp(session_id: str, user_id: str, token: str) -> st
         exam_payload["examDate"] = session["exam_date"]
     
     settings = session.get("settings", {})
-    if isinstance(settings, dict) and settings.get("grading_mode"):
-        exam_payload["gradingMode"] = settings["grading_mode"]
+    if isinstance(settings, dict):
+        if settings.get("grading_mode"):
+            exam_payload["gradingMode"] = settings["grading_mode"]
+        if "annotations_enabled" in settings or "annotationsEnabled" in settings:
+            exam_payload["annotationsEnabled"] = settings.get("annotationsEnabled", settings.get("annotations_enabled", False))
 
     headers = {
         "Authorization": f"Bearer {token}",
@@ -3166,6 +3177,12 @@ async def reconcile_scan_sessions_with_webapp(user_id: str, sessions: list[dict]
         if conn:
             await conn.close()
 
+    exam_statuses = {
+        str(row["id"]): str(row["status"])
+        for row in exam_rows
+        if row.get("id")
+    }
+
     jobs_by_exam: dict[str, list[dict]] = {}
     for row in job_rows:
         row_dict = dict(row)
@@ -3182,6 +3199,7 @@ async def reconcile_scan_sessions_with_webapp(user_id: str, sessions: list[dict]
             session,
             jobs_by_exam.get(exam_id, []),
             submissions_by_exam.get(exam_id, 0),
+            exam_status=exam_statuses.get(exam_id),
         )
         if not patch:
             continue
@@ -4495,7 +4513,7 @@ async def get_exam_review_settings(exam_id: str, authorization: Optional[str] = 
         conn = await asyncpg.connect(webapp_db_url)
         row = await conn.fetchrow(
             '''
-            SELECT e.grading_mode, e.feedback_enabled, e.grading_instructions,
+            SELECT e.grading_mode, e.feedback_enabled, e.grading_instructions, e.annotations_enabled,
                    u.state_json
             FROM exams e
             LEFT JOIN LATERAL (
@@ -4521,6 +4539,7 @@ async def get_exam_review_settings(exam_id: str, authorization: Optional[str] = 
     settings = normalize_review_settings({
         "grading_mode": row["grading_mode"],
         "feedback_enabled": row["feedback_enabled"],
+        "annotations_enabled": row["annotations_enabled"],
         "grading_instructions": row["grading_instructions"],
         "difficulty": difficulty_from_state_json(row["state_json"]),
     })
@@ -4546,15 +4565,17 @@ async def update_exam_review_settings(exam_id: str, data: dict, authorization: O
             SET grading_mode = $3,
                 feedback_enabled = $4,
                 grading_instructions = $5,
-                updated_at = $6
+                annotations_enabled = $6,
+                updated_at = $7
             WHERE id = $1 AND teacher_id = $2
-            RETURNING grading_mode, feedback_enabled, grading_instructions
+            RETURNING grading_mode, feedback_enabled, grading_instructions, annotations_enabled
             ''',
             exam_id,
             user.user_id,
             settings["gradingMode"],
             settings["feedbackEnabled"],
             settings["customInstructions"] or None,
+            settings["annotationsEnabled"],
             now
         )
 
@@ -5574,6 +5595,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/")
+async def root():
+    return {"message": "GradeSense Scanner API", "status": "healthy"}
 
 
 @app.on_event("startup")

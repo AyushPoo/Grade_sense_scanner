@@ -146,13 +146,13 @@ export function PaperFileViewer({
 
           {hasAnnotationUrl ? (
             <TouchableOpacity
-              style={[styles.documentTab, showOriginal && styles.activeDocumentTabOriginal]}
+              style={[styles.documentTab, !showOriginal && styles.activeDocumentTabOriginal]}
               onPress={() => setShowOriginal(!showOriginal)}
               activeOpacity={0.8}
             >
-              <Ionicons name="image-outline" size={13} color={showOriginal ? '#fff' : '#E7E7E7'} />
-              <Text style={[styles.documentTabText, showOriginal && styles.activeDocumentTabText]}>
-                {showOriginal ? 'Show Crop' : 'Show Raw Photo'}
+              <Ionicons name={!showOriginal ? "create-outline" : "image-outline"} size={13} color={!showOriginal ? '#fff' : '#E7E7E7'} />
+              <Text style={[styles.documentTabText, !showOriginal && styles.activeDocumentTabText]}>
+                {!showOriginal ? 'Show Original' : 'Show Graded'}
               </Text>
             </TouchableOpacity>
           ) : null}
@@ -359,9 +359,9 @@ function PaperPage({
   onRetry: () => void;
   showOriginal?: boolean;
 }) {
-  const imageUrl = showOriginal && slide.annotationSignedUrl
-    ? slide.annotationSignedUrl
-    : (slide.signedUrl || slide.annotationSignedUrl);
+  const imageUrl = showOriginal
+    ? (slide.signedUrl || slide.annotationSignedUrl)
+    : (slide.annotationSignedUrl || slide.signedUrl);
   const openExternal = () => {
     if (imageUrl) {
       Linking.openURL(imageUrl).catch(() => onRetry());

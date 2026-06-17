@@ -306,6 +306,18 @@ class GradingLifecycleServiceTest(unittest.TestCase):
             "processed_items": 0,
         }))
 
+    def test_reconciliation_marks_terminal_webapp_exams_as_graded(self):
+        payload = derive_scan_session_reconciliation(
+            {"status": "syncing"},
+            [],
+            3,
+            exam_status="graded",
+        )
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["status"], "graded")
+        self.assertEqual(payload["grading_status"], "completed")
+        self.assertEqual(payload["grading_progress"], 100.0)
+
 
 if __name__ == "__main__":
     unittest.main()

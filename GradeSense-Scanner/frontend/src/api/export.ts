@@ -87,9 +87,27 @@ async function uploadPageFile(
   page: ScannedPage,
   phase: ScanPhase,
   studentIndex?: number,
-  retries = 3,
+  retries = 4,
   mode = 'enhanced'
 ): Promise<UploadedPageFile> {
+  // Skip uploading if this page mode has already been successfully synced to GCS
+  if (mode === 'enhanced' && page.file_url) {
+    console.log(`[Upload] Skipping page ${page.page_number} (${phase}) enhanced upload, already uploaded: ${page.file_url}`);
+    return {
+      fileUrl: page.file_url,
+      contentType: page.content_type || 'image/jpeg',
+      originalName: page.original_name || `page_${page.page_number}.jpg`,
+    };
+  }
+  if (mode === 'original' && page.raw_file_url) {
+    console.log(`[Upload] Skipping page ${page.page_number} (${phase}) original upload, already uploaded: ${page.raw_file_url}`);
+    return {
+      fileUrl: page.raw_file_url,
+      contentType: page.content_type || 'image/jpeg',
+      originalName: page.original_name || `page_${page.page_number}.jpg`,
+    };
+  }
+
   const token = useAuthStore.getState().sessionToken;
   const backendUrl = getBackendUrl();
 
@@ -103,7 +121,7 @@ async function uploadPageFile(
       const startedAt = Date.now();
       asset = await prepareUploadAsset(page);
       console.log(`[Upload] File confirmed: ${asset.uri} (${asset.size || 0} bytes)`);
-      console.log(`[Upload] Attempt ${i + 1}/${retries} for page ${page.page_number} (${phase})`);
+      console.log(`[Upload] Attempt ${i + 1}/${retries} for page ${page.page_number} (${phase}) [mode=${mode}]`);
 
       const formData = new FormData();
       formData.append('file', {
@@ -129,11 +147,25 @@ async function uploadPageFile(
 
       if (response.ok) {
         const data = await response.json();
+        const fileUrl = data.file_url;
+        const contentType = data.content_type || asset.contentType;
+        const originalName = data.original_name || page.original_name || asset.fileName;
         console.log(`[Upload] Uploaded page ${page.page_number} (${phase}) in ${Date.now() - startedAt}ms`);
+
+        // Update scanStore immediately with the returned GCS URL to ensure resumability
+        const store = useScanStore.getState();
+        store.updatePageUrls(sessionId, page.id, phase, studentIndex, {
+          file_url: mode === 'enhanced' ? fileUrl : undefined,
+          raw_file_url: mode === 'original' ? fileUrl : undefined,
+          content_type: contentType,
+          original_name: originalName,
+          sync_status: mode === 'enhanced' ? 'synced' : undefined,
+        });
+
         return {
-          fileUrl: data.file_url,
-          contentType: data.content_type || asset.contentType,
-          originalName: data.original_name || page.original_name || asset.fileName,
+          fileUrl,
+          contentType,
+          originalName,
         };
       }
 
@@ -141,8 +173,14 @@ async function uploadPageFile(
       lastError = new Error(`Upload failed with status ${response.status}: ${errorText}`);
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
-      console.warn(`Retry ${i + 1} for page ${page.page_number} failed:`, lastError.message);
-      await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
+      // Exponential backoff with random jitter up to 500ms
+      if (i < retries - 1) {
+        const delayMs = Math.pow(2, i) * 1500 + Math.random() * 500;
+        console.warn(`Retry ${i + 1}/${retries} for page ${page.page_number} failed, waiting ${Math.round(delayMs)}ms:`, lastError.message);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      } else {
+        console.warn(`All ${retries} attempts failed for page ${page.page_number}:`, lastError.message);
+      }
     } finally {
       if (asset?.tempUri) {
         await FileSystem.deleteAsync(asset.tempUri, { idempotent: true }).catch(() => {});
@@ -159,7 +197,7 @@ async function uploadPageTasks(
   onPageUploaded: (label: string) => void
 ): Promise<(UploadedPageFile & { rawFileUrl?: string | null; page: ScannedPage; pageIndex: number; studentIndex?: number })[]> {
   return mapWithConcurrency(tasks, MAX_PARALLEL_PAGE_UPLOADS, async task => {
-    const uploaded = await uploadPageFile(sessionId, task.page, task.phase, task.studentIndex, 3, 'enhanced');
+    const uploaded = await uploadPageFile(sessionId, task.page, task.phase, task.studentIndex, 4, 'enhanced');
     onPageUploaded(task.label);
 
     let rawFileUrl: string | null = null;
@@ -172,7 +210,7 @@ async function uploadPageTasks(
           rawPage,
           task.phase,
           task.studentIndex,
-          3,
+          4,
           'original'
         );
         rawFileUrl = uploadedRaw.fileUrl;

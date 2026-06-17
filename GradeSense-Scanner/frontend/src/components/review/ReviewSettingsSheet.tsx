@@ -107,6 +107,19 @@ export function ReviewSettingsSheet({
               />
             </View>
 
+            <View style={styles.rowCard}>
+              <View style={styles.rowText}>
+                <Text style={styles.rowTitle}>Produce Hand-Graded Copy</Text>
+                <Text style={styles.rowSubtitle}>Scanned output will contain tick marks and hand-graded annotations.</Text>
+              </View>
+              <Switch
+                value={draft.annotationsEnabled}
+                onValueChange={value => updateDraft('annotationsEnabled', value)}
+                trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
+                thumbColor={draft.annotationsEnabled ? COLORS.primary : '#f4f3f4'}
+              />
+            </View>
+
             <Text style={styles.sectionTitle}>DIFFICULTY</Text>
             <View style={styles.segmentedControl}>
               {REVIEW_DIFFICULTIES.map(option => {

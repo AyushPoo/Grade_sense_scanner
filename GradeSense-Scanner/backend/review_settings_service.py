@@ -19,6 +19,7 @@ def normalize_review_settings(data: Optional[dict[str, Any]]) -> dict[str, Any]:
     return {
         "gradingMode": grading_mode if grading_mode in VALID_GRADING_MODES else "balanced",
         "feedbackEnabled": bool(data.get("feedbackEnabled", data.get("feedback_enabled", True))),
+        "annotationsEnabled": bool(data.get("annotationsEnabled", data.get("annotations_enabled", False))),
         "difficulty": difficulty if difficulty in VALID_DIFFICULTIES else "medium",
         "customInstructions": data.get("customInstructions") or data.get("grading_instructions") or "",
     }

@@ -4,6 +4,7 @@ export type ReviewDifficulty = 'medium' | 'easy' | 'hard';
 export interface ReviewSettings {
   gradingMode: ReviewGradingMode;
   feedbackEnabled: boolean;
+  annotationsEnabled: boolean;
   difficulty: ReviewDifficulty;
   customInstructions: string;
 }
@@ -13,6 +14,8 @@ type RawReviewSettings = Partial<ReviewSettings> & {
   gradingMode?: string | null;
   feedback_enabled?: boolean | null;
   feedbackEnabled?: boolean | null;
+  annotations_enabled?: boolean | null;
+  annotationsEnabled?: boolean | null;
   difficulty?: string | null;
   custom_instructions?: string | null;
   customInstructions?: string | null;
@@ -62,6 +65,7 @@ export const REVIEW_DIFFICULTIES: {
 export const DEFAULT_REVIEW_SETTINGS: ReviewSettings = {
   gradingMode: 'balanced',
   feedbackEnabled: true,
+  annotationsEnabled: false,
   difficulty: 'medium',
   customInstructions: '',
 };
@@ -74,6 +78,7 @@ export function normalizeReviewSettings(settings?: RawReviewSettings | null): Re
     ...DEFAULT_REVIEW_SETTINGS,
     gradingMode,
     feedbackEnabled: settings?.feedbackEnabled ?? settings?.feedback_enabled ?? DEFAULT_REVIEW_SETTINGS.feedbackEnabled,
+    annotationsEnabled: settings?.annotationsEnabled ?? settings?.annotations_enabled ?? DEFAULT_REVIEW_SETTINGS.annotationsEnabled,
     difficulty,
     customInstructions: settings?.customInstructions || settings?.custom_instructions || '',
   };
@@ -83,6 +88,7 @@ export function buildReviewSettingsPayload(settings: ReviewSettings) {
   return {
     gradingMode: settings.gradingMode,
     feedbackEnabled: settings.feedbackEnabled,
+    annotationsEnabled: settings.annotationsEnabled,
     difficulty: settings.difficulty,
     customInstructions: settings.customInstructions.trim(),
   };

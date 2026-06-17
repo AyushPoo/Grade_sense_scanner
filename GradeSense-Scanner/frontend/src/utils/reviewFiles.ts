@@ -10,20 +10,168 @@ interface ActiveStudentIdentity {
 type LocalDocumentKind = 'question_paper' | 'model_answer' | 'answer_sheet';
 
 export function buildReviewFileSlides(files: ReviewFileItem[]): ReviewFileSlide[] {
-  return files
-    .map((file, index) => {
-      const type = getFileType(file);
-      return {
+  const nonStudentSlides: (ReviewFileSlide & { order: number })[] = [];
+  const studentFiles: ReviewFileItem[] = [];
+
+  files.forEach((file, index) => {
+    const type = getFileType(file);
+    if (type !== 'student') {
+      nonStudentSlides.push({
         id: file.id,
         title: getFileTitle(type),
-        signedUrl: file.signedUrl,
-        annotationSignedUrl: file.annotationSignedUrl,
+        signedUrl: file.signedUrl || '',
+        annotationSignedUrl: file.annotationSignedUrl || null,
         contentType: file.contentType,
         originalName: file.originalName,
         type,
         order: getFileOrder(type, index),
-      };
-    })
+      });
+    } else {
+      studentFiles.push(file);
+    }
+  });
+
+  // Separate student files into clean and graded
+  const gradedFiles: ReviewFileItem[] = [];
+  const cleanFiles: ReviewFileItem[] = [];
+
+  studentFiles.forEach(file => {
+    const isGraded = file.originalName?.toLowerCase().includes('graded') || 
+                     file.id?.toLowerCase().includes('graded') ||
+                     (file.kind || '').toLowerCase().includes('graded');
+    if (isGraded) {
+      gradedFiles.push(file);
+    } else {
+      cleanFiles.push(file);
+    }
+  });
+
+  // Sort both arrays to pair them properly
+  const sortByOriginalName = (a: ReviewFileItem, b: ReviewFileItem) => {
+    const nameA = a.originalName || '';
+    const nameB = b.originalName || '';
+    return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+  };
+
+  cleanFiles.sort(sortByOriginalName);
+  gradedFiles.sort(sortByOriginalName);
+
+  const studentSlides: (ReviewFileSlide & { order: number })[] = [];
+
+  // Pair them up
+  if (cleanFiles.length === gradedFiles.length) {
+    // Perfect 1-to-1 matching by index
+    cleanFiles.forEach((cleanFile, idx) => {
+      const gradedFile = gradedFiles[idx];
+      studentSlides.push({
+        id: gradedFile.id || cleanFile.id,
+        title: getFileTitle('student'),
+        // original view (showOriginal = true) shows the uncropped raw photo: cleanFile.annotationSignedUrl || cleanFile.signedUrl
+        signedUrl: cleanFile.annotationSignedUrl || cleanFile.signedUrl || '',
+        // graded view (showOriginal = false) shows the graded PDF: gradedFile.signedUrl || cleanFile.signedUrl
+        annotationSignedUrl: gradedFile.signedUrl || cleanFile.signedUrl || null,
+        contentType: gradedFile.contentType || cleanFile.contentType,
+        originalName: gradedFile.originalName || cleanFile.originalName,
+        type: 'student',
+        order: getFileOrder('student', idx),
+      });
+    });
+  } else if (cleanFiles.length > 0 && gradedFiles.length === 0) {
+    // Only clean files exist (e.g. not graded yet)
+    cleanFiles.forEach((cleanFile, idx) => {
+      studentSlides.push({
+        id: cleanFile.id,
+        title: getFileTitle('student'),
+        // original view shows raw uncropped camera photo
+        signedUrl: cleanFile.annotationSignedUrl || cleanFile.signedUrl || '',
+        // graded view falls back to clean cropped page since there is no graded file yet
+        annotationSignedUrl: cleanFile.signedUrl || null,
+        contentType: cleanFile.contentType,
+        originalName: cleanFile.originalName,
+        type: 'student',
+        order: getFileOrder('student', idx),
+      });
+    });
+  } else if (gradedFiles.length > 0 && cleanFiles.length === 0) {
+    // Only graded files exist
+    gradedFiles.forEach((gradedFile, idx) => {
+      studentSlides.push({
+        id: gradedFile.id,
+        title: getFileTitle('student'),
+        signedUrl: gradedFile.signedUrl || '',
+        annotationSignedUrl: gradedFile.signedUrl || null,
+        contentType: gradedFile.contentType,
+        originalName: gradedFile.originalName,
+        type: 'student',
+        order: getFileOrder('student', idx),
+      });
+    });
+  } else {
+    // Clean and graded counts are different, try matching by substring or fallback to index-based pairing
+    const pairedGradedIndices = new Set<number>();
+    
+    cleanFiles.forEach((cleanFile, cIdx) => {
+      const cleanBaseName = (cleanFile.originalName || '').replace(/\.[^/.]+$/, "").toLowerCase();
+      let bestMatchIdx = -1;
+      
+      for (let gIdx = 0; gIdx < gradedFiles.length; gIdx++) {
+        if (pairedGradedIndices.has(gIdx)) continue;
+        const gradedName = (gradedFiles[gIdx].originalName || '').toLowerCase();
+        if (gradedName.includes(cleanBaseName)) {
+          bestMatchIdx = gIdx;
+          break;
+        }
+      }
+      
+      if (bestMatchIdx === -1 && gradedFiles.length > cIdx && !pairedGradedIndices.has(cIdx)) {
+        bestMatchIdx = cIdx;
+      }
+
+      if (bestMatchIdx !== -1) {
+        pairedGradedIndices.add(bestMatchIdx);
+        const gradedFile = gradedFiles[bestMatchIdx];
+        studentSlides.push({
+          id: gradedFile.id || cleanFile.id,
+          title: getFileTitle('student'),
+          signedUrl: cleanFile.annotationSignedUrl || cleanFile.signedUrl || '',
+          annotationSignedUrl: gradedFile.signedUrl || cleanFile.signedUrl || null,
+          contentType: gradedFile.contentType || cleanFile.contentType,
+          originalName: gradedFile.originalName || cleanFile.originalName,
+          type: 'student',
+          order: getFileOrder('student', cIdx),
+        });
+      } else {
+        studentSlides.push({
+          id: cleanFile.id,
+          title: getFileTitle('student'),
+          signedUrl: cleanFile.annotationSignedUrl || cleanFile.signedUrl || '',
+          annotationSignedUrl: cleanFile.signedUrl || null,
+          contentType: cleanFile.contentType,
+          originalName: cleanFile.originalName,
+          type: 'student',
+          order: getFileOrder('student', cIdx),
+        });
+      }
+    });
+
+    gradedFiles.forEach((gradedFile, gIdx) => {
+      if (!pairedGradedIndices.has(gIdx)) {
+        studentSlides.push({
+          id: gradedFile.id,
+          title: getFileTitle('student'),
+          signedUrl: gradedFile.signedUrl || '',
+          annotationSignedUrl: gradedFile.signedUrl || null,
+          contentType: gradedFile.contentType,
+          originalName: gradedFile.originalName,
+          type: 'student',
+          order: getFileOrder('student', cleanFiles.length + gIdx),
+        });
+      }
+    });
+  }
+
+  const allSlides = [...nonStudentSlides, ...studentSlides];
+  return allSlides
     .sort((a, b) => a.order - b.order)
     .map(({ order, ...slide }) => slide);
 }

@@ -1,6 +1,6 @@
 import { useAuthStore } from './store/authStore';
 
-const PRODUCTION_BACKEND_URL = 'https://gradesense-scanner-backend.onrender.com';
+const PRODUCTION_BACKEND_URL = 'https://grade-sense-scanner-323601156671.asia-south2.run.app';
 const PRODUCTION_WEBAPP_URL = 'https://app.gradesense.in';
 const ALLOW_RUNTIME_CUSTOM_URLS = process.env.NODE_ENV !== 'production';
 

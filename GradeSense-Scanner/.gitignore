@@ -107,3 +107,5 @@ test_reports/
 *.webp
 backend/uploads/
 !frontend/assets/**
+backend/env.yaml
+

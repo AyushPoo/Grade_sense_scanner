@@ -36,9 +36,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { useMotionStability } from '../src/hooks/useMotionStability';
 import { createImportedPdfPage, createNativeScannedImagePage, isPdfScannedPage } from '../src/utils/scannedPageAssets';
 import { useLocalSearchParams } from 'expo-router';
-import { evaluateAutoCropCandidate } from '../src/utils/cropQuality';
-import { detectTextOrientationAndBounds, detectDocumentCorners, detectDocumentWithDocQuad } from '../src/utils/docQuadDetector';
-import type { ScannedPage } from '../src/types';
+import { evaluateAutoCropCandidate, CropQualityResult } from '../src/utils/cropQuality';
+import { detectTextOrientationAndBounds, detectDocumentCorners, detectDocumentWithDocQuad, TextOrientationAndBoundsResult, TextBlockDiagnostic } from '../src/utils/docQuadDetector';
+import { getFallbackA4Quad } from '../src/utils/geometryUtils';
+import type { ScannedPage, ScanPhase } from '../src/types';
+import * as Sentry from '@sentry/react-native';
+import { useNetworkQuality } from '../src/utils/networkUtils';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const CAPTURE_COOLDOWN_MS = 2500;
@@ -65,7 +68,7 @@ const ENABLE_LIVE_DETECTION = false;
 //   Lower = smoother delta, faster response. 100ms recommended.
 //   Do not go below 50ms (battery drain, marginal benefit).
 //
-const MOTION_STABILITY_WAIT_TIME = 3500;   // ms — wait after stable detected
+const MOTION_STABILITY_WAIT_TIME = 2500;   // ms — wait after stable detected
 const MOTION_THRESHOLD = 0.04;   // delta g-units (was 0.5 raw magnitude — wrong)
 const MOTION_SAMPLE_COUNT = 5;      // consecutive stable readings required
 const MOTION_UPDATE_INTERVAL = 100;    // ms — poll frequency (was 250, too slow for delta)
@@ -90,6 +93,10 @@ interface PendingCapture {
     dims: { width: number; height: number };
     rawDims: { width: number; height: number };
     captureOrientation?: ScreenOrientation.Orientation;
+    pageMode: 'single' | 'double';
+    phase: ScanPhase;
+    studentIndex: number;
+    autoCropEnabled: boolean;
 }
 
 type PageSplitPart = 'left' | 'right' | 'top' | 'bottom';
@@ -237,6 +244,44 @@ async function checkIfTwoPagesVisible(
     return { visible: true, detectorUsed: 'none', reason: 'No document detected, falling back to split' };
 }
 
+async function detectDoublePageOrientation(
+    uri: string,
+    width: number,
+    height: number,
+): Promise<TextOrientationAndBoundsResult | null> {
+    // To detect orientation on a double-page spread, we crop a temporary single page half of the spread.
+    // ML Kit text recognition is highly accurate on single pages, whereas it often fails or returns 0
+    // on a full landscape double page spread due to split-column layouts.
+    try {
+        let cropRect;
+        if (width >= height) {
+            // Landscape spread: crop the left half
+            cropRect = { originX: 0, originY: 0, width: Math.floor(width / 2), height };
+        } else {
+            // Portrait spread (captured sideways): crop the top half
+            cropRect = { originX: 0, originY: 0, width, height: Math.floor(height / 2) };
+        }
+        
+        const halfImage = await ImageManipulator.manipulateAsync(
+            uri,
+            [{ crop: cropRect }],
+            { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG }
+        );
+        
+        console.log('[detectDoublePageOrientation] Temp crop created for orientation detection:', cropRect);
+        const res = await detectTextOrientationAndBounds(halfImage.uri);
+        
+        try {
+            new File(halfImage.uri).delete();
+        } catch (_) {}
+        
+        return res;
+    } catch (err) {
+        console.warn('[detectDoublePageOrientation] error:', err);
+        return null;
+    }
+}
+
 async function normalizeDoublePageSource(
     uri: string,
     width: number,
@@ -246,11 +291,20 @@ async function normalizeDoublePageSource(
     // In double-page mode, we always want the combined spread image to be landscape-oriented (width > height)
     // so it represents two pages side-by-side (left and right).
     // If it is portrait (height > width), the book is captured sideways in the frame.
-    // We rotate it 90 degrees to lay it out landscape.
+    // We rotate it based on the physical device orientation (90 or 270) to lay it out landscape
+    // with the left page physically on the left side of the image.
     if (height > width) {
+        let rotationAngle = 90;
+        if (captureOrientation === ScreenOrientation.Orientation.LANDSCAPE_RIGHT) {
+            rotationAngle = 270;
+        } else if (captureOrientation === ScreenOrientation.Orientation.LANDSCAPE_LEFT) {
+            rotationAngle = 90;
+        }
+        
+        console.log('[normalizeDoublePageSource] Portrait spread detected, rotating landscape based on captureOrientation:', rotationAngle);
         const rotated = await ImageManipulator.manipulateAsync(
             uri,
-            [{ rotate: 90 }],
+            [{ rotate: rotationAngle }],
             { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG },
         );
         return { uri: rotated.uri, width: rotated.width, height: rotated.height };
@@ -296,6 +350,7 @@ async function autoOrientPageImage(
         console.warn('[autoOrientPageImage] ML Kit orientation detection failed, falling back to dimension check:', err);
     }
 
+    // Fallback to aspect ratio check
     if (shouldAutoPortraitRotate(width, height)) {
         const rotated = await ImageManipulator.manipulateAsync(
             uri,
@@ -463,12 +518,301 @@ function scaleQuadToDimensions(
     };
 }
 
+function isPointInQuad(p: Point, quad: Quadrilateral): boolean {
+    const crossProduct = (a: Point, b: Point, p: Point) => {
+        return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+    };
+
+    const cp1 = crossProduct(quad.topLeft, quad.topRight, p);
+    const cp2 = crossProduct(quad.topRight, quad.bottomRight, p);
+    const cp3 = crossProduct(quad.bottomRight, quad.bottomLeft, p);
+    const cp4 = crossProduct(quad.bottomLeft, quad.topLeft, p);
+
+    const hasNeg = (cp1 < 0) || (cp2 < 0) || (cp3 < 0) || (cp4 < 0);
+    const hasPos = (cp1 > 0) || (cp2 > 0) || (cp3 > 0) || (cp4 > 0);
+
+    return !(hasNeg && hasPos);
+}
+
+function rotateBoundingBox(
+    box: { left: number; top: number; right: number; bottom: number },
+    rotation: 0 | 90 | 180 | 270,
+    origW: number,
+    origH: number
+) {
+    if (rotation === 0) return box;
+    if (rotation === 90) {
+        return {
+            left: origH - box.bottom,
+            top: box.left,
+            right: origH - box.top,
+            bottom: box.right
+        };
+    } else if (rotation === 180) {
+        return {
+            left: origW - box.right,
+            top: origH - box.bottom,
+            right: origW - box.left,
+            bottom: origH - box.top
+        };
+    } else if (rotation === 270) {
+        return {
+            left: box.top,
+            top: origW - box.right,
+            right: box.bottom,
+            bottom: origW - box.left
+        };
+    }
+    return box;
+}
+
+function doesCropCutText(
+    quad: Quadrilateral,
+    targets: Array<{ left: number; top: number; right: number; bottom: number }>
+): boolean {
+    for (const target of targets) {
+        const corners = [
+            { x: target.left, y: target.top },
+            { x: target.right, y: target.top },
+            { x: target.right, y: target.bottom },
+            { x: target.left, y: target.bottom },
+        ];
+
+        for (const pt of corners) {
+            if (!isPointInQuad(pt, quad)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+function recoverAndExpandQuad(
+    quad: Quadrilateral,
+    targets: Array<{ left: number; top: number; right: number; bottom: number }>,
+    width: number,
+    height: number
+): Quadrilateral | null {
+    const expanded = {
+        topLeft: { ...quad.topLeft },
+        topRight: { ...quad.topRight },
+        bottomRight: { ...quad.bottomRight },
+        bottomLeft: { ...quad.bottomLeft },
+    };
+
+    const cx = (quad.topLeft.x + quad.topRight.x + quad.bottomRight.x + quad.bottomLeft.x) / 4;
+    const cy = (quad.topLeft.y + quad.topRight.y + quad.bottomRight.y + quad.bottomLeft.y) / 4;
+
+    let modified = false;
+
+    for (const target of targets) {
+        const corners = [
+            { x: target.left, y: target.top },
+            { x: target.right, y: target.top },
+            { x: target.right, y: target.bottom },
+            { x: target.left, y: target.bottom },
+        ];
+
+        for (const pt of corners) {
+            if (!isPointInQuad(pt, expanded)) {
+                const isRight = pt.x > cx;
+                const isBottom = pt.y > cy;
+
+                if (!isRight && !isBottom) {
+                    expanded.topLeft = { x: width * 0.02, y: height * 0.02 };
+                } else if (isRight && !isBottom) {
+                    expanded.topRight = { x: width * 0.98, y: height * 0.02 };
+                } else if (isRight && isBottom) {
+                    expanded.bottomRight = { x: width * 0.98, y: height * 0.98 };
+                } else {
+                    expanded.bottomLeft = { x: width * 0.02, y: height * 0.98 };
+                }
+                modified = true;
+            }
+        }
+    }
+
+    if (modified) {
+        if (!doesCropCutText(expanded, targets)) {
+            console.log('[commitCapture] Corner recovery/expansion successful:', expanded);
+            return expanded;
+        } else {
+            console.warn('[commitCapture] Corner recovery/expansion failed to enclose all text.');
+            return null;
+        }
+    }
+
+    return quad;
+}
+
+function isConvex(pts: Quadrilateral): boolean {
+    const corners = [pts.topLeft, pts.topRight, pts.bottomRight, pts.bottomLeft];
+    let positive = 0;
+    let negative = 0;
+    for (let i = 0; i < 4; i++) {
+        const a = corners[i];
+        const b = corners[(i + 1) % 4];
+        const c = corners[(i + 2) % 4];
+        const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+        if (cross > 0) positive++;
+        if (cross < 0) negative++;
+    }
+    return positive === 4 || negative === 4;
+}
+
+function polygonArea(pts: Quadrilateral): number {
+    const corners = [pts.topLeft, pts.topRight, pts.bottomRight, pts.bottomLeft];
+    let area = 0;
+    for (let i = 0; i < 4; i++) {
+        const next = corners[(i + 1) % 4];
+        area += corners[i].x * next.y - next.x * corners[i].y;
+    }
+    return Math.abs(area) / 2;
+}
+function refineQuadWithTextBounds(
+    quad: Quadrilateral,
+    textBounds: { left: number; top: number; right: number; bottom: number },
+    width: number,
+    height: number,
+    textBlocks: Array<{ left: number; top: number; right: number; bottom: number }>
+): Quadrilateral {
+    const textW = textBounds.right - textBounds.left;
+    const textH = textBounds.bottom - textBounds.top;
+    if (textW <= 0 || textH <= 0 || textBlocks.length === 0) return quad;
+
+    const cx = (quad.topLeft.x + quad.topRight.x + quad.bottomRight.x + quad.bottomLeft.x) / 4;
+    const cy = (quad.topLeft.y + quad.topRight.y + quad.bottomRight.y + quad.bottomLeft.y) / 4;
+
+    const distSq = (p1: Point, p2: Point) => (p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2;
+
+    const maxCornerDistSq = Math.max(
+        distSq(quad.topLeft, { x: cx, y: cy }),
+        distSq(quad.topRight, { x: cx, y: cy }),
+        distSq(quad.bottomRight, { x: cx, y: cy }),
+        distSq(quad.bottomLeft, { x: cx, y: cy })
+    );
+
+    // Filter out text blocks that are far from the quad center (adjacent pages / bedsheet noise)
+    const validBlocks = textBlocks.filter(block => {
+        const bcx = (block.left + block.right) / 2;
+        const bcy = (block.top + block.bottom) / 2;
+        const centerDistSq = distSq({ x: bcx, y: bcy }, { x: cx, y: cy });
+        // Capping at 1.25x the corner distance (squared is 1.5625)
+        return centerDistSq <= maxCornerDistSq * 1.5625;
+    });
+
+    if (validBlocks.length === 0) return quad;
+
+    // Helper to find scale factor needed to contain a point
+    const findScaleForPoint = (p: Point): number => {
+        if (isPointInQuad(p, quad)) return 1.0;
+
+        let low = 1.0;
+        let high = 1.3; // Cap search at 1.3
+        let best = 1.3;
+
+        for (let iter = 0; iter < 8; iter++) {
+            const mid = (low + high) / 2;
+            const testQuad: Quadrilateral = {
+                topLeft: { x: cx + (quad.topLeft.x - cx) * mid, y: cy + (quad.topLeft.y - cy) * mid },
+                topRight: { x: cx + (quad.topRight.x - cx) * mid, y: cy + (quad.topRight.y - cy) * mid },
+                bottomRight: { x: cx + (quad.bottomRight.x - cx) * mid, y: cy + (quad.bottomRight.y - cy) * mid },
+                bottomLeft: { x: cx + (quad.bottomLeft.x - cx) * mid, y: cy + (quad.bottomLeft.y - cy) * mid },
+            };
+            if (isPointInQuad(p, testQuad)) {
+                best = mid;
+                high = mid;
+            } else {
+                low = mid;
+            }
+        }
+        return best;
+    };
+
+    let maxScaleRequired = 1.0;
+
+    // Evaluate all corner points of valid text blocks
+    for (const block of validBlocks) {
+        const corners = [
+            { x: block.left, y: block.top },
+            { x: block.right, y: block.top },
+            { x: block.right, y: block.bottom },
+            { x: block.left, y: block.bottom },
+        ];
+        for (const pt of corners) {
+            const s = findScaleForPoint(pt);
+            if (s > maxScaleRequired) {
+                maxScaleRequired = s;
+            }
+        }
+    }
+
+    // Capping scaling at 1.2 for safety
+    const finalScale = Math.min(1.2, maxScaleRequired);
+
+    if (finalScale <= 1.0) {
+        return quad;
+    }
+
+    // Apply proportional scaling + add a small 3% margin beyond the required scale
+    const scaleToApply = Math.min(1.2, finalScale * 1.03);
+
+    const refined: Quadrilateral = {
+        topLeft: { x: cx + (quad.topLeft.x - cx) * scaleToApply, y: cy + (quad.topLeft.y - cy) * scaleToApply },
+        topRight: { x: cx + (quad.topRight.x - cx) * scaleToApply, y: cy + (quad.topRight.y - cy) * scaleToApply },
+        bottomRight: { x: cx + (quad.bottomRight.x - cx) * scaleToApply, y: cy + (quad.bottomRight.y - cy) * scaleToApply },
+        bottomLeft: { x: cx + (quad.bottomLeft.x - cx) * scaleToApply, y: cy + (quad.bottomLeft.y - cy) * scaleToApply },
+    };
+
+    // Clamp corners to image dimensions
+    const clamp = (val: number, max: number) => Math.max(0, Math.min(max, val));
+    refined.topLeft.x = clamp(refined.topLeft.x, width);
+    refined.topLeft.y = clamp(refined.topLeft.y, height);
+    refined.topRight.x = clamp(refined.topRight.x, width);
+    refined.topRight.y = clamp(refined.topRight.y, height);
+    refined.bottomRight.x = clamp(refined.bottomRight.x, width);
+    refined.bottomRight.y = clamp(refined.bottomRight.y, height);
+    refined.bottomLeft.x = clamp(refined.bottomLeft.x, width);
+    refined.bottomLeft.y = clamp(refined.bottomLeft.y, height);
+
+    // Final safety check for convexity and area ratio
+    const area = polygonArea(refined);
+    const imgArea = width * height;
+    const areaRatio = area / imgArea;
+    if (areaRatio < 0.1 || areaRatio > 0.98 || !isConvex(refined)) {
+        return quad;
+    }
+
+    return refined;
+}
 async function refineSplitPartCrop(part: PreparedImagePart): Promise<PreparedImagePart> {
     const partDims = { width: part.width, height: part.height };
     let detectionQuad: Quadrilateral | null = null;
     let detectionDims = partDims;
     let cropConfidence: number | undefined;
     let cropProfile: 'standard' | 'docquad' = 'standard';
+    let isFallbackQuad = false;
+
+    let textBlocks: Array<{ left: number; top: number; right: number; bottom: number }> = [];
+    let hasText = false;
+    let textBounds: { left: number; top: number; right: number; bottom: number } | undefined;
+
+    try {
+        const mlKitRes = await detectTextOrientationAndBounds(part.uri);
+        if (mlKitRes) {
+            hasText = mlKitRes.hasText;
+            textBounds = mlKitRes.textBounds;
+            if (mlKitRes.blocks) {
+                mlKitRes.blocks.forEach(b => {
+                    if (b.boundingBox) {
+                        textBlocks.push(b.boundingBox);
+                    }
+                });
+            }
+        }
+    } catch (err) {
+        console.warn('[refineSplitPartCrop] ML Kit bounds check failed:', err);
+    }
 
     try {
         const docQuadResult = await detectDocumentCorners(part.uri);
@@ -478,8 +822,9 @@ async function refineSplitPartCrop(part: PreparedImagePart): Promise<PreparedIma
                 profile: 'docquad',
             });
             if (gate.accepted) {
-                detectionQuad = docQuadResult.quadrilateral;
-                detectionDims = docQuadResult.dimensions;
+                const scaled = scaleQuadToDimensions(docQuadResult.quadrilateral, docQuadResult.dimensions, partDims);
+                detectionQuad = scaled;
+                detectionDims = partDims;
                 cropConfidence = docQuadResult.confidence;
                 cropProfile = 'docquad';
             }
@@ -509,7 +854,9 @@ async function refineSplitPartCrop(part: PreparedImagePart): Promise<PreparedIma
                     areaScore: cvResult.areaScore,
                 });
                 if (gate.accepted) {
-                    detectionQuad = cvResult.quadrilateral;
+                    const scaled = scaleQuadToDimensions(cvResult.quadrilateral, detectionDims, partDims);
+                    detectionQuad = scaled;
+                    detectionDims = partDims;
                     cropConfidence = cvResult.confidence;
                     cropProfile = 'standard';
                 }
@@ -523,31 +870,30 @@ async function refineSplitPartCrop(part: PreparedImagePart): Promise<PreparedIma
         }
     }
 
-    // FALLBACK: If DocQuad and OpenCV fail, fallback to ML Kit Text Recognition bounds
+    // FALLBACK: If both DocQuad and OpenCV failed, default to text-based crop if available, otherwise a safe A4 crop
     if (!detectionQuad) {
-        try {
-            const mlKitRes = await detectTextOrientationAndBounds(part.uri);
-            if (mlKitRes?.hasText && mlKitRes.textBounds) {
-                const tb = mlKitRes.textBounds;
-                const padX = (tb.right - tb.left) * 0.10;
-                const padY = (tb.bottom - tb.top) * 0.10;
-                const left = Math.max(0, tb.left - padX);
-                const top = Math.max(0, tb.top - padY);
-                const right = Math.min(part.width, tb.right + padX);
-                const bottom = Math.min(part.height, tb.bottom + padY);
-
-                detectionQuad = {
-                    topLeft: { x: left, y: top },
-                    topRight: { x: right, y: top },
-                    bottomRight: { x: right, y: bottom },
-                    bottomLeft: { x: left, y: bottom }
-                };
-                cropConfidence = 0.85;
-                cropProfile = 'docquad';
-                console.log('[splitCrop] Fallback to ML Kit text bounds SUCCESS:', detectionQuad);
-            }
-        } catch (err) {
-            console.warn('[splitCrop] ML Kit fallback failed:', err);
+        isFallbackQuad = true;
+        if (hasText && textBounds && textBlocks.length > 0) {
+            const textW = textBounds.right - textBounds.left;
+            const textH = textBounds.bottom - textBounds.top;
+            const padX = Math.max(part.width * 0.06, textW * 0.12);
+            const padY = Math.max(part.height * 0.06, textH * 0.12);
+            detectionQuad = {
+                topLeft: { x: Math.max(0, textBounds.left - padX), y: Math.max(0, textBounds.top - padY) },
+                topRight: { x: Math.min(part.width, textBounds.right + padX), y: Math.max(0, textBounds.top - padY) },
+                bottomRight: { x: Math.min(part.width, textBounds.right + padX), y: Math.min(part.height, textBounds.bottom + padY) },
+                bottomLeft: { x: Math.max(0, textBounds.left - padX), y: Math.min(part.height, textBounds.bottom + padY) }
+            };
+            detectionDims = partDims;
+            cropConfidence = 0.95;
+            cropProfile = 'docquad';
+            console.log('[refineSplitPartCrop] Fallback to text-based crop SUCCESS:', detectionQuad);
+        } else {
+            detectionQuad = getFallbackA4Quad(part.width, part.height);
+            detectionDims = partDims;
+            cropConfidence = 0.95;
+            cropProfile = 'docquad';
+            console.log('[refineSplitPartCrop] Fallback to safe centered A4 crop SUCCESS:', detectionQuad);
         }
     }
 
@@ -555,7 +901,7 @@ async function refineSplitPartCrop(part: PreparedImagePart): Promise<PreparedIma
 
     try {
         const scaledQuad = scaleQuadToDimensions(detectionQuad, detectionDims, partDims);
-        const gate = evaluateAutoCropCandidate(scaledQuad, partDims, {
+        const gate = isFallbackQuad ? { accepted: true } : evaluateAutoCropCandidate(scaledQuad, partDims, {
             confidence: cropConfidence,
             profile: cropProfile,
         });
@@ -595,6 +941,7 @@ export default function ScannerScreen() {
     const shouldReturnToUpload = returnToUpload === '1';
     const shouldLaunchNativeScanner = mode === 'native';
     const insets = useSafeAreaInsets();
+    const networkQuality = useNetworkQuality();
     const cameraRef = useRef<CameraView>(null);
     const isMounted = useRef(true);
     const [permission, requestPermission] = useCameraPermissions();
@@ -756,6 +1103,7 @@ export default function ScannerScreen() {
                 Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
             }
 
+            const storeState = useScanStore.getState();
             const pending: PendingCapture = {
                 uri: photo.uri,
                 blur,
@@ -763,6 +1111,10 @@ export default function ScannerScreen() {
                 dims: cvResultRef.current?.dimensions ?? { width: 480, height: 640 },
                 rawDims: { width: photo.width, height: photo.height },
                 captureOrientation,
+                pageMode: storeState.currentSession?.settings.page_mode ?? 'single',
+                phase: storeState.currentPhase,
+                studentIndex: storeState.currentStudentIndex,
+                autoCropEnabled: storeState.autoCropEnabled,
             };
 
             // Commit with a natural document-clean filter, while preserving the
@@ -770,6 +1122,7 @@ export default function ScannerScreen() {
             await commitCapture(pending, 'high_contrast');
         } catch (e) {
             console.warn('[triggerCapture] error:', e);
+            Sentry.captureException(e, { tags: { area: 'triggerCapture' } });
         } finally {
             setLiveFlashMode('off');
             transitionTo('COOLDOWN');
@@ -815,21 +1168,20 @@ export default function ScannerScreen() {
             let autoRotationDegrees: 0 | 90 | 180 | 270 = 0;
             let hasText = false;
             let textBounds: { left: number; top: number; right: number; bottom: number } | undefined;
+            let rotatedBlocks: Array<{ left: number; top: number; right: number; bottom: number }> = [];
+            let textOrientationDetected = false;
 
             try {
-                const orientationRes = await detectTextOrientationAndBounds(canonicalUri);
+                const orientationRes = pending.pageMode === 'double'
+                    ? await detectDoublePageOrientation(canonicalUri, canonicalDims.width, canonicalDims.height)
+                    : await detectTextOrientationAndBounds(canonicalUri);
                 if (orientationRes) {
+                    textOrientationDetected = true;
                     autoRotationDegrees = orientationRes.rotationNeeded;
                     hasText = orientationRes.hasText;
-                    textBounds = orientationRes.textBounds;
-                    console.log('[commitCapture] ML Kit Text Orientation:', {
-                        rotationNeeded: autoRotationDegrees,
-                        hasText,
-                        textBounds,
-                        originalDims: `${orientationRes.width}x${orientationRes.height}`
-                    });
-
+                    
                     if (autoRotationDegrees !== 0) {
+                        console.log('[commitCapture] Rotating raw image to be upright:', autoRotationDegrees);
                         const rotated = await ImageManipulator.manipulateAsync(
                             canonicalUri,
                             [{ rotate: autoRotationDegrees }],
@@ -838,35 +1190,39 @@ export default function ScannerScreen() {
                         uprightUri = rotated.uri;
                         uprightUriToCleanup = rotated.uri;
                         uprightDims = { width: rotated.width, height: rotated.height };
-                        
-                        // Transform the textBounds to the new rotated coordinate space
-                        const origW = canonicalDims.width;
-                        const origH = canonicalDims.height;
-                        const tb = orientationRes.textBounds;
-                        
-                        if (autoRotationDegrees === 90) {
-                            textBounds = {
-                                left: origH - tb.bottom,
-                                top: tb.left,
-                                right: origH - tb.top,
-                                bottom: tb.right
-                            };
-                        } else if (autoRotationDegrees === 180) {
-                            textBounds = {
-                                left: origW - tb.right,
-                                top: origH - tb.bottom,
-                                right: origW - tb.left,
-                                bottom: origH - tb.top
-                            };
-                        } else if (autoRotationDegrees === 270) {
-                            textBounds = {
-                                left: tb.top,
-                                top: origW - tb.right,
-                                right: tb.bottom,
-                                bottom: origW - tb.left
-                            };
+                    }
+
+                    console.log('[commitCapture] ML Kit Text Orientation:', {
+                        rotationNeeded: autoRotationDegrees,
+                        hasText,
+                        originalDims: `${orientationRes.width}x${orientationRes.height}`,
+                        uprightDims: `${uprightDims.width}x${uprightDims.height}`
+                    });
+
+                    // Transform textBounds to the new upright/rotated space
+                    if (pending.pageMode !== 'double') {
+                        if (orientationRes.textBounds) {
+                            textBounds = rotateBoundingBox(
+                                orientationRes.textBounds,
+                                autoRotationDegrees,
+                                canonicalDims.width,
+                                canonicalDims.height
+                            );
                         }
-                        console.log('[commitCapture] Rotated textBounds:', textBounds);
+
+                        const blocks = orientationRes.blocks || [];
+                        blocks.forEach((b: TextBlockDiagnostic) => {
+                            if (b.boundingBox) {
+                                // Rotate individual block bounds to the upright/rotated space
+                                const rotBox = rotateBoundingBox(
+                                    b.boundingBox,
+                                    autoRotationDegrees,
+                                    canonicalDims.width,
+                                    canonicalDims.height
+                                );
+                                rotatedBlocks.push(rotBox);
+                            }
+                        });
                     }
                 }
             } catch (err) {
@@ -882,11 +1238,12 @@ export default function ScannerScreen() {
             let finalScaledQuad: Quadrilateral | null = null;
             let cropConfidence: number | undefined;
             let cropProfile: 'standard' | 'docquad' = 'standard';
+            let isFallbackQuad = false;
 
-            // Save raw un-warped camera image
+            // Save raw un-warped camera image (EXIF-baked to be upright)
             const rawFilename = `raw_${Date.now()}.jpg`;
             const destRaw = new File(Paths.document, rawFilename);
-            new File(pending.uri).copy(destRaw);
+            new File(uprightUri).copy(destRaw);
             let rawVerified = false;
             for (let i = 0; i < 10; i++) {
                 if (destRaw.exists) { rawVerified = true; break; }
@@ -912,8 +1269,9 @@ export default function ScannerScreen() {
                                 { confidence: docQuadResult.confidence, profile: 'docquad' }
                             );
                             if (docQuadGate.accepted) {
-                                detectionQuad = docQuadResult.quadrilateral;
-                                detectionDims = docQuadResult.dimensions;
+                                const scaled = scaleQuadToDimensions(docQuadResult.quadrilateral, docQuadResult.dimensions, uprightDims);
+                                detectionQuad = scaled;
+                                detectionDims = uprightDims;
                                 cropConfidence = docQuadResult.confidence;
                                 cropProfile = 'docquad';
                                 console.log('[commitCapture] DocQuad detection SUCCESS', {
@@ -975,8 +1333,9 @@ export default function ScannerScreen() {
                                         metrics: cropGate.metrics,
                                     });
                                 } else {
-                                    detectionQuad = cvResult.quadrilateral;
-                                    detectionDims = { width: downscaled.width, height: downscaled.height };
+                                    const scaled = scaleQuadToDimensions(cvResult.quadrilateral, { width: downscaled.width, height: downscaled.height }, uprightDims);
+                                    detectionQuad = scaled;
+                                    detectionDims = uprightDims;
                                     cropConfidence = cvResult.confidence;
                                     cropProfile = 'standard';
                                     console.log('[commitCapture] Post-capture detection SUCCESS');
@@ -992,26 +1351,31 @@ export default function ScannerScreen() {
                         }
                     }
 
-                    // FALLBACK: If both DocQuad and OpenCV failed but we have text bounds, use it!
-                    if (!detectionQuad && hasText && textBounds) {
-                        const tb = textBounds;
-                        const padX = (tb.right - tb.left) * 0.10;
-                        const padY = (tb.bottom - tb.top) * 0.10;
-                        const left = Math.max(0, tb.left - padX);
-                        const top = Math.max(0, tb.top - padY);
-                        const right = Math.min(uprightDims.width, tb.right + padX);
-                        const bottom = Math.min(uprightDims.height, tb.bottom + padY);
-
-                        detectionQuad = {
-                            topLeft: { x: left, y: top },
-                            topRight: { x: right, y: top },
-                            bottomRight: { x: right, y: bottom },
-                            bottomLeft: { x: left, y: bottom }
-                        };
-                        detectionDims = uprightDims;
-                        cropConfidence = 0.85;
-                        cropProfile = 'docquad';
-                        console.log('[commitCapture] Fallback to ML Kit text bounds crop SUCCESS:', detectionQuad);
+                    // FALLBACK: If both DocQuad and OpenCV failed, default to text-based crop if available, otherwise a safe centered A4 crop
+                    if (!detectionQuad) {
+                        isFallbackQuad = true;
+                        if (hasText && textBounds && rotatedBlocks.length > 0) {
+                            const textW = textBounds.right - textBounds.left;
+                            const textH = textBounds.bottom - textBounds.top;
+                            const padX = Math.max(uprightDims.width * 0.06, textW * 0.12);
+                            const padY = Math.max(uprightDims.height * 0.06, textH * 0.12);
+                            detectionQuad = {
+                                topLeft: { x: Math.max(0, textBounds.left - padX), y: Math.max(0, textBounds.top - padY) },
+                                topRight: { x: Math.min(uprightDims.width, textBounds.right + padX), y: Math.max(0, textBounds.top - padY) },
+                                bottomRight: { x: Math.min(uprightDims.width, textBounds.right + padX), y: Math.min(uprightDims.height, textBounds.bottom + padY) },
+                                bottomLeft: { x: Math.max(0, textBounds.left - padX), y: Math.min(uprightDims.height, textBounds.bottom + padY) }
+                            };
+                            detectionDims = uprightDims;
+                            cropConfidence = 0.95;
+                            cropProfile = 'docquad';
+                            console.log('[commitCapture] Fallback to text-based crop SUCCESS:', detectionQuad);
+                        } else {
+                            detectionQuad = getFallbackA4Quad(uprightDims.width, uprightDims.height);
+                            detectionDims = uprightDims;
+                            cropConfidence = 0.95;
+                            cropProfile = 'docquad';
+                            console.log('[commitCapture] Fallback to safe centered A4 crop SUCCESS:', detectionQuad);
+                        }
                     }
                 } else if (!scanStateForCrop.autoCropEnabled) {
                     console.log('[commitCapture] Auto-crop disabled. Skipping post-capture detection.');
@@ -1044,9 +1408,9 @@ export default function ScannerScreen() {
                         bottomRight: { x: detectionQuad.bottomRight.x * scaleX, y: detectionQuad.bottomRight.y * scaleY },
                         bottomLeft: { x: detectionQuad.bottomLeft.x * scaleX, y: detectionQuad.bottomLeft.y * scaleY },
                     };
-                    const scaledCropGate = evaluateAutoCropCandidate(scaledQuad, uprightDims, {
+                    const scaledCropGate = (isFallbackQuad ? { accepted: true } : evaluateAutoCropCandidate(scaledQuad, uprightDims, {
                         profile: cropProfile,
-                    });
+                    })) as CropQualityResult;
                     if (!scaledCropGate.accepted) {
                         console.warn('[commitCapture] Scaled auto-crop rejected before warp. Falling back to full image.', {
                             reason: scaledCropGate.reason,
@@ -1075,10 +1439,14 @@ export default function ScannerScreen() {
 
             // Step 2b: Resize if perspective correction didn't run (only for single page mode)
             if (finalUri === uprightUri && useScanStore.getState().currentSession?.settings.page_mode !== 'double') {
+                const isSlowNet = networkQuality === '2g' || networkQuality === '3g';
+                const quality = isSlowNet ? (networkQuality === '2g' ? 0.72 : 0.80) : 0.90;
+                const maxWidth = isSlowNet ? 1200 : 1600;
+
                 const resized = await ImageManipulator.manipulateAsync(
                     finalUri,
-                    [{ resize: { width: 1600 } }],
-                    { compress: 0.90, format: ImageManipulator.SaveFormat.JPEG },
+                    [{ resize: { width: maxWidth } }],
+                    { compress: quality, format: ImageManipulator.SaveFormat.JPEG },
                 );
                 finalUri = resized.uri;
                 finalDims = { width: resized.width, height: resized.height };
@@ -1097,8 +1465,11 @@ export default function ScannerScreen() {
             } catch (_) {}
 
             const stateAtSave = useScanStore.getState();
+            // Use the page mode snapshotted at shutter-release (pending.pageMode) rather than
+            // the live store value. This prevents the user tapping 1-page/2-page between
+            // capture and processing from corrupting the output.
             let shouldSplitDoublePage =
-                stateAtSave.currentSession?.settings.page_mode === 'double' &&
+                pending.pageMode === 'double' &&
                 !stateAtSave.pendingRetake;
 
             // Normalize double-page source orientation before split.
@@ -1107,7 +1478,7 @@ export default function ScannerScreen() {
             // Without this call, a portrait-captured double-page spread gets split
             // top/bottom instead of left/right, producing garbage output.
             let splitSource = { uri: finalUri, width: finalDims.width, height: finalDims.height };
-            if (stateAtSave.currentSession?.settings.page_mode === 'double' && !stateAtSave.pendingRetake) {
+            if (pending.pageMode === 'double' && !stateAtSave.pendingRetake) {
                 try {
                     const normalized = await normalizeDoublePageSource(
                         finalUri,
@@ -1144,7 +1515,7 @@ export default function ScannerScreen() {
             }
 
             const refineSequentialSplitParts = async (rawParts: PreparedImagePart[]) => {
-                if (stateAtSave.autoCropEnabled) {
+                if (pending.autoCropEnabled) {
                     return await Promise.all(rawParts.map(async (part, idx) => {
                         const refined = await refineSplitPartCrop(part);
                         partsDiagnostics[idx] = {
@@ -1174,7 +1545,7 @@ export default function ScannerScreen() {
             let imageParts: PreparedImagePart[] = [];
             if (shouldSplitDoublePage) {
                 const rawParts = await splitDoublePageImage(splitSource.uri, splitSource.width, splitSource.height);
-                if (stateAtSave.autoCropEnabled && twoPagesRes.quad && twoPagesRes.detectorUsed !== 'none') {
+                if (pending.autoCropEnabled && twoPagesRes.quad && twoPagesRes.detectorUsed !== 'none') {
                     console.log(`[commitCapture] Using optimized mathematical split of the full spread quad (${twoPagesRes.detectorUsed})`);
                     const isHorizontal = splitSource.width >= splitSource.height;
                     const splitQuads = splitQuadrilateral(twoPagesRes.quad, isHorizontal ? 'horizontal' : 'vertical');
@@ -1259,7 +1630,7 @@ export default function ScannerScreen() {
                 // Single page path (either from the beginning, or skipped split)
                 let singlePart: PreparedImagePart = { uri: splitSource.uri, width: splitSource.width, height: splitSource.height };
                 
-                if (stateAtSave.autoCropEnabled) {
+                if (pending.autoCropEnabled) {
                     if (finalScaledQuad) {
                         // If we already cropped/normalized in Step 2, use the cropped image directly!
                         singlePart = {
@@ -1358,7 +1729,11 @@ export default function ScannerScreen() {
             const splitSourcePageId = didSplitDoublePage ? generateUUID() : undefined;
 
             const persistPagePart = async (part: PreparedImagePart, index: number) => {
-                const oriented = await autoOrientPageImage(part.uri, part.width, part.height);
+                const oriented = await autoOrientPageImage(
+                    part.uri,
+                    part.width,
+                    part.height
+                );
 
                 const suffix = `${Date.now()}_${index}`;
                 const origFilename = `orig_${suffix}.jpg`;
@@ -1374,7 +1749,14 @@ export default function ScannerScreen() {
                     throw new Error('Failed to save original page image');
                 }
 
-                const filteredUri = await applyFilter(destOrig.uri, filter);
+                const isSlowNet = networkQuality === '2g' || networkQuality === '3g';
+                const quality = isSlowNet ? (networkQuality === '2g' ? 0.72 : 0.80) : 0.88;
+                const maxWidth = isSlowNet ? 1200 : 1600;
+
+                const filteredUri = await applyFilter(destOrig.uri, filter, {
+                    compress: quality,
+                    maxWidth: maxWidth
+                });
 
                 const filename = `scanned_${suffix}.jpg`;
                 const dest = new File(Paths.document, filename);
@@ -1389,7 +1771,7 @@ export default function ScannerScreen() {
                     throw new Error('Failed to save filtered page image');
                 }
 
-                const cropAttempted = stateAtSave.autoCropEnabled;
+                const cropAttempted = pending.autoCropEnabled;
                 const cropFailed = cropAttempted && !part.cropApplied;
                 const needsOrientationOrCropReview = oriented.needsReview || cropFailed;
 
@@ -1436,7 +1818,9 @@ export default function ScannerScreen() {
                     diagnostics: partsDiagnostics[index],
                 };
 
-                addPageRef.current(page);
+                // Pass the phase and studentIndex snapshotted at shutter-release time so that
+                // any UI changes the user made during processing do not redirect this page.
+                addPageRef.current(page, pending.phase, pending.studentIndex);
             };
 
             for (let i = 0; i < imageParts.length; i++) {
@@ -1444,6 +1828,7 @@ export default function ScannerScreen() {
             }
         } catch (e) {
             console.warn('[commitCapture] error:', e);
+            Sentry.captureException(e, { tags: { area: 'commitCapture' } });
         } finally {
             normalizingRef.current = false;
         }
@@ -1744,6 +2129,36 @@ export default function ScannerScreen() {
                     {flashMode === 'auto' && <Text style={styles.flashAutoText}>A</Text>}
                 </TouchableOpacity>
 
+                {/* Floating Network Indicator */}
+                <View 
+                    style={[
+                        styles.floatingNetworkIndicator, 
+                        { 
+                            top: insets.top + 60,
+                            backgroundColor: networkQuality === 'offline' ? 'rgba(239, 68, 68, 0.2)' : 'rgba(0,0,0,0.5)'
+                        }
+                    ]} 
+                >
+                    <View 
+                        style={[
+                            styles.networkDot, 
+                            { 
+                                backgroundColor: 
+                                    networkQuality === 'wifi_4g' ? '#10B981' :
+                                    networkQuality === '3g' ? '#F59E0B' :
+                                    networkQuality === '2g' ? '#EF4444' :
+                                    '#9CA3AF'
+                            }
+                        ]} 
+                    />
+                    <Text style={styles.networkText}>
+                        {networkQuality === 'wifi_4g' ? 'WiFi/4G' :
+                         networkQuality === '3g' ? '3G' :
+                         networkQuality === '2g' ? '2G' :
+                         'Offline'}
+                    </Text>
+                </View>
+
                 {pendingRetake && (
                     <View style={styles.retakeBanner}>
                         <Text style={styles.retakeText}>
@@ -1875,6 +2290,27 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'center',
         zIndex: 10,
+    },
+    floatingNetworkIndicator: {
+        position: 'absolute',
+        right: 74,
+        height: 44,
+        borderRadius: 22,
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: 12,
+        gap: 6,
+        zIndex: 10,
+    },
+    networkDot: {
+        width: 8,
+        height: 8,
+        borderRadius: 4,
+    },
+    networkText: {
+        color: '#fff',
+        fontSize: 12,
+        fontWeight: 'bold',
     },
     flashAutoText: {
         position: 'absolute',

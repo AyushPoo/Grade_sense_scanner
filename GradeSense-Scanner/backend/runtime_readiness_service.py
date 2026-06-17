@@ -16,11 +16,18 @@ def is_webapp_sync_configured(env: Mapping[str, str | None]) -> bool:
 
 
 def is_gcs_storage_configured(env: Mapping[str, str | None]) -> bool:
-    return (
+    has_gcs = (
         env.get("STORAGE_PROVIDER", "").strip().lower() == "gcs"
         and has_value(env, "GCS_BUCKET_NAME")
-        and any(has_value(env, key) for key in GCS_CREDENTIAL_ENV_VARS)
     )
+    if not has_gcs:
+        return False
+    
+    # On Google Cloud Run, credentials are provided by the default service account.
+    if has_value(env, "K_SERVICE"):
+        return True
+        
+    return any(has_value(env, key) for key in GCS_CREDENTIAL_ENV_VARS)
 
 
 def get_missing_required_env(env: Mapping[str, str | None]) -> list[str]:
@@ -31,7 +38,7 @@ def get_missing_required_env(env: Mapping[str, str | None]) -> list[str]:
             missing_required.append("STORAGE_PROVIDER=gcs")
         if not has_value(env, "GCS_BUCKET_NAME"):
             missing_required.append("GCS_BUCKET_NAME")
-        if not any(has_value(env, key) for key in GCS_CREDENTIAL_ENV_VARS):
+        if not has_value(env, "K_SERVICE") and not any(has_value(env, key) for key in GCS_CREDENTIAL_ENV_VARS):
             missing_required.append("GOOGLE_APPLICATION_CREDENTIALS")
 
     return missing_required

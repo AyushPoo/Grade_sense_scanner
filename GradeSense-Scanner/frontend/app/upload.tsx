@@ -25,6 +25,8 @@ import { createImportedPdfPage } from '../src/utils/scannedPageAssets';
 import { generateUUID } from '../src/store/scanStore';
 import { getScanPhaseBlockingIssues, getUploadBlockingIssues } from '../src/utils/uploadRequirements';
 import { useHardwareAwareBottomInset } from '../src/utils/safeArea';
+import * as Sentry from '@sentry/react-native';
+import { useNetworkQuality } from '../src/utils/networkUtils';
 
 // Simple Progress Bar Component
 const ProgressBar = ({ progress }: { progress: number }) => (
@@ -70,16 +72,17 @@ export default function UploadScreen() {
   const isDocumentMode = documentMode === '1';
   const insets = useSafeAreaInsets();
   const bottomContentInset = useHardwareAwareBottomInset(insets.bottom, 24);
+  const networkQuality = useNetworkQuality();
 
-  // ── DEV INSTRUMENTATION (Phase 1) ──────────────────────────────────────────
+  // ΓöÇΓöÇ DEV INSTRUMENTATION (Phase 1) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   const renderCountRef = useRef(0);
   renderCountRef.current++;
   if (__DEV__) {
     console.log(`[RENDER] UploadScreen: count=${renderCountRef.current}`);
   }
-  // ─────────────────────────────────────────────────────────────────────────────
+  // ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
-  // ── PHASE 1 FIX: Granular selectors — UploadScreen is now isolated from broad store changes.
+  // ΓöÇΓöÇ PHASE 1 FIX: Granular selectors ΓÇö UploadScreen is now isolated from broad store changes.
   const updateSessionStatus = useScanStore(state => state.updateSessionStatus);
   const updateSessionDetails = useScanStore(state => state.updateSessionDetails);
   const replaceSessionDocuments = useScanStore(state => state.replaceSessionDocuments);
@@ -90,15 +93,16 @@ export default function UploadScreen() {
   ));
   
   const [session, setSession] = useState<ScanSession | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [currentItem, setCurrentItem] = useState('');
-  const [uploadComplete, setUploadComplete] = useState(false);
   const [showSubjectSelector, setShowSubjectSelector] = useState(false);
   const [newSubjectName, setNewSubjectName] = useState('');
   const [newSubjectClass, setNewSubjectClass] = useState('');
   const [isCreatingSubject, setIsCreatingSubject] = useState(false);
   const [isPickingDocument, setIsPickingDocument] = useState(false);
+
+  const isUploading = session ? (session.status === 'uploading' || session.status === 'syncing') : false;
+  const progress = session ? (session.upload_progress || 0) / 100 : 0;
+  const uploadComplete = session ? (session.status === 'uploaded' || session.status === 'completed' || session.status === 'graded') : false;
+  const currentItem = isUploading ? 'Uploading scans...' : '';
 
   useEffect(() => {
     fetchSubjects().catch(err => console.error('Failed to load subjects:', err));
@@ -109,35 +113,25 @@ export default function UploadScreen() {
       const found = sessionDataFromStore;
       if (found) {
         setSession(found);
-        if (found.status === 'uploaded') {
-          setUploadComplete(true);
-          setProgress(1);
-        }
       }
     }
   }, [sessionId, sessionDataFromStore]);
 
-  const simulateUpload = async () => {
+  const simulateUpload = () => {
     if (!session) return;
     
-    setIsUploading(true);
-
-    try {
-      await uploadSessionToWebApp(session, (item, prog) => {
-        setCurrentItem(item);
-        setProgress(prog);
-      });
-
-      // Complete
-      setProgress(1);
-      setUploadComplete(true);
-    } catch (error: any) {
-      console.error('Upload error:', error);
-      const errMsg = error?.message || 'Unknown network or server error';
-      Alert.alert('Upload Failed', `Failed to upload session: ${errMsg}`);
-    } finally {
-      setIsUploading(false);
-    }
+    useScanStore.getState().addToUploadQueue(session.session_id);
+    
+    Alert.alert(
+      'Upload Started',
+      'Your exam papers are uploading in the background. You can track progress on the Home screen.',
+      [
+        {
+          text: 'Go to Home',
+          onPress: () => router.replace('/(tabs)/home'),
+        }
+      ]
+    );
   };
 
   const handleSelectSubject = (subjectId: string) => {
@@ -315,7 +309,9 @@ export default function UploadScreen() {
             text: 'Yes, Cancel',
             style: 'destructive',
             onPress: () => {
-              setIsUploading(false);
+              useScanStore.setState(state => ({
+                uploadQueue: state.uploadQueue.filter(id => id !== session!.session_id)
+              }));
               updateSessionStatus(session!.session_id, 'ready', 0);
             },
           },
@@ -378,9 +374,9 @@ export default function UploadScreen() {
                 <Ionicons name="sparkles" size={18} color={COLORS.primary} />
                 <Text style={[styles.nextStepsTitle, { color: COLORS.primary, marginBottom: 0 }]}>AI Grading Started</Text>
               </View>
-              <Text style={styles.nextStepsItem}>• Submissions are being graded by AI in the background.</Text>
-              <Text style={styles.nextStepsItem}>• A live progress card will appear on your Home tab.</Text>
-              <Text style={styles.nextStepsItem}>• When done, tap the card to review student marks on your phone.</Text>
+              <Text style={styles.nextStepsItem}>ΓÇó Submissions are being graded by AI in the background.</Text>
+              <Text style={styles.nextStepsItem}>ΓÇó A live progress card will appear on your Home tab.</Text>
+              <Text style={styles.nextStepsItem}>ΓÇó When done, tap the card to review student marks on your phone.</Text>
             </View>
 
             <TouchableOpacity
@@ -544,6 +540,33 @@ export default function UploadScreen() {
                 </View>
               </View>
             </View>
+
+            {/* Network quality banner — visible only on slow connections */}
+            {(networkQuality === '2g' || networkQuality === '3g') && (
+              <View
+                style={[
+                  styles.networkBanner,
+                  networkQuality === '2g' ? styles.networkBannerSlow : styles.networkBannerMedium,
+                ]}
+              >
+                <Ionicons
+                  name={networkQuality === '2g' ? 'warning-outline' : 'cellular-outline'}
+                  size={16}
+                  color={networkQuality === '2g' ? COLORS.error : COLORS.warning}
+                  style={{ marginRight: 8 }}
+                />
+                <Text
+                  style={[
+                    styles.networkBannerText,
+                    { color: networkQuality === '2g' ? COLORS.error : COLORS.warning },
+                  ]}
+                >
+                  {networkQuality === '2g'
+                    ? 'Very slow network — consider uploading on WiFi'
+                    : 'Slow network detected — upload may take longer'}
+                </Text>
+              </View>
+            )}
 
             <TouchableOpacity
               style={[
@@ -917,6 +940,29 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     textAlign: 'center',
     marginTop: 16,
+  },
+  networkBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 10,
+    borderWidth: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginBottom: 12,
+  },
+  networkBannerMedium: {
+    backgroundColor: COLORS.warningLight,
+    borderColor: `${COLORS.warning}55`,
+  },
+  networkBannerSlow: {
+    backgroundColor: COLORS.errorLight,
+    borderColor: `${COLORS.error}55`,
+  },
+  networkBannerText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '600',
+    lineHeight: 18,
   },
   uploadingContainer: {
     flex: 1,

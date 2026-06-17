@@ -18,6 +18,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { COLORS } from '../src/config';
 import { useScanStore } from '../src/store/scanStore';
+import { useAuthStore } from '../src/store/authStore';
 import { Batch, ScanSessionSettings, Subject } from '../src/types';
 import { useHardwareAwareBottomInset } from '../src/utils/safeArea';
 
@@ -38,10 +39,12 @@ export default function SessionSetupScreen() {
   );
   const [selectedBatch, setSelectedBatch] = useState<Batch | null>(null);
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
+  const { hasAcceptedDPDPConsent } = useAuthStore();
   const [totalMarks, setTotalMarks] = useState('');
   const [examDate, setExamDate] = useState(new Date().toISOString().split('T')[0]);
   const [isStartingSession, setIsStartingSession] = useState(false);
   const isStartingSessionRef = useRef(false);
+  const [hasParentalConsent, setHasParentalConsent] = useState(hasAcceptedDPDPConsent);
   
   // Create batch modal
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -66,6 +69,7 @@ export default function SessionSetupScreen() {
     grading_mode: 'balanced', // default to balanced
     pilot_review_first: false,
     feedback_enabled: true,
+    annotations_enabled: false,
   });
 
   // Populate existing session details if in edit mode
@@ -90,12 +94,14 @@ export default function SessionSetupScreen() {
         
         setTotalMarks(existing.total_marks?.toString() || '');
         setExamDate(existing.exam_date || new Date().toISOString().split('T')[0]);
+        setHasParentalConsent(true);
         setSettings({
           ...existing.settings,
           auto_crop: false,
           grading_mode: existing.settings.grading_mode || 'balanced',
           pilot_review_first: Boolean(existing.settings.pilot_review_first || (existing.settings as any).pilotReviewFirst),
           feedback_enabled: existing.settings.feedback_enabled ?? (existing.settings as any).feedbackEnabled ?? true,
+          annotations_enabled: existing.settings.annotations_enabled ?? (existing.settings as any).annotationsEnabled ?? false,
         });
       }
     }
@@ -111,6 +117,7 @@ export default function SessionSetupScreen() {
     !hasValidExamDate ? 'Enter a valid exam date in YYYY-MM-DD format.' : null,
     !selectedBatch ? 'Select or create a batch.' : null,
     !settings.scan_model_answer ? 'Model Answer is required before scanning or uploading.' : null,
+    !hasParentalConsent ? 'Confirm student/parental consent under the DPDP Act.' : null,
   ].filter(Boolean) as string[];
   const canStartScanning = setupErrors.length === 0 && !isCreatingBatch && !isCreatingSubject && !isStartingSession;
 
@@ -459,7 +466,7 @@ export default function SessionSetupScreen() {
                   thumbColor={settings.feedback_enabled !== false ? COLORS.primary : '#f4f3f4'}
                 />
               </View>
-              <View style={[styles.optionRow, { borderBottomWidth: 0 }]}>
+              <View style={styles.optionRow}>
                 <View style={styles.optionLeft}>
                   <View style={[styles.optionIcon, { backgroundColor: '#FFF3E0' }]}>
                     <Ionicons name="school-outline" size={20} color={COLORS.primary} />
@@ -474,6 +481,23 @@ export default function SessionSetupScreen() {
                   onValueChange={(value) => updateSetting('pilot_review_first', value)}
                   trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
                   thumbColor={settings.pilot_review_first ? COLORS.primary : '#f4f3f4'}
+                />
+              </View>
+              <View style={[styles.optionRow, { borderBottomWidth: 0 }]}>
+                <View style={styles.optionLeft}>
+                  <View style={[styles.optionIcon, { backgroundColor: COLORS.successLight }]}>
+                    <Ionicons name="create-outline" size={20} color={COLORS.success} />
+                  </View>
+                  <View style={styles.optionTextContainer}>
+                    <Text style={styles.optionLabel}>Produce a hand-graded copy (Premium)</Text>
+                    <Text style={styles.optionHint}>Scanned output will contain tick marks and hand-graded annotations</Text>
+                  </View>
+                </View>
+                <Switch
+                  value={Boolean(settings.annotations_enabled)}
+                  onValueChange={(value) => updateSetting('annotations_enabled', value)}
+                  trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
+                  thumbColor={settings.annotations_enabled ? COLORS.primary : '#f4f3f4'}
                 />
               </View>
             </View>
@@ -667,6 +691,27 @@ export default function SessionSetupScreen() {
               }
             </Text>
           </View>
+
+          {/* Consent Checkbox */}
+          {!hasAcceptedDPDPConsent && (
+            <TouchableOpacity
+              style={styles.consentContainer}
+              onPress={() => setHasParentalConsent(!hasParentalConsent)}
+              activeOpacity={0.8}
+            >
+              <View style={[
+                styles.checkbox,
+                hasParentalConsent && styles.checkboxChecked
+              ]}>
+                {hasParentalConsent && (
+                  <Ionicons name="checkmark" size={16} color="#fff" />
+                )}
+              </View>
+              <Text style={styles.consentText}>
+                I confirm that the school/institution has obtained the required student/parental consent under the DPDP Act, 2023 for processing academic papers.
+              </Text>
+            </TouchableOpacity>
+          )}
 
           {setupErrors.length > 0 && (
             <View style={styles.validationBox}>
@@ -1375,5 +1420,36 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.textMuted,
     marginTop: 2,
+  },
+  consentContainer: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: COLORS.cardBg,
+    borderColor: COLORS.border,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 20,
+    gap: 12,
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: COLORS.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
+  checkboxChecked: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  consentText: {
+    flex: 1,
+    fontSize: 13,
+    color: COLORS.textLight,
+    lineHeight: 18,
   },
 });
