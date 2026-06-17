@@ -150,7 +150,7 @@ def derive_scan_session_reconciliation(
     if status not in SYNCING_SESSION_STATUSES:
         return None
 
-    if exam_status and str(exam_status).lower() in ("graded", "published", "closed"):
+    if exam_status and str(exam_status).lower() in ("graded", "published", "closed", "locked"):
         return {
             "status": "graded",
             "grading_status": "completed",

@@ -99,9 +99,9 @@ export default function UploadScreen() {
   const [isCreatingSubject, setIsCreatingSubject] = useState(false);
   const [isPickingDocument, setIsPickingDocument] = useState(false);
 
-  const isUploading = session ? (session.status === 'uploading' || session.status === 'syncing') : false;
+  const isUploading = session ? (session.status === 'uploading') : false;
   const progress = session ? (session.upload_progress || 0) / 100 : 0;
-  const uploadComplete = session ? (session.status === 'uploaded' || session.status === 'completed' || session.status === 'graded') : false;
+  const uploadComplete = session ? (session.status === 'syncing' || session.status === 'uploaded' || session.status === 'completed' || session.status === 'graded') : false;
   const currentItem = isUploading ? 'Uploading scans...' : '';
 
   useEffect(() => {

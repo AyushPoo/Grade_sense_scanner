@@ -45,6 +45,7 @@ const PageThumb = memo(({
   onCrop,
   onDelete,
   onPreview,
+  isSynced,
 }: {
   page: ScannedPage;
   pageIndex: number;
@@ -53,6 +54,7 @@ const PageThumb = memo(({
   onCrop: (student: ScannedStudent, page: ScannedPage, pageIndex: number) => void;
   onDelete: (studentIndex: number, pageIndex: number) => void;
   onPreview: (student: ScannedStudent, pageIndex: number) => void;
+  isSynced?: boolean;
 }) => {
   const quality = qualityScore(page.sharpness_score ?? 0, page.is_blurry ?? false);
   const qc      = QUALITY_COLORS[quality];
@@ -95,28 +97,30 @@ const PageThumb = memo(({
       </TouchableOpacity>
 
       {/* Actions row */}
-      <View style={styles.thumbActions}>
-        <TouchableOpacity style={styles.thumbActionBtn} onPress={() => onRetake(student, page, pageIndex)}>
-          <Ionicons name="camera-outline" size={14} color={COLORS.primary} />
-        </TouchableOpacity>
+      {!isSynced && (
+        <View style={styles.thumbActions}>
+          <TouchableOpacity style={styles.thumbActionBtn} onPress={() => onRetake(student, page, pageIndex)}>
+            <Ionicons name="camera-outline" size={14} color={COLORS.primary} />
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          style={[styles.thumbActionBtn, isPdf && styles.thumbActionDisabled]}
-          onPress={() => onCrop(student, page, pageIndex)}
-          disabled={isPdf}
-        >
-          <Ionicons name="crop-outline" size={14} color={COLORS.primary} />
-        </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.thumbActionBtn, isPdf && styles.thumbActionDisabled]}
+            onPress={() => onCrop(student, page, pageIndex)}
+            disabled={isPdf}
+          >
+            <Ionicons name="crop-outline" size={14} color={COLORS.primary} />
+          </TouchableOpacity>
 
-        <TouchableOpacity style={styles.thumbActionBtn} onPress={() => {
-            Alert.alert('Delete page', 'Remove this scan?', [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Delete', style: 'destructive', onPress: () => onDelete(student.student_index, pageIndex) },
-            ]);
-        }}>
-          <Ionicons name="trash-outline" size={14} color={COLORS.danger ?? '#E24B4A'} />
-        </TouchableOpacity>
-      </View>
+          <TouchableOpacity style={styles.thumbActionBtn} onPress={() => {
+              Alert.alert('Delete page', 'Remove this scan?', [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Delete', style: 'destructive', onPress: () => onDelete(student.student_index, pageIndex) },
+              ]);
+          }}>
+            <Ionicons name="trash-outline" size={14} color={COLORS.danger ?? '#E24B4A'} />
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   );
 });
@@ -133,12 +137,14 @@ const StudentCard = memo(({
   onPreview,
   onRename,
   onAppend,
+  isSynced,
 }: any) => {
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput]     = useState(student.label);
   const inputRef = useRef<TextInput>(null);
 
   const startEdit = () => {
+    if (isSynced) return;
     setEditingName(true);
     setTimeout(() => inputRef.current?.focus(), 50);
   };
@@ -182,7 +188,7 @@ const StudentCard = memo(({
               selectTextOnFocus
             />
           ) : (
-            <TouchableOpacity onPress={startEdit} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <TouchableOpacity onPress={startEdit} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} disabled={isSynced}>
               <Text style={styles.studentName}>{student.label}</Text>
             </TouchableOpacity>
           )}
@@ -191,16 +197,18 @@ const StudentCard = memo(({
           </Text>
         </View>
 
-        <TouchableOpacity 
-          style={{ paddingHorizontal: 10, paddingVertical: 6, backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 6, flexDirection: 'row', alignItems: 'center', gap: 4 }}
-          onPress={(e) => {
-            e.stopPropagation();
-            onAppend(student.student_index);
-          }}
-        >
-          <Ionicons name="add" size={14} color={COLORS.primary} />
-          <Text style={{ fontSize: 12, color: COLORS.primary, fontWeight: '600' }}>Add Pages</Text>
-        </TouchableOpacity>
+        {!isSynced && (
+          <TouchableOpacity 
+            style={{ paddingHorizontal: 10, paddingVertical: 6, backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 6, flexDirection: 'row', alignItems: 'center', gap: 4 }}
+            onPress={(e) => {
+              e.stopPropagation();
+              onAppend(student.student_index);
+            }}
+          >
+            <Ionicons name="add" size={14} color={COLORS.primary} />
+            <Text style={{ fontSize: 12, color: COLORS.primary, fontWeight: '600' }}>Add Pages</Text>
+          </TouchableOpacity>
+        )}
 
         <Ionicons
           name={isExpanded ? 'chevron-up' : 'chevron-down'}
@@ -227,6 +235,7 @@ const StudentCard = memo(({
                   onCrop={onCrop}
                   onDelete={onDelete}
                   onPreview={onPreview}
+                  isSynced={isSynced}
                 />
               )}
             />
@@ -254,6 +263,7 @@ const QPMASection = memo(({
   onPreview,
   onAppend,
   mockIndex,
+  isSynced,
 }: {
   title: string;
   icon: string;
@@ -267,6 +277,7 @@ const QPMASection = memo(({
   onPreview: (student: any, pageIndex: number) => void;
   onAppend: () => void;
   mockIndex: number;
+  isSynced?: boolean;
 }) => {
   const worstQuality: QualityLevel = pages.some(
     (p: ScannedPage) => qualityScore(p.sharpness_score ?? 0, p.is_blurry ?? false) === 'red'
@@ -302,16 +313,18 @@ const QPMASection = memo(({
           </Text>
         </View>
 
-        <TouchableOpacity 
-          style={{ paddingHorizontal: 10, paddingVertical: 6, backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 6, flexDirection: 'row', alignItems: 'center', gap: 4 }}
-          onPress={(e) => {
-            e.stopPropagation();
-            onAppend();
-          }}
-        >
-          <Ionicons name="add" size={14} color={COLORS.primary} />
-          <Text style={{ fontSize: 12, color: COLORS.primary, fontWeight: '600' }}>Add Pages</Text>
-        </TouchableOpacity>
+        {!isSynced && (
+          <TouchableOpacity 
+            style={{ paddingHorizontal: 10, paddingVertical: 6, backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 6, flexDirection: 'row', alignItems: 'center', gap: 4 }}
+            onPress={(e) => {
+              e.stopPropagation();
+              onAppend();
+            }}
+          >
+            <Ionicons name="add" size={14} color={COLORS.primary} />
+            <Text style={{ fontSize: 12, color: COLORS.primary, fontWeight: '600' }}>Add Pages</Text>
+          </TouchableOpacity>
+        )}
 
         <Ionicons
           name={isExpanded ? 'chevron-up' : 'chevron-down'}
@@ -338,6 +351,7 @@ const QPMASection = memo(({
                   onCrop={onCrop}
                   onDelete={onDelete}
                   onPreview={onPreview}
+                  isSynced={isSynced}
                 />
               )}
             />
@@ -360,6 +374,8 @@ export default function ReviewScreen() {
     const sId = sessionId || state.currentSession?.session_id;
     return state.savedSessions.find(s => s.session_id === sId) || state.currentSession;
   }));
+
+  const isSynced = session ? ['syncing', 'uploaded', 'grading', 'graded', 'completed'].includes(session.status) : false;
 
   const { setRetake, deletePage, renameStudent, updatePagePathAndFilter } = useScanStore(useShallow(state => ({
     setRetake:     state.setRetake,
@@ -417,6 +433,10 @@ export default function ReviewScreen() {
     page: ScannedPage,
     pageIndex: number,
   ) => {
+    if (isSynced) {
+      Alert.alert('Read-only', 'This session has already been synced to the server and cannot be edited.');
+      return;
+    }
     setRetake({
       pageId:              page.id,
       studentIndex:        student.student_index,
@@ -427,13 +447,21 @@ export default function ReviewScreen() {
     });
     // Push back to scanner — it will show the retake banner automatically
     router.push('/scanner');
-  }, [setRetake, router]);
+  }, [setRetake, router, isSynced]);
 
   const handleCrop = useCallback((student: ScannedStudent, page: ScannedPage, pageIndex: number) => {
+    if (isSynced) {
+      Alert.alert('Read-only', 'This session has already been synced to the server and cannot be edited.');
+      return;
+    }
     setCropTarget({ student, page, pageIndex });
-  }, []);
+  }, [isSynced]);
 
   const handleDelete = useCallback((studentIndex: number, pageIndex: number) => {
+    if (isSynced) {
+      Alert.alert('Read-only', 'This session has already been synced to the server and cannot be edited.');
+      return;
+    }
     if (studentIndex === -1) {
       deletePage(0, pageIndex, 'question_paper');
     } else if (studentIndex === -2) {
@@ -441,7 +469,7 @@ export default function ReviewScreen() {
     } else {
       deletePage(studentIndex, pageIndex, 'students');
     }
-  }, [deletePage]);
+  }, [deletePage, isSynced]);
 
   const handlePreview = useCallback((student: ScannedStudent, pageIndex: number) => {
     const phaseToUse = student.student_index === -1 ? 'question_paper' : student.student_index === -2 ? 'model_answer' : 'students';
@@ -456,32 +484,52 @@ export default function ReviewScreen() {
   }, [router]);
 
   const handleRename = useCallback((studentIndex: number, newLabel: string) => {
+    if (isSynced) {
+      Alert.alert('Read-only', 'This session has already been synced to the server and cannot be edited.');
+      return;
+    }
     renameStudent(studentIndex, newLabel);
-  }, [renameStudent]);
+  }, [renameStudent, isSynced]);
 
   const handleAppend = useCallback((studentIndex: number) => {
+    if (isSynced) {
+      Alert.alert('Read-only', 'This session has already been synced to the server and cannot be edited.');
+      return;
+    }
     useScanStore.setState({
       currentPhase: 'students',
       currentStudentIndex: studentIndex
     });
     router.push('/scanner');
-  }, [router]);
+  }, [router, isSynced]);
 
   const handleQPAppend = useCallback(() => {
+    if (isSynced) {
+      Alert.alert('Read-only', 'This session has already been synced to the server and cannot be edited.');
+      return;
+    }
     useScanStore.setState({
       currentPhase: 'question_paper',
     });
     router.push('/scanner');
-  }, [router]);
+  }, [router, isSynced]);
 
   const handleMAAppend = useCallback(() => {
+    if (isSynced) {
+      Alert.alert('Read-only', 'This session has already been synced to the server and cannot be edited.');
+      return;
+    }
     useScanStore.setState({
       currentPhase: 'model_answer',
     });
     router.push('/scanner');
-  }, [router]);
+  }, [router, isSynced]);
 
   const handleGlobalFilter = async (filter: FilterMode) => {
+    if (isSynced) {
+      Alert.alert('Read-only', 'This session has already been synced to the server and cannot be edited.');
+      return;
+    }
     if (!session || isApplyingGlobalFilter) return;
     setIsApplyingGlobalFilter(true);
     let errorCount = 0;
@@ -559,15 +607,17 @@ export default function ReviewScreen() {
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
             <Text style={styles.sessionName} numberOfLines={1}>{session.session_name}</Text>
             <TouchableOpacity onPress={() => router.push({ pathname: '/session-setup', params: { sessionId: session.session_id } })}>
-              <Ionicons name="create-outline" size={16} color={COLORS.primary} />
+              <Ionicons name={isSynced ? "eye-outline" : "create-outline"} size={16} color={COLORS.primary} />
             </TouchableOpacity>
           </View>
           <Text style={styles.batchName}>{session.batch_name}</Text>
         </View>
-        <TouchableOpacity onPress={() => router.push('/scanner')} style={styles.scanMoreBtn}>
-          <Ionicons name="camera-outline" size={18} color={COLORS.primary} />
-          <Text style={styles.scanMoreText}>Scan more</Text>
-        </TouchableOpacity>
+        {!isSynced && (
+          <TouchableOpacity onPress={() => router.push('/scanner')} style={styles.scanMoreBtn}>
+            <Ionicons name="camera-outline" size={18} color={COLORS.primary} />
+            <Text style={styles.scanMoreText}>Scan more</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* Quality summary bar */}
@@ -639,6 +689,7 @@ export default function ReviewScreen() {
               onPreview={handlePreview}
               onAppend={handleQPAppend}
               mockIndex={-1}
+              isSynced={isSynced}
             />
           </>
         )}
@@ -659,6 +710,7 @@ export default function ReviewScreen() {
               onPreview={handlePreview}
               onAppend={handleMAAppend}
               mockIndex={-2}
+              isSynced={isSynced}
             />
           </>
         )}
@@ -676,6 +728,7 @@ export default function ReviewScreen() {
             onPreview={handlePreview}
             onRename={handleRename}
             onAppend={handleAppend}
+            isSynced={isSynced}
           />
         ))}
       </ScrollView>

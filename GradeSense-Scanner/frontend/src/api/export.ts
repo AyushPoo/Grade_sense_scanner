@@ -426,7 +426,7 @@ export async function uploadSessionToWebApp(
       examId = compData.exam_id;
     } catch {}
 
-    updateStatus(currentSessionId, 'syncing', 100, examId);
+    updateStatus(currentSessionId, 'uploaded', 100, examId);
     console.log(`Session ${currentSessionId} successfully synced via multipart upload. exam_id=${examId}`);
   } catch (error) {
     console.error('Upload failed:', error);

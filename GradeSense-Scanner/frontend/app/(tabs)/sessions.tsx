@@ -110,8 +110,6 @@ export default function SessionsScreen() {
         onPress={() => {
           if (item.status === 'uploading' || item.status === 'syncing') {
             router.push({ pathname: '/upload', params: { sessionId: item.session_id } });
-          } else if ((item.status === 'uploaded' || item.status === 'grading' || item.status === 'graded') && item.exam_id) {
-            router.push({ pathname: '/review-grading' as any, params: { examId: item.exam_id, sessionName: item.session_name } });
           } else {
             router.push({ pathname: '/review', params: { sessionId: item.session_id } });
           }

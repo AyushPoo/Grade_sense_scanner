@@ -34,6 +34,7 @@ export default function SessionSetupScreen() {
     fetchSubjects().catch(err => console.error('Failed to load subjects:', err));
   }, [fetchBatches, fetchSubjects]);
   
+  const [isSynced, setIsSynced] = useState(false);
   const [sessionName, setSessionName] = useState(
     `Exam - ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
   );
@@ -77,6 +78,9 @@ export default function SessionSetupScreen() {
     if (sessionId) {
       const existing = savedSessions.find(s => s.session_id === sessionId);
       if (existing) {
+        const synced = ['syncing', 'uploaded', 'grading', 'graded', 'completed'].includes(existing.status);
+        setIsSynced(synced);
+        
         setSessionName(existing.session_name);
         const batch = savedBatches.find(b => b.batch_id === existing.batch_id) || {
           batch_id: existing.batch_id,
@@ -232,7 +236,7 @@ export default function SessionSetupScreen() {
         <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
           <Ionicons name="arrow-back" size={24} color={COLORS.text} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>{sessionId ? 'Edit Exam' : 'New Exam'}</Text>
+        <Text style={styles.headerTitle}>{isSynced ? 'View Exam' : sessionId ? 'Edit Exam' : 'New Exam'}</Text>
         <View style={{ width: 40 }} />
       </View>
 
@@ -245,16 +249,25 @@ export default function SessionSetupScreen() {
           contentContainerStyle={{ paddingBottom: bottomContentInset + 16 }}
           showsVerticalScrollIndicator={false}
         >
+          {/* Read-only banner */}
+          {isSynced && (
+            <View style={styles.readOnlyBanner}>
+              <Ionicons name="lock-closed" size={16} color="#7C3AED" />
+              <Text style={styles.readOnlyBannerText}>This session has been uploaded and is locked for editing.</Text>
+            </View>
+          )}
+
           {/* Exam Name */}
           <View style={styles.section}>
             <Text style={styles.label}>Exam Name</Text>
             <View style={styles.inputContainer}>
               <TextInput
-                style={styles.input}
+                style={[styles.input, isSynced && styles.inputDisabled]}
                 value={sessionName}
                 onChangeText={setSessionName}
                 placeholder="Enter exam name"
                 placeholderTextColor={COLORS.textMuted}
+                editable={!isSynced}
               />
             </View>
           </View>
@@ -263,13 +276,15 @@ export default function SessionSetupScreen() {
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
               <Text style={styles.label}>Select Subject</Text>
-              <TouchableOpacity
-                style={styles.createBatchBtn}
-                onPress={() => setShowSubjectModal(true)}
-              >
-                <Ionicons name="add-circle" size={20} color={COLORS.primary} />
-                <Text style={styles.createBatchText}>New Subject</Text>
-              </TouchableOpacity>
+              {!isSynced && (
+                <TouchableOpacity
+                  style={styles.createBatchBtn}
+                  onPress={() => setShowSubjectModal(true)}
+                >
+                  <Ionicons name="add-circle" size={20} color={COLORS.primary} />
+                  <Text style={styles.createBatchText}>New Subject</Text>
+                </TouchableOpacity>
+              )}
             </View>
             {savedSubjects.length === 0 ? (
               <View style={styles.emptySubjectBox}>
@@ -289,8 +304,8 @@ export default function SessionSetupScreen() {
                         styles.subjectPill,
                         isSelected && styles.subjectPillSelected
                       ]}
-                      onPress={() => setSelectedSubject(subject)}
-                      activeOpacity={0.7}
+                      onPress={() => { if (!isSynced) setSelectedSubject(subject); }}
+                      activeOpacity={isSynced ? 1 : 0.7}
                     >
                       <Ionicons
                         name="book"
@@ -315,12 +330,13 @@ export default function SessionSetupScreen() {
               <Text style={styles.label}>Total Marks</Text>
               <View style={styles.inputContainer}>
                 <TextInput
-                  style={styles.input}
+                  style={[styles.input, isSynced && styles.inputDisabled]}
                   value={totalMarks}
                   onChangeText={setTotalMarks}
                   placeholder="100"
                   placeholderTextColor={COLORS.textMuted}
                   keyboardType="numeric"
+                  editable={!isSynced}
                 />
               </View>
             </View>
@@ -329,11 +345,12 @@ export default function SessionSetupScreen() {
               <Text style={styles.label}>Exam Date</Text>
               <View style={styles.inputContainer}>
                 <TextInput
-                  style={styles.input}
+                  style={[styles.input, isSynced && styles.inputDisabled]}
                   value={examDate}
                   onChangeText={setExamDate}
                   placeholder="YYYY-MM-DD"
                   placeholderTextColor={COLORS.textMuted}
+                  editable={!isSynced}
                 />
               </View>
             </View>
@@ -343,13 +360,15 @@ export default function SessionSetupScreen() {
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
               <Text style={styles.label}>Select or Create Batch</Text>
-              <TouchableOpacity 
-                style={styles.createBatchBtn}
-                onPress={() => setShowCreateModal(true)}
-              >
-                <Ionicons name="add-circle" size={20} color={COLORS.primary} />
-                <Text style={styles.createBatchText}>New Batch</Text>
-              </TouchableOpacity>
+              {!isSynced && (
+                <TouchableOpacity 
+                  style={styles.createBatchBtn}
+                  onPress={() => setShowCreateModal(true)}
+                >
+                  <Ionicons name="add-circle" size={20} color={COLORS.primary} />
+                  <Text style={styles.createBatchText}>New Batch</Text>
+                </TouchableOpacity>
+              )}
             </View>
             
             {savedBatches.length === 0 ? (
@@ -374,8 +393,8 @@ export default function SessionSetupScreen() {
                       styles.batchItem,
                       selectedBatch?.batch_id === batch.batch_id && styles.batchItemSelected,
                     ]}
-                    onPress={() => setSelectedBatch(batch)}
-                    activeOpacity={0.7}
+                    onPress={() => { if (!isSynced) setSelectedBatch(batch); }}
+                    activeOpacity={isSynced ? 1 : 0.7}
                   >
                     <View style={styles.batchInfo}>
                       <View style={[
@@ -393,12 +412,14 @@ export default function SessionSetupScreen() {
                         </Text>
                       </View>
                     </View>
-                    <TouchableOpacity 
-                      onPress={() => handleDeleteBatch(batch.batch_id)}
-                      style={styles.deleteBatchBtn}
-                    >
-                      <Ionicons name="trash-outline" size={18} color={COLORS.error} />
-                    </TouchableOpacity>
+                    {!isSynced && (
+                      <TouchableOpacity 
+                        onPress={() => handleDeleteBatch(batch.batch_id)}
+                        style={styles.deleteBatchBtn}
+                      >
+                        <Ionicons name="trash-outline" size={18} color={COLORS.error} />
+                      </TouchableOpacity>
+                    )}
                   </TouchableOpacity>
                 ))}
               </View>
@@ -426,8 +447,8 @@ export default function SessionSetupScreen() {
                         { borderColor: mode.color, backgroundColor: '#fff' },
                       ]
                     ]}
-                    onPress={() => updateSetting('grading_mode', mode.key)}
-                    activeOpacity={0.8}
+                    onPress={() => { if (!isSynced) updateSetting('grading_mode', mode.key); }}
+                    activeOpacity={isSynced ? 1 : 0.8}
                   >
                     <View style={[
                       styles.gradingIconContainer,
@@ -461,9 +482,10 @@ export default function SessionSetupScreen() {
                 </View>
                 <Switch
                   value={settings.feedback_enabled !== false}
-                  onValueChange={(value) => updateSetting('feedback_enabled', value)}
+                  onValueChange={(value) => { if (!isSynced) updateSetting('feedback_enabled', value); }}
                   trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
                   thumbColor={settings.feedback_enabled !== false ? COLORS.primary : '#f4f3f4'}
+                  disabled={isSynced}
                 />
               </View>
               <View style={styles.optionRow}>
@@ -478,9 +500,10 @@ export default function SessionSetupScreen() {
                 </View>
                 <Switch
                   value={Boolean(settings.pilot_review_first)}
-                  onValueChange={(value) => updateSetting('pilot_review_first', value)}
+                  onValueChange={(value) => { if (!isSynced) updateSetting('pilot_review_first', value); }}
                   trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
                   thumbColor={settings.pilot_review_first ? COLORS.primary : '#f4f3f4'}
+                  disabled={isSynced}
                 />
               </View>
               <View style={[styles.optionRow, { borderBottomWidth: 0 }]}>
@@ -495,9 +518,10 @@ export default function SessionSetupScreen() {
                 </View>
                 <Switch
                   value={Boolean(settings.annotations_enabled)}
-                  onValueChange={(value) => updateSetting('annotations_enabled', value)}
+                  onValueChange={(value) => { if (!isSynced) updateSetting('annotations_enabled', value); }}
                   trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
                   thumbColor={settings.annotations_enabled ? COLORS.primary : '#f4f3f4'}
+                  disabled={isSynced}
                 />
               </View>
             </View>
@@ -514,7 +538,7 @@ export default function SessionSetupScreen() {
                   styles.pageModeOption,
                   settings.page_mode === 'single' && styles.pageModeOptionSelected,
                 ]}
-                onPress={() => updateSetting('page_mode', 'single')}
+                onPress={() => { if (!isSynced) updateSetting('page_mode', 'single'); }}
               >
                 <View style={styles.pageModeIcon}>
                   <Ionicons 
@@ -535,7 +559,7 @@ export default function SessionSetupScreen() {
                   styles.pageModeOption,
                   settings.page_mode === 'double' && styles.pageModeOptionSelected,
                 ]}
-                onPress={() => updateSetting('page_mode', 'double')}
+                onPress={() => { if (!isSynced) updateSetting('page_mode', 'double'); }}
               >
                 <View style={styles.pageModeIcon}>
                   <Ionicons 
@@ -579,9 +603,10 @@ export default function SessionSetupScreen() {
                 </View>
                 <Switch
                   value={settings.scan_question_paper}
-                  onValueChange={(value) => updateSetting('scan_question_paper', value)}
+                  onValueChange={(value) => { if (!isSynced) updateSetting('scan_question_paper', value); }}
                   trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
                   thumbColor={settings.scan_question_paper ? COLORS.primary : '#f4f3f4'}
+                  disabled={isSynced}
                 />
               </View>
 
@@ -597,9 +622,10 @@ export default function SessionSetupScreen() {
                 </View>
                 <Switch
                   value={settings.scan_model_answer}
-                  onValueChange={(value) => updateSetting('scan_model_answer', value)}
+                  onValueChange={(value) => { if (!isSynced) updateSetting('scan_model_answer', value); }}
                   trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
                   thumbColor={settings.scan_model_answer ? COLORS.primary : '#f4f3f4'}
+                  disabled={isSynced}
                 />
               </View>
 
@@ -617,9 +643,10 @@ export default function SessionSetupScreen() {
                 </View>
                 <Switch
                   value={settings.auto_capture}
-                  onValueChange={(value) => updateSetting('auto_capture', value)}
+                  onValueChange={(value) => { if (!isSynced) updateSetting('auto_capture', value); }}
                   trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
                   thumbColor={settings.auto_capture ? COLORS.primary : '#f4f3f4'}
+                  disabled={isSynced}
                 />
               </View>
 
@@ -635,9 +662,10 @@ export default function SessionSetupScreen() {
                 </View>
                 <Switch
                   value={settings.auto_crop === true}
-                  onValueChange={(value) => updateSetting('auto_crop', value)}
+                  onValueChange={(value) => { if (!isSynced) updateSetting('auto_crop', value); }}
                   trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
                   thumbColor={settings.auto_crop === true ? COLORS.primary : '#f4f3f4'}
+                  disabled={isSynced}
                 />
               </View>
 
@@ -653,9 +681,10 @@ export default function SessionSetupScreen() {
                 </View>
                 <Switch
                   value={settings.barcode_detection}
-                  onValueChange={(value) => updateSetting('barcode_detection', value)}
+                  onValueChange={(value) => { if (!isSynced) updateSetting('barcode_detection', value); }}
                   trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
                   thumbColor={settings.barcode_detection ? COLORS.primary : '#f4f3f4'}
+                  disabled={isSynced}
                 />
               </View>
 
@@ -671,9 +700,10 @@ export default function SessionSetupScreen() {
                 </View>
                 <Switch
                   value={settings.blur_detection}
-                  onValueChange={(value) => updateSetting('blur_detection', value)}
+                  onValueChange={(value) => { if (!isSynced) updateSetting('blur_detection', value); }}
                   trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
                   thumbColor={settings.blur_detection ? COLORS.primary : '#f4f3f4'}
+                  disabled={isSynced}
                 />
               </View>
             </View>
@@ -722,6 +752,16 @@ export default function SessionSetupScreen() {
           )}
 
           {sessionId ? (
+            isSynced ? (
+              <TouchableOpacity
+                style={styles.startButton}
+                onPress={() => router.back()}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="arrow-back" size={24} color="#fff" />
+                <Text style={styles.startButtonText}>GO BACK</Text>
+              </TouchableOpacity>
+            ) : (
             <TouchableOpacity
               style={[
                 styles.startButton,
@@ -738,6 +778,7 @@ export default function SessionSetupScreen() {
               )}
               <Text style={styles.startButtonText}>SAVE CHANGES</Text>
             </TouchableOpacity>
+            )
           ) : (
             <View style={styles.actionRow}>
               <TouchableOpacity
@@ -959,6 +1000,27 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     fontSize: 16,
     color: COLORS.text,
+  },
+  inputDisabled: {
+    color: COLORS.textMuted,
+    backgroundColor: COLORS.border,
+  },
+  readOnlyBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#F3E8FF',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#DDD6FE',
+  },
+  readOnlyBannerText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#7C3AED',
+    fontWeight: '500',
   },
   createBatchBtn: {
     flexDirection: 'row',

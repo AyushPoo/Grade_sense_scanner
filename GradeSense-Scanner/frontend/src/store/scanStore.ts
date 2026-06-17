@@ -1152,7 +1152,7 @@ export const useScanStore = create<ScanState>()(
             headers: {
               'Authorization': token ? `Bearer ${token}` : '',
             }
-          }, 2500);
+          }, 15000);
 
           if (!response.ok) {
             throw new Error(`Failed to fetch sessions: ${response.status}`);
@@ -1198,6 +1198,21 @@ export const useScanStore = create<ScanState>()(
               recomputeStats,
             });
           });
+
+          // Clear any active grading progress notifications for completed/graded/failed exams
+          try {
+            const { clearGradingProgressNotification } = await import('../services/gradingNotifications');
+            const updatedSessions = get().savedSessions || [];
+            updatedSessions.forEach(s => {
+              if (s.exam_id && ['graded', 'completed', 'failed', 'sync_failed'].includes(s.status)) {
+                clearGradingProgressNotification(s.exam_id).catch(() => {});
+              }
+            });
+          } catch (e) {
+            console.warn('[Zustand] Failed to clear notifications in fetchSessions:', e);
+          }
+
+          console.log(`[TRACE] fetchSessions: success, received ${normalizedSessions.length} sessions at ${Date.now()}`);
         } catch (error) {
           console.error(`[TRACE] fetchSessions: FAILED at ${Date.now()} with error:`, error);
         }
@@ -1214,7 +1229,7 @@ export const useScanStore = create<ScanState>()(
               'Authorization': token ? `Bearer ${token}` : '',
               'Bypass-Tunnel-Reminder': 'true',
             }
-          }, 2500);
+          }, 10000);
 
           if (!response.ok) {
             throw new Error(`Failed to fetch batches: ${response.status}`);
@@ -1239,7 +1254,7 @@ export const useScanStore = create<ScanState>()(
               'Authorization': token ? `Bearer ${token}` : '',
               'Bypass-Tunnel-Reminder': 'true',
             }
-          }, 2500);
+          }, 10000);
 
           if (!response.ok) {
             throw new Error(`Failed to fetch subjects: ${response.status}`);
@@ -1271,7 +1286,7 @@ export const useScanStore = create<ScanState>()(
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({ name: cleanName }),
-        }, 6000);
+        }, 15000);
 
         if (!response.ok) {
           const body = await response.json().catch(() => null);
@@ -1322,7 +1337,7 @@ export const useScanStore = create<ScanState>()(
             name: cleanName,
             classStandard: classStandard?.trim() || null,
           }),
-        }, 6000);
+        }, 15000);
 
         if (!response.ok) {
           const text = await response.text();
@@ -1390,7 +1405,7 @@ export const useScanStore = create<ScanState>()(
             method: 'POST',
             headers: authHeaders,
             body: JSON.stringify(body)
-          }, 3500);
+          }, 15000);
 
           if (!response.ok) {
             throw new Error(`Sync failed with status ${response.status}`);
