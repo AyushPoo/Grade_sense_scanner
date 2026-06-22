@@ -80,7 +80,7 @@ def build_file_headers(
 ) -> dict[str, str]:
     headers = {
         "Accept-Ranges": "bytes",
-        "Cache-Control": "public, max-age=300, stale-while-revalidate=86400",
+        "Cache-Control": "public, max-age=2592000, must-revalidate",
         "Content-Disposition": f'inline; filename="{filename}"',
         "Content-Type": content_type,
     }

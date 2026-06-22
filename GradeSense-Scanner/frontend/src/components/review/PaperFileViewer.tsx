@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   Dimensions,
   Linking,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -554,7 +555,7 @@ function isPdfSlide(slide: ReviewFileSlide, url: string | null): boolean {
 }
 
 function buildPdfViewerUrl(url: string): string {
-  if (url.startsWith('file://')) {
+  if (url.startsWith('file://') || Platform.OS === 'ios') {
     return url;
   }
   return `https://docs.google.com/gview?embedded=1&url=${encodeURIComponent(url)}`;

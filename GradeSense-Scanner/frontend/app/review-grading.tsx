@@ -20,6 +20,7 @@ import {
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,
 } from 'expo-speech-recognition';
+import { Image } from 'expo-image';
 import { COLORS, getBackendUrl } from '../src/config';
 import { useAuthStore } from '../src/store/authStore';
 import { useScanStore } from '../src/store/scanStore';
@@ -537,10 +538,31 @@ export default function ReviewGradingScreen() {
 
   useEffect(() => {
     const nextSubmission = submissions[currentSubIndex + 1];
-    if (!nextSubmission?.id || detailCacheRef.current.has(nextSubmission.id)) {
-      return;
-    }
-    fetchSubmissionDetail(nextSubmission.id).catch(() => {});
+    if (!nextSubmission?.id) return;
+
+    const prefetchNextData = async () => {
+      try {
+        const detail = await fetchSubmissionDetail(nextSubmission.id);
+        if (detail && detail.files) {
+          detail.files.forEach(file => {
+            const url = file.annotationSignedUrl || file.signedUrl;
+            if (!url) return;
+
+            if (url.toLowerCase().includes('.pdf')) {
+              // Prefetch PDF via background GET to populate app's NSURLCache/OkHttp cache
+              fetch(url, { method: 'GET' }).catch(() => {});
+            } else {
+              // Prefetch image
+              Image.prefetch(url).catch(() => {});
+            }
+          });
+        }
+      } catch (err) {
+        console.warn('Failed to prefetch next student files:', err);
+      }
+    };
+
+    prefetchNextData();
   }, [currentSubIndex, fetchSubmissionDetail, submissions]);
 
   useEffect(() => {
@@ -788,17 +810,17 @@ export default function ReviewGradingScreen() {
       )}
 
       {/* Content Area */}
-      {isLoadingDetail ? (
-        <View style={styles.detailLoading}>
-          <ActivityIndicator size="large" color={COLORS.primary} />
-          <Text style={styles.detailLoadingText}>Fetching student paper files...</Text>
-        </View>
-      ) : (
-        <View style={styles.contentPager}>
-          <View
-            style={[styles.contentPane, activeTab === 'sheet' ? styles.activeContentPane : styles.inactiveContentPane]}
-            pointerEvents={activeTab === 'sheet' ? 'auto' : 'none'}
-          >
+      <View style={styles.contentPager}>
+        <View
+          style={[styles.contentPane, activeTab === 'sheet' ? styles.activeContentPane : styles.inactiveContentPane]}
+          pointerEvents={activeTab === 'sheet' ? 'auto' : 'none'}
+        >
+          {isLoadingDetail ? (
+            <View style={styles.detailLoading}>
+              <ActivityIndicator size="large" color={COLORS.primary} />
+              <Text style={styles.detailLoadingText}>Fetching student paper files...</Text>
+            </View>
+          ) : (
             <View style={styles.paperFilesContainer}>
               <PaperFileViewer
                 slides={fileSlides}
@@ -811,12 +833,19 @@ export default function ReviewGradingScreen() {
                 onViewerStateChange={patch => setPaperViewerState(prev => ({ ...prev, ...patch }))}
               />
             </View>
-          </View>
+          )}
+        </View>
 
-          <View
-            style={[styles.contentPane, activeTab === 'rubric' ? styles.activeContentPane : styles.inactiveContentPane]}
-            pointerEvents={activeTab === 'rubric' ? 'auto' : 'none'}
-          >
+        <View
+          style={[styles.contentPane, activeTab === 'rubric' ? styles.activeContentPane : styles.inactiveContentPane]}
+          pointerEvents={activeTab === 'rubric' ? 'auto' : 'none'}
+        >
+          {isLoadingDetail ? (
+            <View style={styles.detailLoading}>
+              <ActivityIndicator size="large" color={COLORS.primary} />
+              <Text style={styles.detailLoadingText}>Fetching rubric details...</Text>
+            </View>
+          ) : (
             <RubricReviewPanel
               scores={scores}
               activeScoreIndex={activeScoreIndex}
@@ -833,22 +862,22 @@ export default function ReviewGradingScreen() {
               isImprovingAI={isSubmittingImprovement}
               isKeyboardVisible={isKeyboardVisible}
             />
+          )}
 
-            {!isEditingFeedback && activeScore && (
-              <GradingControlPanel
-                activeScore={activeScore}
-                isSaving={isSaving}
-                isLastSubmission={currentSubIndex === submissions.length - 1}
-                density={reviewDensity}
-                keyboardLift={keyboardLift}
-                bottomInset={insets.bottom}
-                onScoreChange={handleScoreChange}
-                onSaveAndNext={handleSaveAndNext}
-              />
-            )}
-          </View>
+          {!isEditingFeedback && !isKeyboardVisible && (
+            <GradingControlPanel
+              activeScore={activeScore}
+              isSaving={isSaving}
+              isLastSubmission={currentSubIndex === submissions.length - 1}
+              density={reviewDensity}
+              keyboardLift={keyboardLift}
+              bottomInset={insets.bottom}
+              onScoreChange={handleScoreChange}
+              onSaveAndNext={handleSaveAndNext}
+            />
+          )}
         </View>
-      )}
+      </View>
 
       <VoiceDictationModal
         visible={showDictationModal}

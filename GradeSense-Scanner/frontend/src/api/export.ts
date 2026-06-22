@@ -50,22 +50,33 @@ async function prepareUploadAsset(page: ScannedPage): Promise<UploadAsset> {
   const fileName = page.original_name || `page_${page.page_number}.${isPdf ? 'pdf' : 'jpg'}`;
   const fileInfo = await getExistingFileInfo(uploadUri);
 
-  if (isPdf || !fileInfo.size || fileInfo.size <= OPTIMIZE_IMAGE_ABOVE_BYTES) {
+  if (isPdf) {
     return { uri: uploadUri, contentType, fileName, size: fileInfo.size };
   }
 
   try {
+    const origInfo = await ImageManipulator.manipulateAsync(uploadUri, [], { compress: 1 });
+    const actions = [];
+    const maxDim = 1600;
+    if (origInfo.width > maxDim || origInfo.height > maxDim) {
+      if (origInfo.width > origInfo.height) {
+        actions.push({ resize: { width: maxDim } });
+      } else {
+        actions.push({ resize: { height: maxDim } });
+      }
+    }
+
     const optimized = await ImageManipulator.manipulateAsync(
       uploadUri,
-      [],
+      actions,
       {
         compress: UPLOAD_IMAGE_COMPRESS,
         format: ImageManipulator.SaveFormat.JPEG,
       }
     );
     const optimizedInfo = await getExistingFileInfo(optimized.uri);
-    if (optimizedInfo.size && optimizedInfo.size < fileInfo.size) {
-      console.log(`[Upload] Optimized ${fileName}: ${fileInfo.size} -> ${optimizedInfo.size} bytes`);
+    if (optimizedInfo.size && (optimizedInfo.size < fileInfo.size || actions.length > 0)) {
+      console.log(`[Upload] Optimized ${fileName}: ${fileInfo.size || 0} -> ${optimizedInfo.size} bytes (${optimized.width}x${optimized.height})`);
       return {
         uri: optimized.uri,
         contentType,

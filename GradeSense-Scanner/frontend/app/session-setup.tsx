@@ -669,24 +669,7 @@ export default function SessionSetupScreen() {
                 />
               </View>
 
-              <View style={styles.optionRow}>
-                <View style={styles.optionLeft}>
-                  <View style={[styles.optionIcon, { backgroundColor: '#F3E5F5' }]}>
-                    <Ionicons name="barcode" size={20} color="#7B1FA2" />
-                  </View>
-                  <View style={styles.optionTextContainer}>
-                    <Text style={styles.optionLabel}>Barcode Detection</Text>
-                    <Text style={styles.optionHint}>Detect QR/barcode on first page</Text>
-                  </View>
-                </View>
-                <Switch
-                  value={settings.barcode_detection}
-                  onValueChange={(value) => { if (!isSynced) updateSetting('barcode_detection', value); }}
-                  trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
-                  thumbColor={settings.barcode_detection ? COLORS.primary : '#f4f3f4'}
-                  disabled={isSynced}
-                />
-              </View>
+
 
               <View style={[styles.optionRow, { borderBottomWidth: 0 }]}>
                 <View style={styles.optionLeft}>

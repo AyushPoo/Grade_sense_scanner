@@ -88,9 +88,19 @@ export default function UploadScreen() {
   const replaceSessionDocuments = useScanStore(state => state.replaceSessionDocuments);
   const prepareSessionForScanning = useScanStore(state => state.prepareSessionForScanning);
   const { savedSubjects, fetchSubjects, createSubject } = useScanStore();
-  const sessionDataFromStore = useScanStore(useShallow(state => 
-    state.savedSessions.find(s => s.session_id === sessionId) || null
-  ));
+  const [createdAt, setCreatedAt] = useState<string | null>(null);
+
+  // Reset tracked createdAt when sessionId route parameter changes
+  useEffect(() => {
+    setCreatedAt(null);
+  }, [sessionId]);
+
+  const sessionDataFromStore = useScanStore(useShallow(state => {
+    if (createdAt) {
+      return state.savedSessions.find(s => s.created_at === createdAt) || null;
+    }
+    return state.savedSessions.find(s => s.session_id === sessionId) || null;
+  }));
   
   const [session, setSession] = useState<ScanSession | null>(null);
   const [showSubjectSelector, setShowSubjectSelector] = useState(false);
@@ -113,9 +123,12 @@ export default function UploadScreen() {
       const found = sessionDataFromStore;
       if (found) {
         setSession(found);
+        if (!createdAt && found.created_at) {
+          setCreatedAt(found.created_at);
+        }
       }
     }
-  }, [sessionId, sessionDataFromStore]);
+  }, [sessionId, sessionDataFromStore, createdAt]);
 
   const simulateUpload = () => {
     if (!session) return;
@@ -302,6 +315,29 @@ export default function UploadScreen() {
     }
   };
 
+  const handleRemoveDocuments = (kind: 'question' | 'model' | 'students') => {
+    if (!session) return;
+    const label = kind === 'question' ? 'Question Paper' : kind === 'model' ? 'Model Answer' : 'Student Papers';
+    Alert.alert(
+      'Remove Attached Document?',
+      `Are you sure you want to remove the attached ${label}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: () => {
+            replaceSessionDocuments(session.session_id, {
+              questionPaper: kind === 'question' ? [] : undefined,
+              modelAnswer: kind === 'model' ? [] : undefined,
+              studentPapers: kind === 'students' ? [] : undefined,
+            });
+          }
+        }
+      ]
+    );
+  };
+
   const handleCancel = () => {
     if (isUploading) {
       Alert.alert(
@@ -378,9 +414,9 @@ export default function UploadScreen() {
                 <Ionicons name="sparkles" size={18} color={COLORS.primary} />
                 <Text style={[styles.nextStepsTitle, { color: COLORS.primary, marginBottom: 0 }]}>AI Grading Started</Text>
               </View>
-              <Text style={styles.nextStepsItem}>ΓÇó Submissions are being graded by AI in the background.</Text>
-              <Text style={styles.nextStepsItem}>ΓÇó A live progress card will appear on your Home tab.</Text>
-              <Text style={styles.nextStepsItem}>ΓÇó When done, tap the card to review student marks on your phone.</Text>
+              <Text style={styles.nextStepsItem}>{'\u2022'} Submissions are being graded by AI in the background.</Text>
+              <Text style={styles.nextStepsItem}>{'\u2022'} A live progress card will appear on your Home tab.</Text>
+              <Text style={styles.nextStepsItem}>{'\u2022'} When done, tap the card to review student marks on your phone.</Text>
             </View>
 
              <TouchableOpacity
@@ -500,8 +536,10 @@ export default function UploadScreen() {
                 icon="document-text-outline"
                 label="Question Paper"
                 optional
-                value={formatDocumentCount(session.question_paper.pages.length)}
+                value={getDocumentDisplayValue(session.question_paper.pages, 'Question Paper')}
+                hasDocument={session.question_paper.pages.length > 0}
                 onPress={() => pickDocuments('question')}
+                onClear={() => handleRemoveDocuments('question')}
                 onScanPress={() => handleScanDocument('question_paper')}
                 disabled={isPickingDocument || isUploading}
               />
@@ -509,8 +547,10 @@ export default function UploadScreen() {
                 icon="clipboard-outline"
                 label="Model Answer"
                 required
-                value={formatDocumentCount(session.model_answer.pages.length)}
+                value={getDocumentDisplayValue(session.model_answer.pages, 'Model Answer')}
+                hasDocument={session.model_answer.pages.length > 0}
                 onPress={() => pickDocuments('model')}
+                onClear={() => handleRemoveDocuments('model')}
                 onScanPress={() => handleScanDocument('model_answer')}
                 disabled={isPickingDocument || isUploading}
               />
@@ -518,8 +558,10 @@ export default function UploadScreen() {
                 icon="people-outline"
                 label="Student Answer Papers"
                 required
-                value={`${session.stats.total_students} document${session.stats.total_students === 1 ? '' : 's'}`}
+                value={getDocumentDisplayValue(session.students.flatMap(s => s.pages), 'Student Papers')}
+                hasDocument={session.students.length > 0}
                 onPress={() => pickDocuments('students')}
+                onClear={() => handleRemoveDocuments('students')}
                 onScanPress={() => handleScanDocument('students')}
                 disabled={isPickingDocument || isUploading}
               />
@@ -530,7 +572,9 @@ export default function UploadScreen() {
                 <Ionicons name="document-text" size={24} color={COLORS.primary} />
                 <View style={styles.previewItemInfo}>
                   <Text style={styles.previewItemLabel}>Question Paper</Text>
-                  <Text style={styles.previewItemValue}>{formatDocumentCount(session.question_paper.pages.length)}</Text>
+                  <Text style={styles.previewItemValue}>
+                    {getDocumentDisplayValue(session.question_paper.pages, 'Question Paper')}
+                  </Text>
                 </View>
               </View>
 
@@ -538,7 +582,9 @@ export default function UploadScreen() {
                 <Ionicons name="clipboard" size={24} color={COLORS.primary} />
                 <View style={styles.previewItemInfo}>
                   <Text style={styles.previewItemLabel}>Model Answer</Text>
-                  <Text style={styles.previewItemValue}>{formatDocumentCount(session.model_answer.pages.length)}</Text>
+                  <Text style={styles.previewItemValue}>
+                    {getDocumentDisplayValue(session.model_answer.pages, 'Model Answer')}
+                  </Text>
                 </View>
               </View>
 
@@ -547,7 +593,7 @@ export default function UploadScreen() {
                 <View style={styles.previewItemInfo}>
                   <Text style={styles.previewItemLabel}>Students</Text>
                   <Text style={styles.previewItemValue}>
-                    {session.stats.total_students} student document{session.stats.total_students === 1 ? '' : 's'}
+                    {getDocumentDisplayValue(session.students.flatMap(s => s.pages), 'Student Papers')}
                   </Text>
                 </View>
               </View>
@@ -687,6 +733,22 @@ function formatDocumentCount(count: number): string {
   return `${count} document${count === 1 ? '' : 's'}`;
 }
 
+function getDocumentDisplayValue(pages: any[], defaultLabel: string): string {
+  if (!pages || pages.length === 0) return 'No document selected';
+  if (pages.length === 1) {
+    const page = pages[0];
+    if (page.original_name && !page.original_name.startsWith('native_scan_')) {
+      return page.original_name;
+    }
+    return '1 scanned page';
+  }
+  const allImported = pages.every(p => p.scanner_engine === 'import');
+  if (allImported && pages.length <= 3) {
+    return pages.map(p => p.original_name).filter(Boolean).join(', ');
+  }
+  return `${pages.length} document${pages.length === 1 ? '' : 's'}`;
+}
+
 function DocumentAttachRow({
   icon,
   label,
@@ -694,7 +756,9 @@ function DocumentAttachRow({
   optional,
   required,
   disabled,
+  hasDocument,
   onPress,
+  onClear,
   onScanPress,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
@@ -703,28 +767,55 @@ function DocumentAttachRow({
   optional?: boolean;
   required?: boolean;
   disabled?: boolean;
+  hasDocument?: boolean;
   onPress: () => void;
+  onClear?: () => void;
   onScanPress?: () => void;
 }) {
   return (
     <View style={styles.documentAttachRow}>
-      <TouchableOpacity
-        style={[styles.documentAttachMain, disabled && styles.documentAttachRowDisabled]}
-        onPress={onPress}
-        disabled={disabled}
-        activeOpacity={0.8}
-      >
-        <View style={styles.documentAttachIcon}>
-          <Ionicons name={icon as any} size={20} color={COLORS.primary} />
-        </View>
-        <View style={styles.documentAttachText}>
-          <Text style={styles.documentAttachLabel}>
-            {label}{required ? ' *' : optional ? ' (optional)' : ''}
-          </Text>
-          <Text style={styles.documentAttachValue}>{value}</Text>
-        </View>
-        <Ionicons name="cloud-upload-outline" size={22} color={COLORS.primary} />
-      </TouchableOpacity>
+      <View style={[styles.documentAttachMainContainer, disabled && styles.documentAttachRowDisabled]}>
+        <TouchableOpacity
+          style={styles.documentAttachMainClickable}
+          onPress={onPress}
+          disabled={disabled}
+          activeOpacity={0.8}
+        >
+          <View style={styles.documentAttachIcon}>
+            <Ionicons name={icon as any} size={20} color={COLORS.primary} />
+          </View>
+          <View style={styles.documentAttachText}>
+            <Text style={styles.documentAttachLabel}>
+              {label}{required ? ' *' : optional ? ' (optional)' : ''}
+            </Text>
+            <Text style={styles.documentAttachValue} numberOfLines={1} ellipsizeMode="middle">
+              {value}
+            </Text>
+          </View>
+        </TouchableOpacity>
+
+        {hasDocument && onClear ? (
+          <TouchableOpacity
+            style={styles.documentAttachActionBtn}
+            onPress={onClear}
+            disabled={disabled}
+            activeOpacity={0.7}
+            hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
+          >
+            <Ionicons name="trash-outline" size={22} color={COLORS.error} />
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            style={styles.documentAttachActionBtn}
+            onPress={onPress}
+            disabled={disabled}
+            activeOpacity={0.7}
+            hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
+          >
+            <Ionicons name="cloud-upload-outline" size={22} color={COLORS.primary} />
+          </TouchableOpacity>
+        )}
+      </View>
       {onScanPress && (
         <TouchableOpacity
           style={[styles.documentScanAction, disabled && styles.documentAttachRowDisabled]}
@@ -857,7 +948,7 @@ const styles = StyleSheet.create({
     gap: 10,
     marginTop: 10,
   },
-  documentAttachMain: {
+  documentAttachMainContainer: {
     alignItems: 'center',
     backgroundColor: COLORS.backgroundDark,
     borderColor: COLORS.border,
@@ -865,8 +956,19 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     flex: 1,
     flexDirection: 'row',
-    gap: 12,
     padding: 13,
+  },
+  documentAttachMainClickable: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingRight: 8,
+  },
+  documentAttachActionBtn: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 4,
   },
   documentAttachRowDisabled: {
     opacity: 0.55,

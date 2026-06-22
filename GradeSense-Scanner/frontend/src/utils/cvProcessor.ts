@@ -673,6 +673,68 @@ export async function detectDocumentInFrame(
     }
   }
 
+  if (candidates.length === 0 && rawContours.length > 0) {
+    // Attempt relaxed fallback to find the largest plausible contour
+    const isConvexPoints = (pts: Point[]): boolean => {
+      let positive = 0;
+      let negative = 0;
+      for (let i = 0; i < pts.length; i++) {
+        const a = pts[i];
+        const b = pts[(i + 1) % pts.length];
+        const c = pts[(i + 2) % pts.length];
+        const value = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+        if (value > 0) positive++;
+        if (value < 0) negative++;
+      }
+      return positive === pts.length || negative === pts.length;
+    };
+
+    let bestFallbackQuad: Quadrilateral | null = null;
+    let maxFallbackArea = 0;
+
+    for (const contour of rawContours) {
+      if (!contour || !Array.isArray(contour) || contour.length < 3) continue;
+      const hull = convexHull(contour);
+      const hullArea = shoelaceArea(hull);
+      const occupancy = hullArea / frameArea;
+
+      if (occupancy < 0.12) continue; // Must cover at least 12% of the frame
+
+      const extremaQuad = quadFromExtrema(hull);
+      if (extremaQuad) {
+        const refinedQuad = refineQuadWithBoundaryPoints(extremaQuad, hull, { width, height });
+        const pts = [refinedQuad.topLeft, refinedQuad.topRight, refinedQuad.bottomRight, refinedQuad.bottomLeft];
+        
+        if (isConvexPoints(pts)) {
+          const topLen = Math.hypot(refinedQuad.topRight.x - refinedQuad.topLeft.x, refinedQuad.topRight.y - refinedQuad.topLeft.y);
+          const bottomLen = Math.hypot(refinedQuad.bottomRight.x - refinedQuad.bottomLeft.x, refinedQuad.bottomRight.y - refinedQuad.bottomLeft.y);
+          const leftLen = Math.hypot(refinedQuad.topLeft.x - refinedQuad.bottomLeft.x, refinedQuad.topLeft.y - refinedQuad.bottomLeft.y);
+          const rightLen = Math.hypot(refinedQuad.topRight.x - refinedQuad.bottomRight.x, refinedQuad.topRight.y - refinedQuad.bottomRight.y);
+          const avgWidth = (topLen + bottomLen) / 2;
+          const avgHeight = (leftLen + rightLen) / 2;
+          const aspect = avgWidth / Math.max(avgHeight, 1);
+
+          if (aspect >= 0.5 && aspect <= 2.5) {
+            if (hullArea > maxFallbackArea) {
+              maxFallbackArea = hullArea;
+              bestFallbackQuad = refinedQuad;
+            }
+          }
+        }
+      }
+    }
+
+    if (bestFallbackQuad) {
+      console.log(`[CV-FALLBACK] Strict checks failed, using relaxed fallback quad with area=${maxFallbackArea.toFixed(0)}`);
+      candidates.push({
+        quad: bestFallbackQuad,
+        score: 0.1,
+        telemetry: 'RelaxedFallbackQuad',
+        area: maxFallbackArea
+      });
+    }
+  }
+
   // Rank candidate quads by semantic score
   candidates.sort((a, b) => b.score - a.score);
 
@@ -1460,50 +1522,54 @@ export async function applyFilter(
       throw new Error(`imread returned empty Mat`);
     }
 
-    // STEP 1: RGBA → single-channel Gray (required by equalizeHist & adaptiveThreshold)
-    grayMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
-    (OpenCV as any).invoke('cvtColor', srcMat, grayMat, 6); // 6 is COLOR_RGBA2GRAY
-
-    // STEP 2: Apply the actual filter on the single-channel mat
-    dstMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
-
     if (mode === 'high_contrast') {
-      // Division-based background normalization (similar to ML Kit document enhancement)
+      // Color-preserving High Contrast (keeps colors, whitens background)
+      dstMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC4);
       try {
-        blurMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
+        blurMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC4);
         const blurSize = OpenCV.createObject(ObjectType.Size, 71, 71);
-        (OpenCV as any).invoke('GaussianBlur', grayMat, blurMat, blurSize, 0);
-        (OpenCV as any).invoke('divide', grayMat, blurMat, dstMat, 255);
+        (OpenCV as any).invoke('GaussianBlur', srcMat, blurMat, blurSize, 0);
+        (OpenCV as any).invoke('divide', srcMat, blurMat, dstMat, 255);
         
         // Unsharp mask to sharpen handwriting strokes
-        sharpMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
+        sharpMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC4);
         const sharpBlurSize = OpenCV.createObject(ObjectType.Size, 5, 5);
         (OpenCV as any).invoke('GaussianBlur', dstMat, sharpMat, sharpBlurSize, 0);
         (OpenCV as any).invoke('addWeighted', dstMat, 1.6, sharpMat, -0.6, 0.0, dstMat);
         
         // Contrast adjustment: make text extra dark, paper background pure white.
-        // We use addWeighted instead of convertScaleAbs to perform a saturated clamp to [0, 255]
-        // without wrapping negative values into positive (which hollows out handwriting strokes).
         (OpenCV as any).invoke('addWeighted', dstMat, 1.9, dstMat, 0.0, -160.0, dstMat);
       } catch (enhanceErr) {
-        console.warn('[CV] high_contrast division normalization failed, using fallback:', enhanceErr);
+        console.warn('[CV] color high_contrast division normalization failed, using fallback:', enhanceErr);
+        // Fallback to grayscale high contrast
+        cleanupMats([blurMat, sharpMat, dstMat]);
+        
+        grayMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
+        (OpenCV as any).invoke('cvtColor', srcMat, grayMat, 6); // 6 is COLOR_RGBA2GRAY
+        dstMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
+        
         (OpenCV as any).invoke('addWeighted', grayMat, 1.28, grayMat, 0.0, -18.0, dstMat);
       }
-    } else if (mode === 'adaptive_threshold') {
-      // Adobe-like document cleanup: smooth small sensor noise, then create
-      // black text on a white page. The original file is stored separately.
-      blurMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
-      const blurSize = OpenCV.createObject(ObjectType.Size, 3, 3);
-      (OpenCV as any).invoke('GaussianBlur', grayMat, blurMat, blurSize, 0);
-      (OpenCV as any).invoke(
-        'adaptiveThreshold',
-        blurMat, dstMat,
-        255,          // maxValue
-        1,            // ADAPTIVE_THRESH_GAUSSIAN_C / native binding constant
-        0,            // THRESH_BINARY = 0
-        21,           // blockSize (must be odd)
-        10,           // C constant (subtract from mean)
-      );
+    } else {
+      // Grayscale conversion for adaptive_threshold
+      grayMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
+      (OpenCV as any).invoke('cvtColor', srcMat, grayMat, 6); // 6 is COLOR_RGBA2GRAY
+      dstMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
+      
+      if (mode === 'adaptive_threshold') {
+        blurMat = OpenCV.createObject(ObjectType.Mat, resized.height, resized.width, DataTypes.CV_8UC1);
+        const blurSize = OpenCV.createObject(ObjectType.Size, 3, 3);
+        (OpenCV as any).invoke('GaussianBlur', grayMat, blurMat, blurSize, 0);
+        (OpenCV as any).invoke(
+          'adaptiveThreshold',
+          blurMat, dstMat,
+          255,          // maxValue
+          1,            // ADAPTIVE_THRESH_GAUSSIAN_C
+          0,            // THRESH_BINARY
+          21,           // blockSize
+          10,           // C
+        );
+      }
     }
 
     const destFilename = `ocr_${mode}_${Date.now()}.jpg`;

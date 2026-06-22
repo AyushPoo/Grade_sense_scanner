@@ -91,6 +91,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+async def connect_to_neon_db(webapp_db_url: str, retries: int = 5, initial_delay: float = 1.0) -> asyncpg.Connection:
+    import asyncio
+    for attempt in range(retries):
+        try:
+            conn = await asyncpg.connect(webapp_db_url, timeout=30)
+            return conn
+        except (asyncpg.exceptions.ProtocolViolationError, OSError, Exception) as e:
+            if attempt == retries - 1:
+                logger.error(f"Failed to connect to Neon DB after {retries} attempts: {e}")
+                raise
+            delay = initial_delay * (2 ** attempt) + (0.1 * attempt)
+            logger.warning(f"Neon connection attempt {attempt + 1}/{retries} failed: {e}. Retrying in {delay:.2f}s...")
+            await asyncio.sleep(delay)
+
+
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
@@ -908,7 +923,7 @@ async def google_idtoken_auth(data: dict):
     if webapp_db_url:
         conn = None
         try:
-            conn = await asyncpg.connect(webapp_db_url)
+            conn = await connect_to_neon_db(webapp_db_url)
             webapp_user = await resolve_or_claim_teacher_invite(
                 conn,
                 GoogleProfile(
@@ -1032,7 +1047,7 @@ async def get_batches(authorization: Optional[str] = Header(None)):
         if webapp_db_url:
             conn = None
             try:
-                conn = await asyncpg.connect(webapp_db_url)
+                conn = await connect_to_neon_db(webapp_db_url)
                 batches = await fetch_active_batches(conn, user.user_id)
                 active_ids = [batch["batch_id"] for batch in batches]
                 await db.batches.delete_many({
@@ -1134,7 +1149,7 @@ async def create_batch(data: dict, authorization: Optional[str] = Header(None)):
         batch_id = generate_drizzle_id("bat_")
         conn = None
         try:
-            conn = await asyncpg.connect(webapp_db_url)
+            conn = await connect_to_neon_db(webapp_db_url)
             row = await conn.fetchrow(
                 '''
                 INSERT INTO batches (
@@ -1241,7 +1256,7 @@ async def delete_batch(batch_id: str, authorization: Optional[str] = Header(None
     if webapp_db_url:
         conn = None
         try:
-            conn = await asyncpg.connect(webapp_db_url)
+            conn = await connect_to_neon_db(webapp_db_url)
             row = await conn.fetchrow(
                 '''
                 UPDATE batches
@@ -1305,7 +1320,7 @@ async def update_batch(batch_id: str, data: dict, authorization: Optional[str] =
     if webapp_db_url:
         conn = None
         try:
-            conn = await asyncpg.connect(webapp_db_url)
+            conn = await connect_to_neon_db(webapp_db_url)
             row = await conn.fetchrow(
                 '''
                 UPDATE batches
@@ -1395,7 +1410,7 @@ async def archive_batch(batch_id: str, authorization: Optional[str] = Header(Non
     if webapp_db_url:
         conn = None
         try:
-            conn = await asyncpg.connect(webapp_db_url)
+            conn = await connect_to_neon_db(webapp_db_url)
             row = await conn.fetchrow(
                 '''
                 UPDATE batches
@@ -1503,7 +1518,7 @@ async def update_student(batch_id: str, student_id: str, data: dict, authorizati
     if webapp_db_url:
         conn = None
         try:
-            conn = await asyncpg.connect(webapp_db_url)
+            conn = await connect_to_neon_db(webapp_db_url)
             student = await update_batch_student_profile(
                 conn,
                 teacher_id=user.user_id,
@@ -1579,7 +1594,7 @@ async def get_batch_students(batch_id: str, authorization: Optional[str] = Heade
         if webapp_db_url:
             conn = None
             try:
-                conn = await asyncpg.connect(webapp_db_url)
+                conn = await connect_to_neon_db(webapp_db_url)
                 students = await fetch_batch_roster(conn, user.user_id, batch_id)
                 student_ids = [student["student_id"] for student in students]
                 delete_filter = {"batch_id": batch_id}
@@ -1799,7 +1814,7 @@ async def create_subject(data: SubjectCreateRequest, authorization: Optional[str
     if webapp_db_url:
         conn = None
         try:
-            conn = await asyncpg.connect(webapp_db_url)
+            conn = await connect_to_neon_db(webapp_db_url)
             row = await conn.fetchrow(
                 '''
                 INSERT INTO subjects (id, teacher_id, name, class_standard, created_at, updated_at)
@@ -1870,7 +1885,7 @@ async def create_scan_session(data: ScanSessionCreate, authorization: Optional[s
     if webapp_db_url and token != "sess_mock_token_12345":
         conn = None
         try:
-            conn = await asyncpg.connect(webapp_db_url)
+            conn = await connect_to_neon_db(webapp_db_url)
             batch_id = data.batch_id
             batch_name = data.batch_name
             row = await conn.fetchrow(
@@ -2235,13 +2250,30 @@ async def create_exam_on_webapp(session_id: str, user_id: str, token: str) -> st
     if not session:
         raise ValueError("Scan session not found")
 
-    # Try database insertion directly if WEBAPP_DB_URL is set
+    existing_exam_id = session.get("exam_id")
     webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+
+    if existing_exam_id:
+        if webapp_db_url:
+            try:
+                conn = await connect_to_neon_db(webapp_db_url)
+                row = await conn.fetchrow("SELECT id FROM exams WHERE id = $1 LIMIT 1", existing_exam_id)
+                await conn.close()
+                if row:
+                    logger.info(f"Exam {existing_exam_id} already exists in Neon DB. Reusing it.")
+                    return existing_exam_id
+            except Exception as e:
+                logger.error(f"Error checking existing exam {existing_exam_id} in Neon DB: {e}")
+        else:
+            logger.info(f"Reusing existing exam_id from session: {existing_exam_id}")
+            return existing_exam_id
+
+    # Try database insertion directly if WEBAPP_DB_URL is set
     if webapp_db_url:
         try:
             logger.info("Creating exam directly in Neon DB...")
             exam_id = generate_drizzle_id("exm_")
-            conn = await asyncpg.connect(webapp_db_url)
+            conn = await connect_to_neon_db(webapp_db_url)
             
             exam_name = session["session_name"]
             batch_id = await ensure_webapp_batch_for_session(conn, session, user_id)
@@ -2400,6 +2432,17 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
         filename = file_url.split("/")[-1]
         local_temp_path = Path(temp_dir) / filename
         
+        # Check if the file is in our local cache first
+        try:
+            cache_file = Path(tempfile.gettempdir()) / "gradesense_cache" / session_id / filename
+            if cache_file.exists():
+                logger.info(f"Using cached file locally for sync: {filename}")
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, shutil.copy, str(cache_file), str(local_temp_path))
+                return local_temp_path
+        except Exception as cache_err:
+            logger.warning(f"Error reading from local cache: {cache_err}")
+
         provider = os.environ.get("STORAGE_PROVIDER", "local").lower()
         if provider == "gcs":
             try:
@@ -2514,7 +2557,7 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                         blob = storage.bucket.blob(qp_gcs_key)
                         blob.upload_from_filename(str(qp_pdf_path), content_type="application/pdf")
                         
-                        conn = await asyncpg.connect(webapp_db_url)
+                        conn = await connect_to_neon_db(webapp_db_url)
                         await conn.execute(
                             '''
                             INSERT INTO exam_files (
@@ -2550,7 +2593,7 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                         blob = storage.bucket.blob(ma_gcs_key)
                         blob.upload_from_filename(str(ma_pdf_path), content_type="application/pdf")
                         
-                        conn = await asyncpg.connect(webapp_db_url)
+                        conn = await connect_to_neon_db(webapp_db_url)
                         await conn.execute(
                             '''
                             INSERT INTO exam_files (
@@ -2586,7 +2629,7 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                     if not flow_session_id:
                         return
 
-                    conn = await asyncpg.connect(webapp_db_url)
+                    conn = await connect_to_neon_db(webapp_db_url)
                     try:
                         row = await conn.fetchrow(
                             "SELECT state_json FROM upload_flow_sessions WHERE id = $1",
@@ -2615,57 +2658,69 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                         )
                     finally:
                         await conn.close()
-
                 async def upload_student_submissions() -> list[str]:
                     submission_ids = []
                     students = session.get("students", [])
-                    for idx, student in enumerate(students):
-                        st_pages = student.get("pages", [])
-                        if not st_pages:
-                            continue
+                    if not students:
+                        return submission_ids
 
-                        st_label = student.get("label") or f"student_{idx}"
-                        clean_label = "".join(c for c in st_label if c.isalnum() or c in (" ", "_", "-")).strip()
-                        clean_label = clean_label.replace(" ", "_")
+                    conn = await connect_to_neon_db(webapp_db_url)
+                    try:
+                        has_ann_col = await conn.fetchval(
+                            '''
+                            SELECT EXISTS (
+                                SELECT 1 
+                                FROM information_schema.columns 
+                                WHERE table_name = 'submission_files' AND column_name = 'annotation_gcs_key'
+                            )
+                            '''
+                        )
 
-                        pdf_name = f"{clean_label}.pdf"
-                        st_pdf_path = temp_dir_path / pdf_name
+                        for idx, student in enumerate(students):
+                            st_pages = student.get("pages", [])
+                            if not st_pages:
+                                continue
 
-                        logger.info(f"Compiling Student {clean_label} PDF with {len(st_pages)} pages...")
-                        if not await resolve_document_pdf(st_pages, st_pdf_path, compile_temp_dir):
-                            logger.error(f"Unable to compile student submission PDF for {clean_label}")
-                            continue
+                            st_label = student.get("label") or f"student_{idx}"
+                            clean_label = "".join(c for c in st_label if c.isalnum() or c in (" ", "_", "-")).strip()
+                            clean_label = clean_label.replace(" ", "_")
 
-                        sub_id = generate_drizzle_id("sbm_")
-                        sub_rand = generate_drizzle_id("")
-                        sub_gcs_key = f"submissions/{sub_id}/answer-sheets/file_{sub_rand}_student_answer_paper.pdf"
-                        sub_size = st_pdf_path.stat().st_size
+                            pdf_name = f"{clean_label}.pdf"
+                            st_pdf_path = temp_dir_path / pdf_name
 
-                        logger.info(f"Uploading Student PDF to GCS bucket at {sub_gcs_key}...")
-                        blob = storage.bucket.blob(sub_gcs_key)
-                        blob.upload_from_filename(str(st_pdf_path), content_type="application/pdf")
+                            logger.info(f"Compiling Student {clean_label} PDF with {len(st_pages)} pages...")
+                            if not await resolve_document_pdf(st_pages, st_pdf_path, compile_temp_dir):
+                                logger.error(f"Unable to compile student submission PDF for {clean_label}")
+                                continue
 
-                        # Compile raw pages to PDF if they exist (fall back to enhanced if raw missing)
-                        raw_pages = []
-                        for p in st_pages:
-                            raw_pages.append({
-                                **p,
-                                "file_url": p.get("raw_file_url") or p.get("file_url") or p.get("file_path")
-                            })
-                        
-                        raw_pdf_name = f"{clean_label}_raw.pdf"
-                        raw_pdf_path = temp_dir_path / raw_pdf_name
-                        raw_sub_gcs_key = None
-                        
-                        logger.info(f"Compiling Student {clean_label} Raw PDF...")
-                        if await resolve_document_pdf(raw_pages, raw_pdf_path, compile_temp_dir):
-                            raw_sub_gcs_key = f"submissions/{sub_id}/answer-sheets/file_{sub_rand}_raw_student_answer_paper.pdf"
-                            logger.info(f"Uploading Student Raw PDF to GCS bucket at {raw_sub_gcs_key}...")
-                            raw_blob = storage.bucket.blob(raw_sub_gcs_key)
-                            raw_blob.upload_from_filename(str(raw_pdf_path), content_type="application/pdf")
+                            sub_id = generate_drizzle_id("sbm_")
+                            sub_rand = generate_drizzle_id("")
+                            sub_gcs_key = f"submissions/{sub_id}/answer-sheets/file_{sub_rand}_student_answer_paper.pdf"
+                            sub_size = st_pdf_path.stat().st_size
 
-                        conn = await asyncpg.connect(webapp_db_url)
-                        try:
+                            logger.info(f"Uploading Student PDF to GCS bucket at {sub_gcs_key}...")
+                            blob = storage.bucket.blob(sub_gcs_key)
+                            blob.upload_from_filename(str(st_pdf_path), content_type="application/pdf")
+
+                            # Compile raw pages to PDF if they exist (fall back to enhanced if raw missing)
+                            raw_pages = []
+                            for p in st_pages:
+                                raw_pages.append({
+                                    **p,
+                                    "file_url": p.get("raw_file_url") or p.get("file_url") or p.get("file_path")
+                                })
+                            
+                            raw_pdf_name = f"{clean_label}_raw.pdf"
+                            raw_pdf_path = temp_dir_path / raw_pdf_name
+                            raw_sub_gcs_key = None
+                            
+                            logger.info(f"Compiling Student {clean_label} Raw PDF...")
+                            if await resolve_document_pdf(raw_pages, raw_pdf_path, compile_temp_dir):
+                                raw_sub_gcs_key = f"submissions/{sub_id}/answer-sheets/file_{sub_rand}_raw_student_answer_paper.pdf"
+                                logger.info(f"Uploading Student Raw PDF to GCS bucket at {raw_sub_gcs_key}...")
+                                raw_blob = storage.bucket.blob(raw_sub_gcs_key)
+                                raw_blob.upload_from_filename(str(raw_pdf_path), content_type="application/pdf")
+
                             await conn.execute(
                                 '''
                                 INSERT INTO submissions (
@@ -2693,16 +2748,6 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                                 student.get("roll_number"),
                             )
 
-                            # Check if annotation_gcs_key column exists
-                            has_ann_col = await conn.fetchval(
-                                '''
-                                SELECT EXISTS (
-                                    SELECT 1 
-                                    FROM information_schema.columns 
-                                    WHERE table_name = 'submission_files' AND column_name = 'annotation_gcs_key'
-                                )
-                                '''
-                            )
                             if has_ann_col:
                                 await conn.execute(
                                     '''
@@ -2742,10 +2787,9 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                                     datetime.utcnow().isoformat() + 'Z',
                                     datetime.utcnow().isoformat() + 'Z',
                                 )
-                        finally:
-                            await conn.close()
-
-                        submission_ids.append(sub_id)
+                            submission_ids.append(sub_id)
+                    finally:
+                        await conn.close()
 
                     return submission_ids
 
@@ -2765,7 +2809,7 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                 if ma_pages:
                     blueprint_job_id = generate_drizzle_id("job_")
                     logger.info(f"Enqueuing blueprint extraction job {blueprint_job_id} in Neon...")
-                    conn = await asyncpg.connect(webapp_db_url)
+                    conn = await connect_to_neon_db(webapp_db_url)
                     await conn.execute(
                         '''
                         INSERT INTO grading_jobs (
@@ -2799,7 +2843,7 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                         await asyncio.sleep(3.0)
                         conn = None
                         try:
-                            conn = await asyncpg.connect(webapp_db_url)
+                            conn = await connect_to_neon_db(webapp_db_url)
                             j_row = await conn.fetchrow(
                                 "SELECT status, error, success_count, processed_items FROM grading_jobs WHERE id = $1",
                                 blueprint_job_id,
@@ -2862,7 +2906,7 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                     queued_submission_ids = grading_queue["queued_submission_ids"]
                     held_submission_ids = grading_queue["held_submission_ids"]
                     queue_first_only = grading_queue["queue_first_only"]
-                    conn = await asyncpg.connect(webapp_db_url)
+                    conn = await connect_to_neon_db(webapp_db_url)
                     await conn.execute(
                         '''
                         INSERT INTO grading_jobs (
@@ -2951,6 +2995,15 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
             logger.exception(f"Failed direct Neon background sync for session {session_id}")
             await mark_sync_failed(str(e))
             return
+        finally:
+            # Clear the local cache directory for this session to save disk space
+            try:
+                cache_dir = Path(tempfile.gettempdir()) / "gradesense_cache" / session_id
+                if cache_dir.exists():
+                    shutil.rmtree(cache_dir)
+                    logger.info(f"Cleared local upload cache for session {session_id}")
+            except Exception as cache_err:
+                logger.warning(f"Failed to clear local cache for session {session_id}: {cache_err}")
 
 
 @api_router.post("/scan-sessions/{session_id}/complete")
@@ -3030,7 +3083,7 @@ async def complete_scan_session(
                         flow_session_id = generate_drizzle_id("ufs_")
                         state_dict = build_upload_flow_state(session, source_paper_mode)
                         
-                        conn = await asyncpg.connect(webapp_db_url)
+                        conn = await connect_to_neon_db(webapp_db_url)
                         await conn.execute(
                             '''
                             INSERT INTO upload_flow_sessions (
@@ -3122,7 +3175,7 @@ async def reconcile_scan_sessions_with_webapp(user_id: str, sessions: list[dict]
     exam_ids = [str(session["exam_id"]) for session in candidates]
     conn = None
     try:
-        conn = await asyncpg.connect(webapp_db_url)
+        conn = await connect_to_neon_db(webapp_db_url)
         exam_rows = await conn.fetch(
             '''
             SELECT id, status
@@ -3327,13 +3380,13 @@ def process_enhance(base64_str: str, mode: str = "enhanced", points: Optional[li
                 cv2.THRESH_BINARY, 21, 10
             )
         elif mode == "high_contrast":
-            # Division-based background normalization (similar to ML Kit document enhancement)
-            blur = cv2.GaussianBlur(gray, (71, 71), 0)
-            divided = cv2.divide(gray, blur, scale=255)
+            # Division-based background normalization preserving color (whitening background only)
+            blur = cv2.GaussianBlur(img, (71, 71), 0)
+            divided = cv2.divide(img, blur, scale=255)
             # Unsharp mask to sharpen handwriting strokes
             sharpen_blur = cv2.GaussianBlur(divided, (5, 5), 0)
             sharp = cv2.addWeighted(divided, 1.6, sharpen_blur, -0.6, 0)
-            # Contrast adjustment: make text extra dark, paper background pure white (clip to avoid absolute value wrapping)
+            # Contrast adjustment: make text extra dark, paper background pure white
             final = np.clip(sharp.astype(np.float32) * 1.9 - 160, 0, 255).astype(np.uint8)
         else: # DEFAULT: "enhanced" - HANDWRITING PRESERVING
             # Lighting Normalization (CLAHE) - Softer settings
@@ -3436,12 +3489,13 @@ async def enhance_image_file_endpoint(
                 cv2.THRESH_BINARY, 21, 10
             )
         elif mode == "high_contrast":
-            blur = cv2.GaussianBlur(gray, (71, 71), 0)
-            divided = cv2.divide(gray, blur, scale=255)
+            # Color-preserving High Contrast
+            blur = cv2.GaussianBlur(img, (71, 71), 0)
+            divided = cv2.divide(img, blur, scale=255)
             # Unsharp mask to sharpen handwriting strokes
             sharpen_blur = cv2.GaussianBlur(divided, (5, 5), 0)
             sharp = cv2.addWeighted(divided, 1.6, sharpen_blur, -0.6, 0)
-            # Contrast adjustment: make text extra dark, paper background pure white (clip to avoid absolute value wrapping)
+            # Contrast adjustment: make text extra dark, paper background pure white
             final = np.clip(sharp.astype(np.float32) * 1.9 - 160, 0, 255).astype(np.uint8)
         else: # enhanced
             clahe = cv2.createCLAHE(clipLimit=1.2, tileGridSize=(12, 12))
@@ -3473,7 +3527,7 @@ async def get_exam_submissions_proxy(exam_id: str, authorization: Optional[str] 
     if webapp_db_url:
         conn = None
         try:
-            conn = await asyncpg.connect(webapp_db_url)
+            conn = await connect_to_neon_db(webapp_db_url)
             rows = await conn.fetch(
                 '''
                 SELECT s.id,
@@ -3564,7 +3618,7 @@ async def get_submission_detail_proxy(submission_id: str, request: Request, auth
 
     if webapp_db_url and not submission_id.startswith("sub_local_"):
         try:
-            conn = await asyncpg.connect(webapp_db_url)
+            conn = await connect_to_neon_db(webapp_db_url)
             sub_row = await conn.fetchrow(
                 '''
                 WITH ranked_submissions AS (
@@ -3818,7 +3872,7 @@ async def improve_question_grading(
 
     conn = None
     try:
-        conn = await asyncpg.connect(webapp_db_url)
+        conn = await connect_to_neon_db(webapp_db_url)
         result = await save_question_improvement(
             conn,
             teacher_id=user.user_id,
@@ -3892,7 +3946,7 @@ async def enqueue_pilot_review_continuation(submission_id: str, authorization: O
     user = await get_current_user(authorization)
     conn = None
     try:
-        conn = await asyncpg.connect(webapp_db_url)
+        conn = await connect_to_neon_db(webapp_db_url)
         submission_row = await conn.fetchrow(
             '''
             SELECT s.exam_id, e.teacher_id
@@ -3999,7 +4053,7 @@ async def post_submission_review_proxy(submission_id: str, data: dict, authoriza
         conn = None
         try:
             user = await get_current_user(authorization)
-            conn = await asyncpg.connect(webapp_db_url)
+            conn = await connect_to_neon_db(webapp_db_url)
             direct_save_response = await save_submission_review_edits(
                 conn,
                 teacher_id=user.user_id,
@@ -4057,7 +4111,7 @@ async def get_analytics_overview_proxy(authorization: Optional[str] = Header(Non
     if webapp_db_url:
         conn = None
         try:
-            conn = await asyncpg.connect(webapp_db_url)
+            conn = await connect_to_neon_db(webapp_db_url)
             stats_row = await conn.fetchrow(
                 '''
                 SELECT COUNT(DISTINCT e.id) AS exams_count,
@@ -4144,7 +4198,7 @@ async def get_analytics_performance(authorization: Optional[str] = Header(None))
 
     conn = None
     try:
-        conn = await asyncpg.connect(webapp_db_url)
+        conn = await connect_to_neon_db(webapp_db_url)
         subject_rows = await conn.fetch(
             '''
             SELECT COALESCE(subj.name, 'Unassigned') AS subject_name,
@@ -4267,7 +4321,7 @@ async def soft_delete_webapp_exam(exam_id: str, teacher_id: str) -> bool:
 
     conn = None
     try:
-        conn = await asyncpg.connect(webapp_db_url)
+        conn = await connect_to_neon_db(webapp_db_url)
         async with conn.transaction():
             row = await conn.fetchrow(
                 '''
@@ -4298,7 +4352,7 @@ async def list_exams_v1(authorization: Optional[str] = Header(None)):
 
     if webapp_db_url:
         try:
-            conn = await asyncpg.connect(webapp_db_url)
+            conn = await connect_to_neon_db(webapp_db_url)
             await delete_stale_upload_flows_for_teacher(conn, user.user_id)
             rows = await conn.fetch(
                 '''
@@ -4372,7 +4426,7 @@ async def update_exam_v1(exam_id: str, data: dict, authorization: Optional[str] 
 
     conn = None
     try:
-        conn = await asyncpg.connect(webapp_db_url)
+        conn = await connect_to_neon_db(webapp_db_url)
         row = await conn.fetchrow(
             f'''
             UPDATE exams
@@ -4409,7 +4463,7 @@ async def close_exam_v1(exam_id: str, authorization: Optional[str] = Header(None
 
     conn = None
     try:
-        conn = await asyncpg.connect(webapp_db_url)
+        conn = await connect_to_neon_db(webapp_db_url)
         row = await conn.fetchrow(
             '''
             UPDATE exams
@@ -4448,7 +4502,7 @@ async def publish_exam_results_v1(exam_id: str, authorization: Optional[str] = H
     now = utc_now_text()
     conn = None
     try:
-        conn = await asyncpg.connect(webapp_db_url)
+        conn = await connect_to_neon_db(webapp_db_url)
         async with conn.transaction():
             row = await conn.fetchrow(
                 '''
@@ -4516,7 +4570,7 @@ async def get_exam_review_settings(exam_id: str, authorization: Optional[str] = 
         raise HTTPException(status_code=503, detail="WEBAPP_DB_URL is not configured")
 
     try:
-        conn = await asyncpg.connect(webapp_db_url)
+        conn = await connect_to_neon_db(webapp_db_url)
         row = await conn.fetchrow(
             '''
             SELECT e.grading_mode, e.feedback_enabled, e.grading_instructions, e.annotations_enabled,
@@ -4564,7 +4618,7 @@ async def update_exam_review_settings(exam_id: str, data: dict, authorization: O
     now = utc_now_text()
 
     try:
-        conn = await asyncpg.connect(webapp_db_url)
+        conn = await connect_to_neon_db(webapp_db_url)
         row = await conn.fetchrow(
             '''
             UPDATE exams
@@ -4636,7 +4690,7 @@ async def flag_exam_grading(exam_id: str, data: dict, authorization: Optional[st
     feedback_id = generate_drizzle_id("pfb_")
 
     try:
-        conn = await asyncpg.connect(webapp_db_url)
+        conn = await connect_to_neon_db(webapp_db_url)
         exam_exists = await conn.fetchval(
             '''
             SELECT EXISTS (
@@ -4702,7 +4756,7 @@ async def list_ai_brain_rules(authorization: Optional[str] = Header(None)):
 
     conn = None
     try:
-        conn = await asyncpg.connect(webapp_db_url)
+        conn = await connect_to_neon_db(webapp_db_url)
         rows = await conn.fetch(
             '''
             SELECT id, exam_id, question_number, original_ai_feedback,
@@ -4762,7 +4816,7 @@ async def create_ai_brain_rule(data: dict, authorization: Optional[str] = Header
 
     conn = None
     try:
-        conn = await asyncpg.connect(webapp_db_url)
+        conn = await connect_to_neon_db(webapp_db_url)
         await conn.execute(
             '''
             INSERT INTO teacher_feedback_patterns (
@@ -4805,7 +4859,7 @@ async def list_reevaluations_proxy(exam_id: Optional[str] = None, authorization:
 
     if webapp_db_url:
         try:
-            conn = await asyncpg.connect(webapp_db_url)
+            conn = await connect_to_neon_db(webapp_db_url)
             query = '''
                 SELECT r.id, s.student_name, s.student_roll_number as roll_number, r.reason, r.status,
                        r.teacher_response, r.created_at, e.name as exam_name, e.id as exam_id
@@ -4885,7 +4939,7 @@ async def get_exam_jobs_proxy(exam_id: str, authorization: Optional[str] = Heade
 
     if webapp_db_url:
         try:
-            conn = await asyncpg.connect(webapp_db_url)
+            conn = await connect_to_neon_db(webapp_db_url)
             rows = await conn.fetch(
                 '''
                 SELECT j.id, j.type, j.status, j.progress, j.processed_items, j.total_items, j.payload_json, j.updated_at
@@ -4934,7 +4988,7 @@ async def retry_exam_grading_v1(
 
     conn = None
     try:
-        conn = await asyncpg.connect(webapp_db_url)
+        conn = await connect_to_neon_db(webapp_db_url)
         submission_ids = await fetch_exam_submission_ids(conn, exam_id, user.user_id)
         if not submission_ids:
             raise HTTPException(status_code=409, detail="No student submissions are available for grading")
@@ -5053,7 +5107,7 @@ async def get_batch_exams(batch_id: str, authorization: Optional[str] = Header(N
         if webapp_db_url:
             conn = None
             try:
-                conn = await asyncpg.connect(webapp_db_url)
+                conn = await connect_to_neon_db(webapp_db_url)
                 exams = await fetch_batch_exams(conn, user.user_id, batch_id)
                 return {"exams": exams}
             except Exception as e:
@@ -5344,7 +5398,7 @@ async def student_submit_exam(
         return False
 
     # Perform submit
-    conn = await asyncpg.connect(webapp_db_url)
+    conn = await connect_to_neon_db(webapp_db_url)
     try:
         # 1. Fetch student user profile details from users table
         user_row = await conn.fetchrow(

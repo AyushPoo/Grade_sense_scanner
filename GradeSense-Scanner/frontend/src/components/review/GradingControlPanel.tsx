@@ -19,7 +19,7 @@ import {
 import { useHardwareAwareBottomInset } from '../../utils/safeArea';
 
 interface GradingControlPanelProps {
-  activeScore: ScoreItem;
+  activeScore?: ScoreItem | null;
   isSaving: boolean;
   isLastSubmission: boolean;
   density: ReviewDensity;
@@ -56,21 +56,27 @@ export function GradingControlPanel({
       <View style={[styles.stepperRow, densityStyles.stepperRow]}>
         <View style={styles.questionSummary}>
           <Text style={[styles.panelEyebrow, densityStyles.panelEyebrow]}>Current question</Text>
-          <Text style={[styles.questionTitle, densityStyles.questionTitle]}>Question {activeScore.questionNumber}</Text>
+          <Text style={[styles.questionTitle, densityStyles.questionTitle]}>
+            {activeScore ? `Question ${activeScore.questionNumber}` : 'Question --'}
+          </Text>
         </View>
 
-        <View style={styles.stepperContainer}>
+        <View style={[styles.stepperContainer, !activeScore && { opacity: 0.5 }]}>
           <TouchableOpacity
             style={[styles.stepperButton, densityStyles.stepperButton]}
-            onPress={() => onScoreChange(activeScore.id, activeScore.obtainedMarks - 0.5)}
+            onPress={() => activeScore && onScoreChange(activeScore.id, activeScore.obtainedMarks - 0.5)}
+            disabled={!activeScore}
             activeOpacity={0.8}
           >
             <Ionicons name="remove" size={densityConfig.stepperIconSize} color={COLORS.primary} />
           </TouchableOpacity>
-          <Text style={[styles.stepperValue, densityStyles.stepperValue]}>{activeScore.obtainedMarks.toFixed(1)}</Text>
+          <Text style={[styles.stepperValue, densityStyles.stepperValue]}>
+            {activeScore ? activeScore.obtainedMarks.toFixed(1) : '--'}
+          </Text>
           <TouchableOpacity
             style={[styles.stepperButton, densityStyles.stepperButton]}
-            onPress={() => onScoreChange(activeScore.id, activeScore.obtainedMarks + 0.5)}
+            onPress={() => activeScore && onScoreChange(activeScore.id, activeScore.obtainedMarks + 0.5)}
+            disabled={!activeScore}
             activeOpacity={0.8}
           >
             <Ionicons name="add" size={densityConfig.stepperIconSize} color={COLORS.primary} />

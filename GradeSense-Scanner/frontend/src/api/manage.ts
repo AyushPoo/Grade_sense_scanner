@@ -182,7 +182,7 @@ export async function fetchBatchStudents({
 export async function fetchManagePerformance({ backendUrl, token }: ManageApiOptions): Promise<ManagePerformance> {
   const res = await fetchWithTimeout(`${backendUrl}/api/v1/analytics/performance`, {
     headers: authHeaders(token),
-  }, 2500);
+  }, 8000);
 
   return parseJsonResponse(res, normalizeManagePerformance);
 }

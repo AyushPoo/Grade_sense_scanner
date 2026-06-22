@@ -121,6 +121,23 @@ class GcsStorageService:
             
         blob.upload_from_file(file_obj, content_type=content_type)
         logger.info(f"Saved file to GCS: gs://{self.bucket_name}/{blob_path}")
+
+        # Cache locally for fast background compilation
+        try:
+            import tempfile
+            cache_dir = Path(tempfile.gettempdir()) / "gradesense_cache" / session_id
+            cache_dir.mkdir(exist_ok=True, parents=True)
+            cache_file = cache_dir / filename
+            try:
+                file_obj.seek(0)
+            except Exception:
+                pass
+            with cache_file.open("wb") as f:
+                shutil.copyfileobj(file_obj, f)
+            logger.info(f"Cached uploaded file locally: {cache_file}")
+        except Exception as cache_err:
+            logger.warning(f"Failed to cache uploaded file locally: {cache_err}")
+
         return f"/api/files/{session_id}/{filename}"
 
     def get_file_path(self, session_id: str, filename: str) -> Optional[Path]:

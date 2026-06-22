@@ -42,7 +42,7 @@ export function useInsightsData({ token }: UseInsightsDataParams) {
       const [apiOverview, exams] = await Promise.all([
         fetchWithTimeout(`${backendUrl}/api/v1/analytics/overview`, {
           headers: { Authorization: `Bearer ${token}` },
-        }, 2500)
+        }, 8000)
           .then(async res => {
             if (!res.ok) throw new Error(`Status ${res.status}`);
             const json = await res.json();
