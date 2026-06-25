@@ -105,7 +105,8 @@ interface ScanState {
     settings: ScanSessionSettings,
     subjectId?: string,
     totalMarks?: number,
-    examDate?: string
+    examDate?: string,
+    parentExamId?: string
   ) => Promise<ScanSession>;
   replaceSessionDocuments: (
     sessionId: string,
@@ -319,7 +320,8 @@ export const useScanStore = create<ScanState>()(
         settings: ScanSessionSettings,
         subjectId?: string,
         totalMarks?: number,
-        examDate?: string
+        examDate?: string,
+        parentExamId?: string
       ) => {
         const reusableDraft = findReusableDraftSession(get().savedSessions, {
           name,
@@ -328,6 +330,7 @@ export const useScanStore = create<ScanState>()(
           totalMarks,
           examDate,
           settings,
+          parentExamId,
         });
 
         if (reusableDraft) {
@@ -357,6 +360,7 @@ export const useScanStore = create<ScanState>()(
           subject_id: subjectId || null,
           total_marks: totalMarks || null,
           exam_date: examDate || null,
+          parent_exam_id: parentExamId,
           created_at: new Date().toISOString(),
           status: 'scanning',
           upload_progress: 0,

@@ -465,27 +465,31 @@ export default function UploadScreen() {
             </View>
 
             <View style={styles.uploadItemsList}>
+              {!session.parent_exam_id && (
+                <>
+                  <View style={styles.uploadItem}>
+                    <Ionicons
+                      name={progress >= 0.1 ? 'checkmark-circle' : 'ellipse-outline'}
+                      size={20}
+                      color={progress >= 0.1 ? COLORS.success : COLORS.textMuted}
+                    />
+                    <Text style={styles.uploadItemText}>Question Paper</Text>
+                  </View>
+                  <View style={styles.uploadItem}>
+                    <Ionicons
+                      name={progress >= 0.2 ? 'checkmark-circle' : progress > 0.1 ? 'sync' : 'ellipse-outline'}
+                      size={20}
+                      color={progress >= 0.2 ? COLORS.success : progress > 0.1 ? COLORS.primary : COLORS.textMuted}
+                    />
+                    <Text style={styles.uploadItemText}>Model Answer</Text>
+                  </View>
+                </>
+              )}
               <View style={styles.uploadItem}>
                 <Ionicons
-                  name={progress >= 0.1 ? 'checkmark-circle' : 'ellipse-outline'}
+                  name={progress >= 1 ? 'checkmark-circle' : progress > (session.parent_exam_id ? 0.0 : 0.2) ? 'sync' : 'ellipse-outline'}
                   size={20}
-                  color={progress >= 0.1 ? COLORS.success : COLORS.textMuted}
-                />
-                <Text style={styles.uploadItemText}>Question Paper</Text>
-              </View>
-              <View style={styles.uploadItem}>
-                <Ionicons
-                  name={progress >= 0.2 ? 'checkmark-circle' : progress > 0.1 ? 'sync' : 'ellipse-outline'}
-                  size={20}
-                  color={progress >= 0.2 ? COLORS.success : progress > 0.1 ? COLORS.primary : COLORS.textMuted}
-                />
-                <Text style={styles.uploadItemText}>Model Answer</Text>
-              </View>
-              <View style={styles.uploadItem}>
-                <Ionicons
-                  name={progress >= 1 ? 'checkmark-circle' : progress > 0.2 ? 'sync' : 'ellipse-outline'}
-                  size={20}
-                  color={progress >= 1 ? COLORS.success : progress > 0.2 ? COLORS.primary : COLORS.textMuted}
+                  color={progress >= 1 ? COLORS.success : progress > (session.parent_exam_id ? 0.0 : 0.2) ? COLORS.primary : COLORS.textMuted}
                 />
                 <Text style={styles.uploadItemText}>Student Papers</Text>
               </View>
@@ -532,28 +536,32 @@ export default function UploadScreen() {
                 Upload PDFs/images or scan any missing section. Model Answer is required before student papers can be graded.
               </Text>
 
-              <DocumentAttachRow
-                icon="document-text-outline"
-                label="Question Paper"
-                optional
-                value={getDocumentDisplayValue(session.question_paper.pages, 'Question Paper')}
-                hasDocument={session.question_paper.pages.length > 0}
-                onPress={() => pickDocuments('question')}
-                onClear={() => handleRemoveDocuments('question')}
-                onScanPress={() => handleScanDocument('question_paper')}
-                disabled={isPickingDocument || isUploading}
-              />
-              <DocumentAttachRow
-                icon="clipboard-outline"
-                label="Model Answer"
-                required
-                value={getDocumentDisplayValue(session.model_answer.pages, 'Model Answer')}
-                hasDocument={session.model_answer.pages.length > 0}
-                onPress={() => pickDocuments('model')}
-                onClear={() => handleRemoveDocuments('model')}
-                onScanPress={() => handleScanDocument('model_answer')}
-                disabled={isPickingDocument || isUploading}
-              />
+              {!session.parent_exam_id && (
+                <>
+                  <DocumentAttachRow
+                    icon="document-text-outline"
+                    label="Question Paper"
+                    optional
+                    value={getDocumentDisplayValue(session.question_paper.pages, 'Question Paper')}
+                    hasDocument={session.question_paper.pages.length > 0}
+                    onPress={() => pickDocuments('question')}
+                    onClear={() => handleRemoveDocuments('question')}
+                    onScanPress={() => handleScanDocument('question_paper')}
+                    disabled={isPickingDocument || isUploading}
+                  />
+                  <DocumentAttachRow
+                    icon="clipboard-outline"
+                    label="Model Answer"
+                    required
+                    value={getDocumentDisplayValue(session.model_answer.pages, 'Model Answer')}
+                    hasDocument={session.model_answer.pages.length > 0}
+                    onPress={() => pickDocuments('model')}
+                    onClear={() => handleRemoveDocuments('model')}
+                    onScanPress={() => handleScanDocument('model_answer')}
+                    disabled={isPickingDocument || isUploading}
+                  />
+                </>
+              )}
               <DocumentAttachRow
                 icon="people-outline"
                 label="Student Answer Papers"
@@ -568,25 +576,29 @@ export default function UploadScreen() {
             </View>
 
             <View style={styles.uploadPreview}>
-              <View style={styles.previewItem}>
-                <Ionicons name="document-text" size={24} color={COLORS.primary} />
-                <View style={styles.previewItemInfo}>
-                  <Text style={styles.previewItemLabel}>Question Paper</Text>
-                  <Text style={styles.previewItemValue}>
-                    {getDocumentDisplayValue(session.question_paper.pages, 'Question Paper')}
-                  </Text>
-                </View>
-              </View>
+              {!session.parent_exam_id && (
+                <>
+                  <View style={styles.previewItem}>
+                    <Ionicons name="document-text" size={24} color={COLORS.primary} />
+                    <View style={styles.previewItemInfo}>
+                      <Text style={styles.previewItemLabel}>Question Paper</Text>
+                      <Text style={styles.previewItemValue}>
+                        {getDocumentDisplayValue(session.question_paper.pages, 'Question Paper')}
+                      </Text>
+                    </View>
+                  </View>
 
-              <View style={styles.previewItem}>
-                <Ionicons name="clipboard" size={24} color={COLORS.primary} />
-                <View style={styles.previewItemInfo}>
-                  <Text style={styles.previewItemLabel}>Model Answer</Text>
-                  <Text style={styles.previewItemValue}>
-                    {getDocumentDisplayValue(session.model_answer.pages, 'Model Answer')}
-                  </Text>
-                </View>
-              </View>
+                  <View style={styles.previewItem}>
+                    <Ionicons name="clipboard" size={24} color={COLORS.primary} />
+                    <View style={styles.previewItemInfo}>
+                      <Text style={styles.previewItemLabel}>Model Answer</Text>
+                      <Text style={styles.previewItemValue}>
+                        {getDocumentDisplayValue(session.model_answer.pages, 'Model Answer')}
+                      </Text>
+                    </View>
+                  </View>
+                </>
+              )}
 
               <View style={styles.previewItem}>
                 <Ionicons name="people" size={24} color={COLORS.primary} />

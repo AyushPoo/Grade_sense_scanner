@@ -11,11 +11,14 @@ import {
   Modal,
   TextInput,
   LayoutAnimation,
+  Platform,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
+import * as DocumentPicker from 'expo-document-picker';
 import { COLORS, getBackendUrl } from '../../src/config';
 import { useAuthStore } from '../../src/store/authStore';
 import { useScanStore } from '../../src/store/scanStore';
@@ -34,6 +37,9 @@ import {
   publishManagedExam,
   updateManagedBatch,
   updateBatchStudent,
+  updateManagedExam,
+  replaceExamFile,
+  regradeExam,
 } from '../../src/api/manage';
 import { AnalyticsPerformancePanel } from '../../src/components/manage/AnalyticsPerformancePanel';
 import { ExamManagementPanel } from '../../src/components/manage/ExamManagementPanel';
@@ -191,6 +197,7 @@ export default function ManageScreen() {
   const [loadingStudents, setLoadingStudents] = useState<string | null>(null);
   const [selectedStudentReport, setSelectedStudentReport] = useState<Student | null>(null);
   const [savingStudentId, setSavingStudentId] = useState<string | null>(null);
+  const [classroomSearchQuery, setClassroomSearchQuery] = useState('');
 
   // Modals
   const [showAddBatchModal, setShowAddBatchModal] = useState(false);
@@ -204,6 +211,16 @@ export default function ManageScreen() {
   const [newStudentName, setNewStudentName] = useState('');
   const [newStudentRoll, setNewStudentRoll] = useState('');
   const [newStudentEmail, setNewStudentEmail] = useState('');
+
+  // Edit Exam Modal States
+  const [selectedEditExam, setSelectedEditExam] = useState<ManagedExam | null>(null);
+  const [editExamTitle, setEditExamTitle] = useState('');
+  const [editExamDate, setEditExamDate] = useState('');
+  const [editExamMarks, setEditExamMarks] = useState('');
+  const [isSavingExam, setIsSavingExam] = useState(false);
+  const [isReplacingQP, setIsReplacingQP] = useState(false);
+  const [isReplacingMA, setIsReplacingMA] = useState(false);
+  const [isRegrading, setIsRegrading] = useState(false);
 
   const localStats = React.useMemo(() => {
     const sessions = Array.isArray(savedSessions) ? savedSessions : [];
@@ -276,19 +293,33 @@ export default function ManageScreen() {
     }
   }, [token]);
 
+  const fetchStudentsSilent = useCallback(async (batchId: string) => {
+    if (!token) return;
+    try {
+      const students = await fetchBatchStudents({ backendUrl: getBackendUrl(), token, batchId });
+      setStudentsByBatch(prev => ({ ...prev, [batchId]: students }));
+    } catch (err) {
+      console.error('Silent load failed for batch:', batchId, err);
+    }
+  }, [token]);
+
   const fetchBatches = useCallback(async () => {
     if (!token) return;
     setLoadingBatches(true);
     try {
       const data = await fetchManagedBatches({ backendUrl: getBackendUrl(), token });
       setBatches(data);
+      // Prefetch students in background to support global search on classroom tab
+      for (const batch of data) {
+        fetchStudentsSilent(batch.batch_id);
+      }
     } catch (err) {
       console.error(err);
     } finally {
       setLoadingBatches(false);
       setRefreshing(false);
     }
-  }, [token]);
+  }, [token, fetchStudentsSilent]);
 
   const fetchStudents = useCallback(async (batchId: string) => {
     if (!token) return;
@@ -389,6 +420,156 @@ export default function ManageScreen() {
         },
       ]
     );
+  };
+
+  const handleEditExam = (exam: ManagedExam) => {
+    setSelectedEditExam(exam);
+    setEditExamTitle(exam.name);
+    setEditExamDate(exam.examDate || '');
+    setEditExamMarks(exam.totalMarks?.toString() || '');
+  };
+
+  const handleUpdateExamMetadata = async () => {
+    if (!selectedEditExam || !token) return;
+    const cleanTitle = editExamTitle.trim();
+    const cleanDate = editExamDate.trim();
+    const marksNumber = Number(editExamMarks);
+
+    if (!cleanTitle) {
+      Alert.alert('Title required', 'Please enter an exam title.');
+      return;
+    }
+    if (cleanDate && !/^\d{4}-\d{2}-\d{2}$/.test(cleanDate)) {
+      Alert.alert('Invalid Date', 'Date must be in YYYY-MM-DD format.');
+      return;
+    }
+    if (isNaN(marksNumber) || marksNumber <= 0) {
+      Alert.alert('Invalid Marks', 'Total marks must be a positive number.');
+      return;
+    }
+
+    setIsSavingExam(true);
+    try {
+      const updated = await updateManagedExam(
+        { backendUrl: getBackendUrl(), token, examId: selectedEditExam.id },
+        { name: cleanTitle, examDate: cleanDate || null, totalMarks: marksNumber }
+      );
+      replaceManagedExam(updated);
+      setSelectedEditExam(null);
+      Alert.alert('Success', 'Exam details updated successfully.');
+      fetchExamManagement();
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Could not update exam details.');
+    } finally {
+      setIsSavingExam(false);
+    }
+  };
+
+  const handleReplaceQP = async () => {
+    if (!selectedEditExam || !token) return;
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['application/pdf'],
+        multiple: false,
+        copyToCacheDirectory: true,
+      });
+
+      if (result.canceled || !result.assets?.length) return;
+
+      const asset = result.assets[0];
+      setIsReplacingQP(true);
+      
+      const response = await replaceExamFile(
+        { backendUrl: getBackendUrl(), token, examId: selectedEditExam.id },
+        'question_paper',
+        asset.uri,
+        asset.name || 'qp.pdf',
+        asset.mimeType || 'application/pdf'
+      );
+      
+      if (response.status === 'success') {
+        Alert.alert('Success', 'Question Paper replaced successfully.');
+        fetchExamManagement();
+      } else {
+        throw new Error('Failed to replace Question Paper.');
+      }
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Could not replace Question Paper.');
+    } finally {
+      setIsReplacingQP(false);
+    }
+  };
+
+  const handleReplaceMA = async () => {
+    if (!selectedEditExam || !token) return;
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['application/pdf'],
+        multiple: false,
+        copyToCacheDirectory: true,
+      });
+
+      if (result.canceled || !result.assets?.length) return;
+
+      const asset = result.assets[0];
+      setIsReplacingMA(true);
+      
+      const response = await replaceExamFile(
+        { backendUrl: getBackendUrl(), token, examId: selectedEditExam.id },
+        'model_answer',
+        asset.uri,
+        asset.name || 'model_answer.pdf',
+        asset.mimeType || 'application/pdf'
+      );
+      
+      setIsReplacingMA(false);
+
+      if (response.status === 'success') {
+        Alert.alert(
+          'Model Answer Replaced',
+          'Model Answer updated successfully. Would you like to regrade all existing student submissions now using this new answer key?',
+          [
+            { text: 'No', style: 'cancel', onPress: () => fetchExamManagement() },
+            {
+              text: 'Yes, Regrade',
+              onPress: async () => {
+                setIsRegrading(true);
+                try {
+                  await regradeExam({ backendUrl: getBackendUrl(), token, examId: selectedEditExam!.id });
+                  Alert.alert('Success', 'Regrading triggered. Results will update in a few minutes.');
+                  fetchExamManagement();
+                } catch (regradeErr: any) {
+                  Alert.alert('Regrade Failed', regradeErr.message || 'Could not trigger regrading.');
+                } finally {
+                  setIsRegrading(false);
+                }
+              }
+            }
+          ]
+        );
+      } else {
+        throw new Error('Failed to replace Model Answer.');
+      }
+    } catch (err: any) {
+      setIsReplacingMA(false);
+      Alert.alert('Error', err.message || 'Could not replace Model Answer.');
+    }
+  };
+
+  const handleAddPapers = (exam: ManagedExam) => {
+    router.push({
+      pathname: '/session-setup',
+      params: {
+        parentExamId: exam.id,
+        examName: exam.name,
+        batchId: exam.batchId || '',
+        batchName: exam.batchName || '',
+        subjectId: exam.subjectId || '',
+        subjectName: exam.subjectName || '',
+        totalMarks: exam.totalMarks?.toString() || '',
+        examDate: exam.examDate || '',
+      }
+    });
   };
 
   useEffect(() => {
@@ -809,6 +990,8 @@ export default function ManageScreen() {
               onCreateExam={() => router.push('/session-setup')}
               onRetry={fetchExamManagement}
               errorMessage={examLoadError}
+              onAddPapers={handleAddPapers}
+              onEditExam={handleEditExam}
             />
           ) : activeTab === 'classroom' ? (
             // ==================== CLASSROOM MANAGEMENT VIEW ====================
@@ -825,17 +1008,79 @@ export default function ManageScreen() {
                 </TouchableOpacity>
               </View>
 
+              {/* Classroom search input */}
+              <View style={[styles.searchBarContainer, { marginTop: 0, marginBottom: 12 }]}>
+                <View style={[styles.searchInputWrapper, { height: 40 }]}>
+                  <Ionicons name="search-outline" size={18} color={COLORS.textMuted} style={styles.searchIcon} />
+                  <TextInput
+                    style={styles.searchInput}
+                    placeholder="Search classes or students..."
+                    placeholderTextColor={COLORS.textMuted}
+                    value={classroomSearchQuery}
+                    onChangeText={setClassroomSearchQuery}
+                  />
+                  {classroomSearchQuery ? (
+                    <TouchableOpacity onPress={() => setClassroomSearchQuery('')} style={styles.clearBtn}>
+                      <Ionicons name="close-circle" size={16} color={COLORS.textMuted} />
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+              </View>
+
               {loadingBatches ? (
                 <ActivityIndicator size="small" color={COLORS.primary} style={{ marginVertical: 20 }} />
-              ) : batches.length === 0 ? (
-                <View style={styles.emptyClassRoster}>
-                  <Ionicons name="school-outline" size={40} color={COLORS.textMuted} />
-                  <Text style={styles.noBatchesText}>No batches created yet.</Text>
-                </View>
-              ) : (
-                batches.map(batch => {
-                  const isExpanded = expandedBatchId === batch.batch_id;
+              ) : (() => {
+                const q = classroomSearchQuery.toLowerCase().trim();
+                const filteredBatches = batches.filter(batch => {
+                  if (!q) return true;
+                  if (batch.name.toLowerCase().includes(q)) return true;
                   const students = studentsByBatch[batch.batch_id] || [];
+                  return students.some(std => 
+                    (std.name && std.name.toLowerCase().includes(q)) ||
+                    (std.roll_number && std.roll_number.toLowerCase().includes(q)) ||
+                    (std.email && std.email.toLowerCase().includes(q))
+                  );
+                });
+
+                if (batches.length === 0) {
+                  return (
+                    <View style={styles.emptyClassRoster}>
+                      <Ionicons name="school-outline" size={40} color={COLORS.textMuted} />
+                      <Text style={styles.noBatchesText}>No batches created yet.</Text>
+                    </View>
+                  );
+                }
+
+                if (filteredBatches.length === 0) {
+                  return (
+                    <View style={styles.emptyClassRoster}>
+                      <Ionicons name="search-outline" size={40} color={COLORS.textMuted} />
+                      <Text style={styles.noBatchesText}>No matching classes or students found.</Text>
+                    </View>
+                  );
+                }
+
+                return filteredBatches.map(batch => {
+                  const students = studentsByBatch[batch.batch_id] || [];
+                  const filteredStudents = students.filter(std => {
+                    if (!q) return true;
+                    return (
+                      (std.name && std.name.toLowerCase().includes(q)) ||
+                      (std.roll_number && std.roll_number.toLowerCase().includes(q)) ||
+                      (std.email && std.email.toLowerCase().includes(q))
+                    );
+                  });
+
+                  // Expand if searched and contains matching students, or if manually expanded
+                  const isExpanded = expandedBatchId === batch.batch_id || (
+                    q.length > 0 &&
+                    students.some(std => 
+                      (std.name && std.name.toLowerCase().includes(q)) ||
+                      (std.roll_number && std.roll_number.toLowerCase().includes(q)) ||
+                      (std.email && std.email.toLowerCase().includes(q))
+                    )
+                  );
+
                   const visibleStudentCount = studentsByBatch[batch.batch_id]
                     ? students.length
                     : batch.student_count || 0;
@@ -849,7 +1094,11 @@ export default function ManageScreen() {
                       >
                         <View style={styles.manageInfo}>
                           <Text style={styles.manageName}>{batch.name}</Text>
-                          <Text style={styles.manageSubtitle}>{visibleStudentCount} students</Text>
+                          <Text style={styles.manageSubtitle}>
+                            {classroomSearchQuery.trim() 
+                              ? `${filteredStudents.length} matching of ${visibleStudentCount} students`
+                              : `${visibleStudentCount} students`}
+                          </Text>
                         </View>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                           <TouchableOpacity
@@ -898,7 +1147,11 @@ export default function ManageScreen() {
                             <Text style={styles.noStudentsText}>Roster is empty. Add your first student.</Text>
                           )}
 
-                          {students.map(std => (
+                          {students.length > 0 && filteredStudents.length === 0 && (
+                            <Text style={styles.noStudentsText}>No matching students in this class.</Text>
+                          )}
+
+                          {filteredStudents.map(std => (
                             <TouchableOpacity
                               key={std.student_id}
                               style={styles.studentItem}
@@ -940,8 +1193,8 @@ export default function ManageScreen() {
                       )}
                     </View>
                   );
-                })
-              )}
+                });
+              })()}
             </View>
           ) : null}
 
@@ -1073,6 +1326,144 @@ export default function ManageScreen() {
         isSavingProfile={savingStudentId === selectedStudentReport?.student_id}
       />
 
+      {/* Edit Exam Details & Files Modal */}
+      <Modal
+        visible={Boolean(selectedEditExam)}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setSelectedEditExam(null)}
+      >
+        <View style={modalStyles.backdrop}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            style={{ width: '100%' }}
+          >
+            <View style={[modalStyles.sheet, { maxHeight: '90%' }]}>
+              <View style={modalStyles.handle} />
+              
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <Text style={modalStyles.sheetTitle}>Edit Exam Settings</Text>
+                <TouchableOpacity onPress={() => setSelectedEditExam(null)} style={{ padding: 4 }}>
+                  <Ionicons name="close" size={24} color={COLORS.textLight} />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView showsVerticalScrollIndicator={false} style={{ marginBottom: 12 }}>
+                <Text style={modalStyles.sheetSub}>Modify exam metadata and files. Updates sync with the GradeSense server.</Text>
+
+                {/* Exam Title */}
+                <View style={{ marginBottom: 12 }}>
+                  <Text style={editModalStyles.label}>Exam Title</Text>
+                  <TextInput
+                    style={modalStyles.input}
+                    value={editExamTitle}
+                    onChangeText={setEditExamTitle}
+                    placeholder="Exam Title"
+                    placeholderTextColor={COLORS.textMuted}
+                  />
+                </View>
+
+                {/* Date and Marks */}
+                <View style={{ flexDirection: 'row', gap: 12, marginBottom: 12 }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={editModalStyles.label}>Date (YYYY-MM-DD)</Text>
+                    <TextInput
+                      style={modalStyles.input}
+                      value={editExamDate}
+                      onChangeText={setEditExamDate}
+                      placeholder="YYYY-MM-DD"
+                      placeholderTextColor={COLORS.textMuted}
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={editModalStyles.label}>Total Marks</Text>
+                    <TextInput
+                      style={modalStyles.input}
+                      value={editExamMarks}
+                      onChangeText={setEditExamMarks}
+                      placeholder="e.g. 100"
+                      placeholderTextColor={COLORS.textMuted}
+                      keyboardType="numeric"
+                    />
+                  </View>
+                </View>
+
+                {/* File replacement section */}
+                <Text style={[modalStyles.sheetTitle, { fontSize: 16, marginTop: 12, marginBottom: 8 }]}>Replace Exam Documents</Text>
+                <Text style={[modalStyles.sheetSub, { fontSize: 12, marginBottom: 12 }]}>
+                  Upload a new PDF to replace the current question paper or model answer.
+                </Text>
+
+                <View style={{ gap: 10, marginBottom: 20 }}>
+                  {/* Replace QP Button */}
+                  <TouchableOpacity
+                    style={editModalStyles.fileRow}
+                    onPress={handleReplaceQP}
+                    disabled={isReplacingQP}
+                    activeOpacity={0.8}
+                  >
+                    <View style={editModalStyles.fileIconBg}>
+                      <Ionicons name="document-text" size={20} color="#1976D2" />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={editModalStyles.fileLabel}>Question Paper PDF</Text>
+                      <Text style={editModalStyles.fileSublabel}>Tap to upload a new Question Paper</Text>
+                    </View>
+                    {isReplacingQP ? (
+                      <ActivityIndicator size="small" color={COLORS.primary} />
+                    ) : (
+                      <Ionicons name="cloud-upload-outline" size={20} color={COLORS.primary} />
+                    )}
+                  </TouchableOpacity>
+
+                  {/* Replace MA Button */}
+                  <TouchableOpacity
+                    style={editModalStyles.fileRow}
+                    onPress={handleReplaceMA}
+                    disabled={isReplacingMA || isRegrading}
+                    activeOpacity={0.8}
+                  >
+                    <View style={[editModalStyles.fileIconBg, { backgroundColor: '#E8F5E9' }]}>
+                      <Ionicons name="clipboard" size={20} color="#388E3C" />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={editModalStyles.fileLabel}>Model Answer PDF</Text>
+                      <Text style={editModalStyles.fileSublabel}>Upload new answer key to regrade submissions</Text>
+                    </View>
+                    {isReplacingMA || isRegrading ? (
+                      <ActivityIndicator size="small" color={COLORS.primary} />
+                    ) : (
+                      <Ionicons name="cloud-upload-outline" size={20} color={COLORS.primary} />
+                    )}
+                  </TouchableOpacity>
+                </View>
+              </ScrollView>
+
+              {/* Action buttons */}
+              <View style={modalStyles.buttons}>
+                <TouchableOpacity
+                  style={[modalStyles.btn, modalStyles.cancelBtn]}
+                  onPress={() => setSelectedEditExam(null)}
+                  disabled={isSavingExam}
+                >
+                  <Text style={modalStyles.cancelText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[modalStyles.btn, modalStyles.saveBtn, isSavingExam && { opacity: 0.7 }]}
+                  onPress={handleUpdateExamMetadata}
+                  disabled={isSavingExam}
+                >
+                  {isSavingExam ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Text style={modalStyles.saveText}>Save Changes</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1423,7 +1814,35 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '900',
   },
-
+  searchBarContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 4,
+  },
+  searchInputWrapper: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    paddingHorizontal: 12,
+    height: 44,
+  },
+  searchIcon: {
+    marginRight: 6,
+  },
+  searchInput: {
+    flex: 1,
+    color: COLORS.text,
+    fontSize: 13,
+    paddingVertical: 0,
+  },
+  clearBtn: {
+    padding: 4,
+  },
 });
 
 const modalStyles = StyleSheet.create({
@@ -1465,4 +1884,43 @@ const modalStyles = StyleSheet.create({
   saveBtn: { backgroundColor: COLORS.primary, shadowColor: COLORS.primary, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.25, shadowRadius: 8, elevation: 4 },
   cancelText: { fontSize: 15, fontWeight: '600', color: COLORS.textLight },
   saveText: { fontSize: 15, fontWeight: '700', color: '#fff' },
+});
+
+const editModalStyles = StyleSheet.create({
+  label: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.textLight,
+    marginBottom: 6,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  fileRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceElevated,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: COLORS.border,
+    padding: 12,
+    gap: 12,
+  },
+  fileIconBg: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: '#E3F2FD',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fileLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  fileSublabel: {
+    fontSize: 11,
+    color: COLORS.textMuted,
+    marginTop: 2,
+  },
 });

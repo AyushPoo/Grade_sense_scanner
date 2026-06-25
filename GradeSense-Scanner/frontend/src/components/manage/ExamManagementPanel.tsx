@@ -1,5 +1,5 @@
 import React from 'react';
-import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View, TextInput, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../../config';
 import { ManagedExam } from '../../utils/manageData';
@@ -15,6 +15,8 @@ interface Props {
   onCreateExam: () => void;
   onRetry?: () => void;
   errorMessage?: string | null;
+  onAddPapers: (exam: ManagedExam) => void;
+  onEditExam: (exam: ManagedExam) => void;
 }
 
 function StatusBadge({ exam }: { exam: ManagedExam }) {
@@ -64,6 +66,8 @@ function ExamCard({
   onPublish,
   onClose,
   onArchive,
+  onAddPapers,
+  onEditExam,
 }: {
   exam: ManagedExam;
   isProcessing: boolean;
@@ -71,6 +75,8 @@ function ExamCard({
   onPublish: (exam: ManagedExam) => void;
   onClose: (exam: ManagedExam) => void;
   onArchive: (exam: ManagedExam) => void;
+  onAddPapers: (exam: ManagedExam) => void;
+  onEditExam: (exam: ManagedExam) => void;
 }) {
   return (
     <View style={styles.examCard}>
@@ -84,7 +90,17 @@ function ExamCard({
             {exam.subjectName} - {exam.batchName}
           </Text>
         </View>
-        <StatusBadge exam={exam} />
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          <TouchableOpacity
+            style={styles.gearButton}
+            onPress={() => onEditExam(exam)}
+            activeOpacity={0.7}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Ionicons name="settings-outline" size={18} color={COLORS.textLight} />
+          </TouchableOpacity>
+          <StatusBadge exam={exam} />
+        </View>
       </View>
 
       <View style={styles.statsRow}>
@@ -109,6 +125,7 @@ function ExamCard({
         ) : (
           <>
             <ActionButton icon="create-outline" label="Review" color={COLORS.primary} onPress={() => onReview(exam)} />
+            <ActionButton icon="add-circle-outline" label="Add Papers" color={COLORS.primary} onPress={() => onAddPapers(exam)} />
             <ActionButton
               icon="cloud-upload-outline"
               label="Publish"
@@ -151,7 +168,79 @@ export function ExamManagementPanel({
   onCreateExam,
   onRetry,
   errorMessage,
+  onAddPapers,
+  onEditExam,
 }: Props) {
+  const [searchQuery, setSearchQuery] = React.useState('');
+  const [selectedBatch, setSelectedBatch] = React.useState('All');
+  const [selectedSubject, setSelectedSubject] = React.useState('All');
+  const [selectedStatus, setSelectedStatus] = React.useState('All');
+  const [sortBy, setSortBy] = React.useState<'date' | 'name' | 'submissions'>('date');
+
+  const uniqueBatches = React.useMemo(() => {
+    const set = new Set<string>();
+    exams.forEach(e => { if (e.batchName) set.add(e.batchName); });
+    return ['All', ...Array.from(set)];
+  }, [exams]);
+
+  const uniqueSubjects = React.useMemo(() => {
+    const set = new Set<string>();
+    exams.forEach(e => { if (e.subjectName) set.add(e.subjectName); });
+    return ['All', ...Array.from(set)];
+  }, [exams]);
+
+  const filteredExams = React.useMemo(() => {
+    let list = [...exams];
+    
+    // Search
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      list = list.filter(e => 
+        e.name.toLowerCase().includes(q) || 
+        (e.subjectName && e.subjectName.toLowerCase().includes(q)) ||
+        (e.batchName && e.batchName.toLowerCase().includes(q))
+      );
+    }
+    
+    // Batch filter
+    if (selectedBatch !== 'All') {
+      list = list.filter(e => e.batchName === selectedBatch);
+    }
+    
+    // Subject filter
+    if (selectedSubject !== 'All') {
+      list = list.filter(e => e.subjectName === selectedSubject);
+    }
+
+    // Status filter
+    if (selectedStatus !== 'All') {
+      list = list.filter(e => {
+        const isPublished = e.resultsPublished || e.status === 'published';
+        const isClosed = e.status === 'closed';
+        if (selectedStatus === 'Published') return isPublished;
+        if (selectedStatus === 'Closed') return isClosed;
+        if (selectedStatus === 'Graded') return e.status === 'graded' && !isPublished && !isClosed;
+        return true;
+      });
+    }
+
+    // Sorting
+    list.sort((a, b) => {
+      if (sortBy === 'name') {
+        return a.name.localeCompare(b.name);
+      }
+      if (sortBy === 'submissions') {
+        return (b.submissionCount || 0) - (a.submissionCount || 0);
+      }
+      // date sorting
+      const dateA = a.examDate ? new Date(a.examDate).getTime() : 0;
+      const dateB = b.examDate ? new Date(b.examDate).getTime() : 0;
+      return dateB - dateA;
+    });
+
+    return list;
+  }, [exams, searchQuery, selectedBatch, selectedSubject, selectedStatus, sortBy]);
+
   if (isLoading) {
     return (
       <View style={styles.loadingCard}>
@@ -201,17 +290,141 @@ export function ExamManagementPanel({
         </TouchableOpacity>
       </View>
 
-      {exams.map(exam => (
-        <ExamCard
-          key={exam.id}
-          exam={exam}
-          isProcessing={processingExamId === exam.id}
-          onReview={onReview}
-          onPublish={onPublish}
-          onClose={onClose}
-          onArchive={onArchive}
-        />
-      ))}
+      {/* SEARCH AND FILTERS */}
+      <View style={styles.searchBarContainer}>
+        <View style={styles.searchInputWrapper}>
+          <Ionicons name="search-outline" size={18} color={COLORS.textMuted} style={styles.searchIcon} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search synced exams..."
+            placeholderTextColor={COLORS.textMuted}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+          />
+          {searchQuery ? (
+            <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.clearBtn}>
+              <Ionicons name="close-circle" size={16} color={COLORS.textMuted} />
+            </TouchableOpacity>
+          ) : null}
+        </View>
+
+        {/* Sort Trigger */}
+        <TouchableOpacity
+          style={styles.sortToggle}
+          onPress={() => setSortBy(prev => prev === 'date' ? 'name' : prev === 'name' ? 'submissions' : 'date')}
+          activeOpacity={0.8}
+        >
+          <Ionicons name={sortBy === 'date' ? 'calendar-outline' : sortBy === 'name' ? 'text-outline' : 'list-outline'} size={15} color={COLORS.primary} />
+          <Text style={styles.sortToggleText}>
+            {sortBy === 'date' ? 'Latest' : sortBy === 'name' ? 'A-Z' : 'Submissions'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* FILTER chips ScrollViews */}
+      <View style={styles.filtersContainer}>
+        {uniqueBatches.length > 2 && (
+          <View style={styles.filterGroup}>
+            <Text style={styles.filterGroupLabel}>Batch:</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
+              {uniqueBatches.map(batchName => (
+                <TouchableOpacity
+                  key={batchName}
+                  style={[
+                    styles.filterChip,
+                    selectedBatch === batchName && styles.filterChipActive
+                  ]}
+                  onPress={() => setSelectedBatch(batchName)}
+                >
+                  <Text
+                    style={[
+                      styles.filterChipText,
+                      selectedBatch === batchName && styles.filterChipTextActive
+                    ]}
+                  >
+                    {batchName}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
+        {uniqueSubjects.length > 2 && (
+          <View style={styles.filterGroup}>
+            <Text style={styles.filterGroupLabel}>Subject:</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
+              {uniqueSubjects.map(subjName => (
+                <TouchableOpacity
+                  key={subjName}
+                  style={[
+                    styles.filterChip,
+                    selectedSubject === subjName && styles.filterChipActive
+                  ]}
+                  onPress={() => setSelectedSubject(subjName)}
+                >
+                  <Text
+                    style={[
+                      styles.filterChipText,
+                      selectedSubject === subjName && styles.filterChipTextActive
+                    ]}
+                  >
+                    {subjName}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
+        <View style={styles.filterGroup}>
+          <Text style={styles.filterGroupLabel}>Status:</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
+            {['All', 'Graded', 'Published', 'Closed'].map(statusName => (
+              <TouchableOpacity
+                key={statusName}
+                style={[
+                  styles.filterChip,
+                  selectedStatus === statusName && styles.filterChipActive
+                ]}
+                onPress={() => setSelectedStatus(statusName)}
+              >
+                <Text
+                  style={[
+                    styles.filterChipText,
+                    selectedStatus === statusName && styles.filterChipTextActive
+                  ]}
+                >
+                  {statusName}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      </View>
+
+      {/* SYNCD EXAMS LIST */}
+      {filteredExams.length === 0 ? (
+        <View style={styles.emptyState}>
+          <Ionicons name="search-outline" size={36} color={COLORS.textMuted} />
+          <Text style={styles.emptyTitle}>No matching exams found</Text>
+          <Text style={styles.errorText}>Try clearing search queries or filter tags.</Text>
+        </View>
+      ) : (
+        filteredExams.map(exam => (
+          <ExamCard
+            key={exam.id}
+            exam={exam}
+            isProcessing={processingExamId === exam.id}
+            onReview={onReview}
+            onPublish={onPublish}
+            onClose={onClose}
+            onArchive={onArchive}
+            onAddPapers={onAddPapers}
+            onEditExam={onEditExam}
+          />
+        ))
+      )}
     </View>
   );
 }
@@ -408,5 +621,95 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.textMuted,
     fontWeight: '700',
+  },
+  gearButton: {
+    padding: 6,
+    borderRadius: 8,
+    backgroundColor: COLORS.surfaceElevated,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+  },
+  searchBarContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 4,
+  },
+  searchInputWrapper: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    paddingHorizontal: 12,
+    height: 44,
+  },
+  searchIcon: {
+    marginRight: 6,
+  },
+  searchInput: {
+    flex: 1,
+    color: COLORS.text,
+    fontSize: 13,
+    paddingVertical: 0,
+  },
+  clearBtn: {
+    padding: 4,
+  },
+  sortToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: COLORS.primaryXLight,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    height: 44,
+    borderWidth: 1,
+    borderColor: COLORS.primaryLight,
+  },
+  sortToggleText: {
+    color: COLORS.primary,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  filtersContainer: {
+    gap: 6,
+    marginBottom: 4,
+  },
+  filterGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  filterGroupLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.textMuted,
+    width: 60,
+  },
+  filterScroll: {
+    paddingRight: 16,
+    gap: 6,
+  },
+  filterChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+    backgroundColor: COLORS.surfaceElevated,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+  },
+  filterChipActive: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  filterChipText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.textLight,
+  },
+  filterChipTextActive: {
+    color: '#fff',
   },
 });

@@ -7,6 +7,7 @@ interface DraftDetails {
   totalMarks?: number;
   examDate?: string;
   settings: ScanSessionSettings;
+  parentExamId?: string;
 }
 
 const REUSABLE_DRAFT_STATUSES = new Set<ScanSession['status']>(['scanning', 'ready', 'failed', 'sync_failed']);
@@ -52,6 +53,7 @@ export function findReusableDraftSession(
     && sameOptionalString(session.subject_id, details.subjectId)
     && sameOptionalNumber(session.total_marks, details.totalMarks)
     && sameOptionalString(session.exam_date, details.examDate)
+    && sameOptionalString(session.parent_exam_id, details.parentExamId)
     && sameScanShape(session.settings, details.settings)
   )) || null;
 }

@@ -295,6 +295,7 @@ class ScanSession(BaseModel):
         "blurry_pages": 0, "scanning_duration_seconds": 0, "avg_time_per_student_seconds": 0
     })
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    parent_exam_id: Optional[str] = None
 
 
 class ScanSessionCreate(BaseModel):
@@ -305,6 +306,7 @@ class ScanSessionCreate(BaseModel):
     subject_id: Optional[str] = None
     total_marks: Optional[float] = None
     exam_date: Optional[str] = None
+    parent_exam_id: Optional[str] = None
 
 
 class UploadQpRequest(BaseModel):
@@ -1563,12 +1565,34 @@ async def update_student(batch_id: str, student_id: str, data: dict, authorizati
 @api_router.post("/exams/{exam_id}/regrade")
 async def regrade_exam(exam_id: str, authorization: Optional[str] = Header(None)):
     """Trigger AI regrade / reevaluation of an exam on the webapp"""
-    webapp_url = os.environ.get("WEBAPP_URL")
+    user = await get_current_user(authorization)
+    token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
     
-    if not webapp_url:
+    if webapp_db_url and token != "sess_mock_token_12345":
+        conn = None
+        try:
+            conn = await connect_to_neon_db(webapp_db_url)
+            exam_row = await conn.fetchrow(
+                "SELECT id, teacher_id FROM exams WHERE id = $1 AND teacher_id = $2 AND COALESCE(status, '') <> 'deleted'",
+                exam_id,
+                user.user_id
+            )
+            if not exam_row:
+                raise HTTPException(status_code=404, detail="Exam not found or you do not have permission to regrade it")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error checking exam ownership in Neon: {e}")
+            raise HTTPException(status_code=500, detail="Failed to verify exam ownership")
+        finally:
+            if conn:
+                await conn.close()
+                
+    webapp_url = os.environ.get("WEBAPP_URL")
+    if not webapp_url or token == "sess_mock_token_12345":
         return {"success": True, "message": "Regrade enqueued (mock)"}
         
-    token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
     try:
         async with httpx.AsyncClient() as client_http:
             response = await client_http.post(
@@ -1965,7 +1989,8 @@ async def create_scan_session(data: ScanSessionCreate, authorization: Optional[s
         exam_date=data.exam_date,
         user_id=user.user_id,
         org_id=user.org_id,
-        settings=data.settings
+        settings=data.settings,
+        parent_exam_id=data.parent_exam_id
     )
     
     await db.scan_sessions.insert_one(session.model_dump())
@@ -2545,7 +2570,7 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                 # 2. Upload Question Paper (if present) to GCS and insert to Neon
                 qp_pages = session.get("question_paper", {}).get("pages", [])
                 qp_gcs_key = None
-                if qp_pages:
+                if qp_pages and not session.get("parent_exam_id"):
                     qp_pdf_path = temp_dir_path / "question_paper.pdf"
                     logger.info(f"Compiling QP PDF with {len(qp_pages)} pages...")
                     if await resolve_document_pdf(qp_pages, qp_pdf_path, compile_temp_dir):
@@ -2581,7 +2606,7 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                 # 3. Upload Model Answer (if present) to GCS and insert to Neon
                 ma_pages = session.get("model_answer", {}).get("pages", [])
                 ma_gcs_key = None
-                if ma_pages:
+                if ma_pages and not session.get("parent_exam_id"):
                     ma_pdf_path = temp_dir_path / "model_answer.pdf"
                     logger.info(f"Compiling Model Answer PDF with {len(ma_pages)} pages...")
                     if await resolve_document_pdf(ma_pages, ma_pdf_path, compile_temp_dir):
@@ -2806,7 +2831,9 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                 # 5. Enqueue Blueprint Extraction Job and poll for completion
                 blueprint_extracted_and_locked = False
                 blueprint_failure_message = None
-                if ma_pages:
+                if session.get("parent_exam_id"):
+                    blueprint_extracted_and_locked = True
+                elif ma_pages:
                     blueprint_job_id = generate_drizzle_id("job_")
                     logger.info(f"Enqueuing blueprint extraction job {blueprint_job_id} in Neon...")
                     conn = await connect_to_neon_db(webapp_db_url)
@@ -3054,8 +3081,13 @@ async def complete_scan_session(
     # 2. Compile scanned JPEGs to PDFs and sync to main webapp (if not guest mode)
     if token != "sess_mock_token_12345":
         try:
-            # Create exam synchronously first (takes ~1s)
-            exam_id = await create_exam_on_webapp(session_id, user.user_id, token)
+            parent_exam_id = session.get("parent_exam_id")
+            if parent_exam_id:
+                exam_id = parent_exam_id
+                logger.info(f"Append session: using parent_exam_id={exam_id}")
+            else:
+                # Create exam synchronously first (takes ~1s)
+                exam_id = await create_exam_on_webapp(session_id, user.user_id, token)
             
             # CRITICAL: Save exam_id immediately after creation, but keep the
             # session in syncing until the background task has inserted files,
@@ -3068,72 +3100,73 @@ async def complete_scan_session(
             )
             logger.info(f"Saved exam_id={exam_id} and status=syncing to MongoDB for session {session_id}")
             
-            # Fetch scan session details to build flow session card
-            session = await db.scan_sessions.find_one({"session_id": session_id, "user_id": user.user_id})
             flow_session_id = None
-            if session:
-                qp_pages = session.get("question_paper", {}).get("pages", [])
-                ma_pages = session.get("model_answer", {}).get("pages", [])
-                source_paper_mode = "combined_model_answer" if (not qp_pages and ma_pages) else "separate"
-                
-                webapp_db_url = os.environ.get("WEBAPP_DB_URL")
-                if webapp_db_url:
-                    try:
-                        logger.info("Creating initial upload flow session synchronously in Neon DB...")
-                        flow_session_id = generate_drizzle_id("ufs_")
-                        state_dict = build_upload_flow_state(session, source_paper_mode)
-                        
-                        conn = await connect_to_neon_db(webapp_db_url)
-                        await conn.execute(
-                            '''
-                            INSERT INTO upload_flow_sessions (
-                                id, teacher_id, exam_id, title, status,
-                                current_step, max_completed_step, state_json,
-                                created_at, updated_at
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                            ''',
-                            flow_session_id,
-                            user.user_id,
-                            exam_id,
-                            session["session_name"],
-                            "draft",
-                            4,
-                            3,
-                            json.dumps(state_dict),
-                            datetime.utcnow().isoformat() + 'Z',
-                            datetime.utcnow().isoformat() + 'Z'
-                        )
-                        await conn.close()
-                        logger.info(f"Initial upload flow session created synchronously via Neon: {flow_session_id}")
-                    except Exception as db_err:
-                        logger.error(f"Failed to create upload flow session synchronously via Neon: {db_err}")
-                else:
-                    webapp_url = os.environ.get("WEBAPP_URL")
-                    if webapp_url:
+            if not parent_exam_id:
+                # Fetch scan session details to build flow session card
+                session = await db.scan_sessions.find_one({"session_id": session_id, "user_id": user.user_id})
+                if session:
+                    qp_pages = session.get("question_paper", {}).get("pages", [])
+                    ma_pages = session.get("model_answer", {}).get("pages", [])
+                    source_paper_mode = "combined_model_answer" if (not qp_pages and ma_pages) else "separate"
+                    
+                    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+                    if webapp_db_url:
                         try:
-                            logger.info("Creating initial upload flow session synchronously...")
-                            flow_payload = {
-                                "examId": exam_id,
-                                "title": session["session_name"],
-                                "status": "draft",
-                                "currentStep": 4,  # Step 4: Extracting blueprint
-                                "maxCompletedStep": 3,
-                                "state": build_upload_flow_state(session, source_paper_mode)
-                            }
-                            async with httpx.AsyncClient() as client_http:
-                                flow_res = await client_http.post(
-                                    f"{webapp_url.rstrip('/')}/api/v1/exams/upload-flows",
-                                    json=flow_payload,
-                                    headers={"Authorization": f"Bearer {token}", "Bypass-Tunnel-Reminder": "true"},
-                                    timeout=10.0
-                                )
-                                if flow_res.status_code in (200, 201):
-                                    flow_session_id = flow_res.json().get("data", {}).get("id")
-                                    logger.info(f"Initial upload flow session created synchronously with ID: {flow_session_id}")
-                                else:
-                                    logger.error(f"Failed to create initial upload flow session card synchronously: {flow_res.status_code} - {flow_res.text}")
-                        except Exception as e:
-                            logger.error(f"Error creating initial upload flow session card synchronously: {e}")
+                            logger.info("Creating initial upload flow session synchronously in Neon DB...")
+                            flow_session_id = generate_drizzle_id("ufs_")
+                            state_dict = build_upload_flow_state(session, source_paper_mode)
+                            
+                            conn = await connect_to_neon_db(webapp_db_url)
+                            await conn.execute(
+                                '''
+                                INSERT INTO upload_flow_sessions (
+                                    id, teacher_id, exam_id, title, status,
+                                    current_step, max_completed_step, state_json,
+                                    created_at, updated_at
+                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                                ''',
+                                flow_session_id,
+                                user.user_id,
+                                exam_id,
+                                session["session_name"],
+                                "draft",
+                                4,
+                                3,
+                                json.dumps(state_dict),
+                                datetime.utcnow().isoformat() + 'Z',
+                                datetime.utcnow().isoformat() + 'Z'
+                            )
+                            await conn.close()
+                            logger.info(f"Initial upload flow session created synchronously via Neon: {flow_session_id}")
+                        except Exception as db_err:
+                            logger.error(f"Failed to create upload flow session synchronously via Neon: {db_err}")
+                    else:
+                        webapp_url = os.environ.get("WEBAPP_URL")
+                        if webapp_url:
+                            try:
+                                logger.info("Creating initial upload flow session synchronously...")
+                                flow_payload = {
+                                    "examId": exam_id,
+                                    "title": session["session_name"],
+                                    "status": "draft",
+                                    "currentStep": 4,  # Step 4: Extracting blueprint
+                                    "maxCompletedStep": 3,
+                                    "state": build_upload_flow_state(session, source_paper_mode)
+                                }
+                                async with httpx.AsyncClient() as client_http:
+                                    flow_res = await client_http.post(
+                                        f"{webapp_url.rstrip('/')}/api/v1/exams/upload-flows",
+                                        json=flow_payload,
+                                        headers={"Authorization": f"Bearer {token}", "Bypass-Tunnel-Reminder": "true"},
+                                        timeout=10.0
+                                    )
+                                    if flow_res.status_code in (200, 201):
+                                        flow_session_id = flow_res.json().get("data", {}).get("id")
+                                        logger.info(f"Initial upload flow session created synchronously with ID: {flow_session_id}")
+                                    else:
+                                        logger.error(f"Failed to create initial upload flow session card synchronously: {flow_res.status_code} - {flow_res.text}")
+                            except Exception as e:
+                                logger.error(f"Error creating initial upload flow session card synchronously: {e}")
             
             # Enqueue compilation and sync as background task
             background_tasks.add_task(async_sync_session_data, session_id, user.user_id, token, exam_id, flow_session_id)
@@ -4491,6 +4524,97 @@ async def close_exam_v1(exam_id: str, authorization: Optional[str] = Header(None
             await conn.close()
 
 
+@api_router.post("/v1/exams/{exam_id}/files/replace")
+async def replace_exam_file_v1(
+    exam_id: str,
+    request: Request,
+    kind: str = Form(...),
+    file: UploadFile = File(...),
+    authorization: Optional[str] = Header(None)
+):
+    """Replace an exam's Question Paper (QP) or Model Answer (MA) file."""
+    user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if not webapp_db_url:
+        raise HTTPException(status_code=503, detail="WEBAPP_DB_URL is not configured")
+
+    if kind not in ("question_paper", "model_answer"):
+        raise HTTPException(status_code=400, detail="Invalid kind. Must be 'question_paper' or 'model_answer'")
+
+    conn = None
+    try:
+        conn = await connect_to_neon_db(webapp_db_url)
+        exam_row = await conn.fetchrow(
+            "SELECT id, teacher_id FROM exams WHERE id = $1 AND teacher_id = $2 AND COALESCE(status, '') <> 'deleted'",
+            exam_id,
+            user.user_id
+        )
+        if not exam_row:
+            raise HTTPException(status_code=404, detail="Exam not found or you do not have permission to modify it")
+
+        file_content = await file.read()
+        file_size = len(file_content)
+        if file_size == 0:
+            raise HTTPException(status_code=400, detail="File is empty")
+
+        import io
+        file_obj = io.BytesIO(file_content)
+
+        rand = generate_drizzle_id("")
+        filename = f"file_{rand}_{kind}.pdf"
+        session_id_path = f"exams/{exam_id}/{kind}"
+        
+        file_url = storage.save_file(session_id_path, filename, file_obj, content_type="application/pdf")
+        gcs_key = f"{session_id_path}/{filename}"
+
+        async with conn.transaction():
+            await conn.execute(
+                "DELETE FROM exam_files WHERE exam_id = $1 AND kind = $2",
+                exam_id,
+                kind
+            )
+            efl_id = generate_drizzle_id("efl_")
+            await conn.execute(
+                '''
+                INSERT INTO exam_files (
+                    id, exam_id, kind, original_name, content_type,
+                    gcs_key, object_size_bytes, created_at, updated_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                ''',
+                efl_id,
+                exam_id,
+                kind,
+                file.filename or f"{kind}.pdf",
+                "application/pdf",
+                gcs_key,
+                file_size,
+                datetime.utcnow().isoformat() + 'Z',
+                datetime.utcnow().isoformat() + 'Z'
+            )
+
+        file_base_url = public_request_base_url(request)
+        signed_url = build_gcs_proxy_url(file_base_url, gcs_key, cache_key=efl_id)
+        
+        return {
+            "status": "success",
+            "file": {
+                "id": efl_id,
+                "kind": kind,
+                "originalName": file.filename or f"{kind}.pdf",
+                "contentType": "application/pdf",
+                "signedUrl": signed_url
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error replacing exam file in Neon/GCS: {e}")
+        raise HTTPException(status_code=500, detail="Failed to replace exam file")
+    finally:
+        if conn:
+            await conn.close()
+
+
 @api_router.post("/v1/exams/{exam_id}/publish")
 async def publish_exam_results_v1(exam_id: str, authorization: Optional[str] = Header(None)):
     """Publish exam results in the synced webapp database."""
@@ -5074,9 +5198,31 @@ async def retry_exam_grading_v1(
 @api_router.post("/v1/exams/{exam_id}/regrade")
 async def regrade_exam_v1(exam_id: str, authorization: Optional[str] = Header(None)):
     """Trigger AI regrade / reevaluation of an exam on the webapp (v1 path)"""
-    webapp_url = os.environ.get("WEBAPP_URL")
+    user = await get_current_user(authorization)
     token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
     
+    if webapp_db_url and token != "sess_mock_token_12345":
+        conn = None
+        try:
+            conn = await connect_to_neon_db(webapp_db_url)
+            exam_row = await conn.fetchrow(
+                "SELECT id, teacher_id FROM exams WHERE id = $1 AND teacher_id = $2 AND COALESCE(status, '') <> 'deleted'",
+                exam_id,
+                user.user_id
+            )
+            if not exam_row:
+                raise HTTPException(status_code=404, detail="Exam not found or you do not have permission to regrade it")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error checking exam ownership in Neon: {e}")
+            raise HTTPException(status_code=500, detail="Failed to verify exam ownership")
+        finally:
+            if conn:
+                await conn.close()
+
+    webapp_url = os.environ.get("WEBAPP_URL")
     if webapp_url and token != "sess_mock_token_12345":
         try:
             async with httpx.AsyncClient() as client_http:

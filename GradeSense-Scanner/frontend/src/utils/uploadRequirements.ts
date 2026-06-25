@@ -24,7 +24,9 @@ const studentDocumentCount = (session: ScanSession): number =>
 export const getUploadBlockingIssues = (session: ScanSession): string[] => {
   const issues = getCommonExamIssues(session);
 
-  if (modelAnswerPageCount(session) <= 0) issues.push('Model Answer is required.');
+  if (!session.parent_exam_id && modelAnswerPageCount(session) <= 0) {
+    issues.push('Model Answer is required.');
+  }
   if (studentDocumentCount(session) <= 0) issues.push('At least one student answer paper is required.');
 
   return issues;
@@ -33,7 +35,7 @@ export const getUploadBlockingIssues = (session: ScanSession): string[] => {
 export const getScanPhaseBlockingIssues = (session: ScanSession, phase: ScanPhase): string[] => {
   const issues = getCommonExamIssues(session);
 
-  if (phase === 'students' && modelAnswerPageCount(session) <= 0) {
+  if (!session.parent_exam_id && phase === 'students' && modelAnswerPageCount(session) <= 0) {
     issues.push('Model Answer is required before scanning student answer papers.');
   }
 

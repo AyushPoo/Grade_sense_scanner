@@ -282,3 +282,51 @@ export async function deleteBatchStudent(
     throw new Error(text || `Status ${res.status}`);
   }
 }
+
+export async function replaceExamFile(
+  { backendUrl, token, examId }: ExamApiOptions,
+  kind: 'question_paper' | 'model_answer',
+  fileUri: string,
+  fileName: string,
+  fileType: string
+): Promise<any> {
+  const formData = new FormData();
+  formData.append('kind', kind);
+  formData.append('file', {
+    uri: fileUri,
+    name: fileName,
+    type: fileType,
+  } as any);
+
+  const res = await fetch(`${backendUrl}/api/v1/exams/${examId}/files/replace`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Bypass-Tunnel-Reminder': 'true',
+    },
+    body: formData,
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Status ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export async function regradeExam(
+  { backendUrl, token, examId }: ExamApiOptions
+): Promise<any> {
+  const res = await fetchWithTimeout(`${backendUrl}/api/v1/exams/${examId}/regrade`, {
+    method: 'POST',
+    headers: authHeaders(token),
+  }, 15000);
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Status ${res.status}`);
+  }
+
+  return res.json();
+}

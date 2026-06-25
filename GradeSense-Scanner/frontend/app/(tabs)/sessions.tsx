@@ -8,6 +8,8 @@ import {
   Alert,
   RefreshControl,
   ActivityIndicator,
+  TextInput,
+  ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -42,14 +44,100 @@ function formatDate(dateStr: string) {
 export default function SessionsScreen() {
   const router = useRouter();
   const token = useAuthStore(s => s.sessionToken);
-  const { savedSessions, deleteSession, fetchSessions } = useScanStore();
+  const { savedSessions, deleteSession, fetchSessions, savedSubjects, fetchSubjects } = useScanStore();
 
   const [activeTab, setActiveTab] = useState<'drafts' | 'review'>('review');
   const [refreshing, setRefreshing] = useState(false);
   const [reviewExams, setReviewExams] = useState<ManagedExam[]>([]);
   const [loadingReviewExams, setLoadingReviewExams] = useState(false);
 
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedBatch, setSelectedBatch] = useState('All');
+  const [selectedSubject, setSelectedSubject] = useState('All');
+  const [sortBy, setSortBy] = useState<'date' | 'name'>('date');
+
   const sessions = Array.isArray(savedSessions) ? savedSessions : [];
+
+  const filteredSessions = React.useMemo(() => {
+    let list = [...sessions];
+    
+    // Search
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      list = list.filter(s => s.session_name.toLowerCase().includes(q));
+    }
+
+    // Batch filter
+    if (selectedBatch !== 'All') {
+      list = list.filter(s => s.batch_name === selectedBatch);
+    }
+
+    // Subject filter
+    if (selectedSubject !== 'All') {
+      list = list.filter(s => {
+        if (!s.subject_id) return false;
+        const subj = savedSubjects.find(sub => sub.id === s.subject_id);
+        const name = subj ? subj.name : 'Unknown Subject';
+        return name === selectedSubject;
+      });
+    }
+
+    list.sort((a, b) => {
+      if (sortBy === 'name') return a.session_name.localeCompare(b.session_name);
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    });
+    return list;
+  }, [sessions, searchQuery, selectedBatch, selectedSubject, sortBy, savedSubjects]);
+
+  const filteredReviewExams = React.useMemo(() => {
+    let list = [...reviewExams];
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      list = list.filter(e => 
+        e.name.toLowerCase().includes(q) || 
+        (e.subjectName && e.subjectName.toLowerCase().includes(q)) ||
+        (e.batchName && e.batchName.toLowerCase().includes(q))
+      );
+    }
+    if (selectedBatch !== 'All') {
+      list = list.filter(e => e.batchName === selectedBatch);
+    }
+    if (selectedSubject !== 'All') {
+      list = list.filter(e => e.subjectName === selectedSubject);
+    }
+    list.sort((a, b) => {
+      if (sortBy === 'name') return a.name.localeCompare(b.name);
+      const dateA = a.examDate ? new Date(a.examDate).getTime() : 0;
+      const dateB = b.examDate ? new Date(b.examDate).getTime() : 0;
+      return dateB - dateA;
+    });
+    return list;
+  }, [reviewExams, searchQuery, selectedBatch, selectedSubject, sortBy]);
+
+  const uniqueBatches = React.useMemo(() => {
+    const set = new Set<string>();
+    if (activeTab === 'review') {
+      reviewExams.forEach(e => { if (e.batchName) set.add(e.batchName); });
+    } else {
+      sessions.forEach(s => { if (s.batch_name) set.add(s.batch_name); });
+    }
+    return ['All', ...Array.from(set)];
+  }, [activeTab, reviewExams, sessions]);
+
+  const uniqueSubjects = React.useMemo(() => {
+    const set = new Set<string>();
+    if (activeTab === 'review') {
+      reviewExams.forEach(e => { if (e.subjectName) set.add(e.subjectName); });
+    } else {
+      sessions.forEach(s => {
+        if (s.subject_id) {
+          const subj = savedSubjects.find(sub => sub.id === s.subject_id);
+          if (subj) set.add(subj.name);
+        }
+      });
+    }
+    return ['All', ...Array.from(set)];
+  }, [activeTab, reviewExams, sessions, savedSubjects]);
 
   const loadReviewExams = useCallback(async () => {
     if (!token) return;
@@ -67,7 +155,8 @@ export default function SessionsScreen() {
 
   useEffect(() => {
     fetchSessions().catch(() => {});
-  }, [fetchSessions]);
+    fetchSubjects().catch(() => {});
+  }, [fetchSessions, fetchSubjects]);
 
   useEffect(() => {
     if (activeTab === 'review' && reviewExams.length === 0) {
@@ -222,7 +311,12 @@ export default function SessionsScreen() {
       <View style={styles.segmentContainer}>
         <TouchableOpacity
           style={[styles.segmentBtn, activeTab === 'drafts' && styles.segmentBtnActive]}
-          onPress={() => setActiveTab('drafts')}
+          onPress={() => {
+            setActiveTab('drafts');
+            setSelectedBatch('All');
+            setSelectedSubject('All');
+            setSearchQuery('');
+          }}
           activeOpacity={0.8}
         >
           <Ionicons 
@@ -238,7 +332,12 @@ export default function SessionsScreen() {
 
         <TouchableOpacity
           style={[styles.segmentBtn, activeTab === 'review' && styles.segmentBtnActive]}
-          onPress={() => setActiveTab('review')}
+          onPress={() => {
+            setActiveTab('review');
+            setSelectedBatch('All');
+            setSelectedSubject('All');
+            setSearchQuery('');
+          }}
           activeOpacity={0.8}
         >
           <Ionicons
@@ -253,6 +352,96 @@ export default function SessionsScreen() {
         </TouchableOpacity>
       </View>
 
+      {/* Search & Sort Panel */}
+      <View style={styles.searchBarContainer}>
+        <View style={styles.searchInputWrapper}>
+          <Ionicons name="search-outline" size={18} color={COLORS.textMuted} style={styles.searchIcon} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder={activeTab === 'drafts' ? "Search drafts..." : "Search exams, subjects..."}
+            placeholderTextColor={COLORS.textMuted}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+          />
+          {searchQuery ? (
+            <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.clearBtn}>
+              <Ionicons name="close-circle" size={16} color={COLORS.textMuted} />
+            </TouchableOpacity>
+          ) : null}
+        </View>
+
+        {/* Sort Toggle */}
+        <TouchableOpacity
+          style={styles.sortToggle}
+          onPress={() => setSortBy(prev => prev === 'date' ? 'name' : 'date')}
+          activeOpacity={0.8}
+        >
+          <Ionicons name={sortBy === 'date' ? 'calendar-outline' : 'text-outline'} size={15} color={COLORS.primary} />
+          <Text style={styles.sortToggleText}>
+            {sortBy === 'date' ? 'Latest' : 'A-Z'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Dynamic Filters Row */}
+      {(uniqueBatches.length > 2 || uniqueSubjects.length > 2) && (
+        <View style={styles.filtersContainer}>
+          {uniqueBatches.length > 2 && (
+            <View style={styles.filterGroup}>
+              <Text style={styles.filterGroupLabel}>Batch:</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
+                {uniqueBatches.map(batchName => (
+                  <TouchableOpacity
+                    key={batchName}
+                    style={[
+                      styles.filterChip,
+                      selectedBatch === batchName && styles.filterChipActive
+                    ]}
+                    onPress={() => setSelectedBatch(batchName)}
+                  >
+                    <Text
+                      style={[
+                        styles.filterChipText,
+                        selectedBatch === batchName && styles.filterChipTextActive
+                      ]}
+                    >
+                      {batchName}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
+
+          {uniqueSubjects.length > 2 && (
+            <View style={styles.filterGroup}>
+              <Text style={styles.filterGroupLabel}>Subject:</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
+                {uniqueSubjects.map(subjName => (
+                  <TouchableOpacity
+                    key={subjName}
+                    style={[
+                      styles.filterChip,
+                      selectedSubject === subjName && styles.filterChipActive
+                    ]}
+                    onPress={() => setSelectedSubject(subjName)}
+                  >
+                    <Text
+                      style={[
+                        styles.filterChipText,
+                        selectedSubject === subjName && styles.filterChipTextActive
+                      ]}
+                    >
+                      {subjName}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
+        </View>
+      )}
+
       {activeTab === 'drafts' ? (
         sessions.length === 0 ? (
           <View style={styles.empty}>
@@ -266,9 +455,17 @@ export default function SessionsScreen() {
               <Text style={styles.emptyCTAText}>New Scan/Upload</Text>
             </TouchableOpacity>
           </View>
+        ) : filteredSessions.length === 0 ? (
+          <View style={styles.empty}>
+            <View style={styles.emptyIcon}>
+              <Ionicons name="search-outline" size={52} color={COLORS.textMuted} />
+            </View>
+            <Text style={styles.emptyTitle}>No drafts found</Text>
+            <Text style={styles.emptySub}>Try adjusting your search term.</Text>
+          </View>
         ) : (
           <FlatList
-            data={sessions}
+            data={filteredSessions}
             keyExtractor={item => item.session_id}
             renderItem={renderDraftItem}
             contentContainerStyle={styles.listPad}
@@ -297,9 +494,17 @@ export default function SessionsScreen() {
               <Text style={styles.emptyCTAText}>New Scan/Upload</Text>
             </TouchableOpacity>
           </View>
+        ) : filteredReviewExams.length === 0 ? (
+          <View style={styles.empty}>
+            <View style={styles.emptyIcon}>
+              <Ionicons name="search-outline" size={52} color={COLORS.textMuted} />
+            </View>
+            <Text style={styles.emptyTitle}>No exams found</Text>
+            <Text style={styles.emptySub}>Try adjusting your search queries or filter selections.</Text>
+          </View>
         ) : (
           <FlatList
-            data={reviewExams}
+            data={filteredReviewExams}
             keyExtractor={item => item.id}
             renderItem={renderReviewExamItem}
             contentContainerStyle={styles.listPad}
@@ -551,4 +756,91 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   emptyCTAText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  searchBarContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 16,
+    marginTop: 10,
+    marginBottom: 6,
+    gap: 8,
+  },
+  searchInputWrapper: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surface,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    paddingHorizontal: 10,
+    height: 40,
+  },
+  searchIcon: {
+    marginRight: 6,
+  },
+  searchInput: {
+    flex: 1,
+    color: COLORS.text,
+    fontSize: 13,
+    paddingVertical: 0,
+  },
+  clearBtn: {
+    padding: 4,
+  },
+  sortToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: COLORS.primaryXLight,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    height: 40,
+    borderWidth: 1,
+    borderColor: COLORS.primaryLight,
+  },
+  sortToggleText: {
+    color: COLORS.primary,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  filtersContainer: {
+    marginHorizontal: 16,
+    marginBottom: 8,
+    gap: 6,
+  },
+  filterGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  filterGroupLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: COLORS.textMuted,
+    width: 55,
+  },
+  filterScroll: {
+    paddingRight: 16,
+    gap: 6,
+  },
+  filterChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    backgroundColor: COLORS.surfaceElevated,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+  },
+  filterChipActive: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  filterChipText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: COLORS.textLight,
+  },
+  filterChipTextActive: {
+    color: '#fff',
+    fontWeight: '700',
+  },
 });

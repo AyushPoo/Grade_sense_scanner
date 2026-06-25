@@ -113,6 +113,7 @@ export interface ScanSession {
   org_id?: string;
   user_id?: string;
   exam_id?: string;
+  parent_exam_id?: string;
   created_at: string;
   status: 'scanning' | 'ready' | 'uploading' | 'syncing' | 'grading' | 'graded' | 'uploaded' | 'completed' | 'failed' | 'sync_failed';
   upload_progress: number;

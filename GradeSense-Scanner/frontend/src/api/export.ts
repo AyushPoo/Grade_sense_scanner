@@ -275,6 +275,7 @@ export async function uploadSessionToWebApp(
           subject_id: session.subject_id || null,
           total_marks: session.total_marks || null,
           exam_date: session.exam_date || null,
+          parent_exam_id: session.parent_exam_id || null,
         }),
       });
 

@@ -2,7 +2,7 @@
   "expo": {
     "name": "GradeSense",
     "slug": "gradesense-scanner",
-    "version": "1.0.96",
+    "version": "1.0.98",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": [
@@ -26,7 +26,7 @@
       }
     },
     "android": {
-      "versionCode": 96,
+      "versionCode": 98,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#FFFFFF"
@@ -96,10 +96,11 @@
       ],
       "expo-web-browser",
       [
-        "@sentry/react-native",
+        "@sentry/react-native/expo",
         {
-          "organization": "ayush-poo",
-          "project": "gradesense-scanner"
+          "url": "https://sentry.io/",
+          "project": "react-native",
+          "organization": "gradesense"
         }
       ]
     ],
@@ -114,29 +115,4 @@
     }
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 

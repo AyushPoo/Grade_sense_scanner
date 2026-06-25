@@ -1,9 +1,10 @@
-// metro.config.js
-const { getDefaultConfig } = require("expo/metro-config");
 const path = require('path');
 const { FileStore } = require('metro-cache');
+const {
+  getSentryExpoConfig
+} = require("@sentry/react-native/metro");
 
-const config = getDefaultConfig(__dirname);
+const config = getSentryExpoConfig(__dirname);
 
 // Use a stable on-disk store (shared across web/android)
 const root = process.env.METRO_CACHE_ROOT || path.join(__dirname, '.metro-cache');
