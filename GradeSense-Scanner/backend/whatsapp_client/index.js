@@ -221,6 +221,10 @@ app.get('/pair-code', async (req, res) => {
   }
   
   let cleanPhone = phone.replace(/\D/g, '');
+  if (cleanPhone.length === 10) {
+    cleanPhone = '91' + cleanPhone;
+    console.log(`Auto-prepended Indian country code 91 for pairing: ${cleanPhone}`);
+  }
   if (!cleanPhone) {
     return res.status(400).json({ error: 'invalid phone number format' });
   }
@@ -244,6 +248,9 @@ app.post('/send', async (req, res) => {
   }
 
   let cleanPhone = phone.replace(/\D/g, '');
+  if (cleanPhone.length === 10) {
+    cleanPhone = '91' + cleanPhone;
+  }
   const jid = `${cleanPhone}@s.whatsapp.net`;
 
   try {

@@ -146,11 +146,13 @@ def generate_feedback_page(
     
     # Sort questions by question_number (parsing integer if possible)
     def q_sort_key(q):
-        num_str = str(q.get("question_number", ""))
-        try:
-            return int(num_str.replace("Q", "").replace("q", "").strip())
-        except ValueError:
-            return num_str
+        num_str = str(q.get("question_number", "")).strip()
+        import re
+        match = re.match(r'^[Qq]?(\d+)(.*)$', num_str)
+        if match:
+            return (int(match.group(1)), match.group(2))
+        else:
+            return (99999, num_str)
             
     sorted_qs = sorted(questions, key=q_sort_key)
     
