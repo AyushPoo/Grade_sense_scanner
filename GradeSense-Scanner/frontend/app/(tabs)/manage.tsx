@@ -43,6 +43,7 @@ import {
 } from '../../src/api/manage';
 import { AnalyticsPerformancePanel } from '../../src/components/manage/AnalyticsPerformancePanel';
 import { ExamManagementPanel } from '../../src/components/manage/ExamManagementPanel';
+import { ExportModal } from '../../src/components/review/ExportModal';
 import {
   ManagedRosterStudent,
   StudentReportModal,
@@ -189,6 +190,17 @@ export default function ManageScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [isOffline, setIsOffline] = useState(false);
   const [processingExamId, setProcessingExamId] = useState<string | null>(null);
+
+  // Export states
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportExamId, setExportExamId] = useState('');
+  const [exportExamName, setExportExamName] = useState('');
+
+  const handleExportExam = (exam: ManagedExam) => {
+    setExportExamId(exam.id);
+    setExportExamName(exam.name);
+    setShowExportModal(true);
+  };
   // Classroom Management States
   const [batches, setBatches] = useState<Batch[]>([]);
   const [loadingBatches, setLoadingBatches] = useState(false);
@@ -992,6 +1004,7 @@ export default function ManageScreen() {
               errorMessage={examLoadError}
               onAddPapers={handleAddPapers}
               onEditExam={handleEditExam}
+              onExport={handleExportExam}
             />
           ) : activeTab === 'classroom' ? (
             // ==================== CLASSROOM MANAGEMENT VIEW ====================
@@ -1324,6 +1337,14 @@ export default function ManageScreen() {
         onClose={() => setSelectedStudentReport(null)}
         onSaveProfile={handleUpdateStudent}
         isSavingProfile={savingStudentId === selectedStudentReport?.student_id}
+      />
+
+      <ExportModal
+        visible={showExportModal}
+        onClose={() => setShowExportModal(false)}
+        examId={exportExamId}
+        examName={exportExamName}
+        token={token}
       />
 
       {/* Edit Exam Details & Files Modal */}

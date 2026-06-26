@@ -11,10 +11,11 @@ import {
   Alert,
   Dimensions,
   Image,
+  Linking,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { COLORS, getBackendUrl } from '../../config';
 
@@ -38,13 +39,14 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
   const [exportProgress, setExportProgress] = useState('');
 
   // Email SMTP States
+  const [provider, setProvider] = useState<'gmail' | 'outlook' | 'custom'>('gmail');
   const [smtpHost, setSmtpHost] = useState('smtp.gmail.com');
   const [smtpPort, setSmtpPort] = useState('587');
   const [smtpUser, setSmtpUser] = useState('');
   const [smtpPassword, setSmtpPassword] = useState('');
   const [emailSubject, setEmailSubject] = useState(`Graded Exam Results for ${examName}`);
   const [emailBody, setEmailBody] = useState(
-    'Hello {student_name},\n\nYour graded paper for {exam_name} is attached.\n\nScore: {score}\n\nRegards,\nGradeSense'
+    'Please find attached your graded answer sheet.'
   );
 
   // WhatsApp Connection & Sending States
@@ -57,12 +59,13 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
     'Hello {student_name}, your results for {exam_name} are ready. Score: {score}. View report: {report_link}'
   );
 
-  const statusIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const statusIntervalRef = useRef<any>(null);
 
   // Load saved SMTP settings on mount
   useEffect(() => {
     const loadSettings = async () => {
       try {
+        const savedProvider = await AsyncStorage.getItem('gradesense.smtp.provider');
         const savedHost = await AsyncStorage.getItem('gradesense.smtp.host');
         const savedPort = await AsyncStorage.getItem('gradesense.smtp.port');
         const savedUser = await AsyncStorage.getItem('gradesense.smtp.user');
@@ -70,6 +73,14 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
         const savedSubject = await AsyncStorage.getItem(`gradesense.smtp.subject.${examId}`);
         const savedBody = await AsyncStorage.getItem('gradesense.smtp.body');
         
+        if (savedProvider) {
+          setProvider(savedProvider as any);
+        } else if (savedHost) {
+          if (savedHost === 'smtp.gmail.com') setProvider('gmail');
+          else if (savedHost === 'smtp.office365.com') setProvider('outlook');
+          else setProvider('custom');
+        }
+
         if (savedHost) setSmtpHost(savedHost);
         if (savedPort) setSmtpPort(savedPort);
         if (savedUser) setSmtpUser(savedUser);
@@ -245,6 +256,7 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
     
     // Save SMTP credentials locally (except password if user prefers, but we save it locally for convenience)
     try {
+      await AsyncStorage.setItem('gradesense.smtp.provider', provider);
       await AsyncStorage.setItem('gradesense.smtp.host', smtpHost);
       await AsyncStorage.setItem('gradesense.smtp.port', smtpPort);
       await AsyncStorage.setItem('gradesense.smtp.user', smtpUser);
@@ -343,7 +355,7 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
               style={[styles.tab, activeTab === 'zip' && styles.activeTab]}
               onPress={() => setActiveTab('zip')}
             >
-              <Ionicons name="folder-zip-outline" size={16} color={activeTab === 'zip' ? COLORS.primary : COLORS.textLight} />
+              <Ionicons name="folder-outline" size={16} color={activeTab === 'zip' ? COLORS.primary : COLORS.textLight} />
               <Text style={[styles.tabText, activeTab === 'zip' && styles.activeTabText]}>ZIP File</Text>
             </TouchableOpacity>
 
@@ -395,22 +407,61 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
                 <Text style={styles.sectionHeading}>SMTP Configuration</Text>
                 <Text style={styles.sectionDesc}>Emails are sent directly from your own email account. Your credentials are saved locally on this device only.</Text>
                 
-                <Text style={styles.label}>SMTP Server Host</Text>
-                <TextInput
-                  style={styles.input}
-                  value={smtpHost}
-                  onChangeText={setSmtpHost}
-                  placeholder="e.g. smtp.gmail.com"
-                />
+                <Text style={styles.label}>Email Provider</Text>
+                <View style={styles.providerRow}>
+                  <TouchableOpacity
+                    style={[styles.providerBtn, provider === 'gmail' && styles.providerBtnActive]}
+                    onPress={() => {
+                      setProvider('gmail');
+                      setSmtpHost('smtp.gmail.com');
+                      setSmtpPort('587');
+                    }}
+                  >
+                    <Ionicons name="logo-google" size={14} color={provider === 'gmail' ? COLORS.primary : COLORS.textLight} />
+                    <Text style={[styles.providerBtnText, provider === 'gmail' && styles.providerBtnTextActive]}>Gmail</Text>
+                  </TouchableOpacity>
 
-                <Text style={styles.label}>SMTP Port</Text>
-                <TextInput
-                  style={styles.input}
-                  value={smtpPort}
-                  onChangeText={setSmtpPort}
-                  keyboardType="numeric"
-                  placeholder="e.g. 587 or 465"
-                />
+                  <TouchableOpacity
+                    style={[styles.providerBtn, provider === 'outlook' && styles.providerBtnActive]}
+                    onPress={() => {
+                      setProvider('outlook');
+                      setSmtpHost('smtp.office365.com');
+                      setSmtpPort('587');
+                    }}
+                  >
+                    <Ionicons name="mail-outline" size={14} color={provider === 'outlook' ? COLORS.primary : COLORS.textLight} />
+                    <Text style={[styles.providerBtnText, provider === 'outlook' && styles.providerBtnTextActive]}>Outlook</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.providerBtn, provider === 'custom' && styles.providerBtnActive]}
+                    onPress={() => setProvider('custom')}
+                  >
+                    <Ionicons name="settings-outline" size={14} color={provider === 'custom' ? COLORS.primary : COLORS.textLight} />
+                    <Text style={[styles.providerBtnText, provider === 'custom' && styles.providerBtnTextActive]}>Custom</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {provider === 'custom' && (
+                  <>
+                    <Text style={styles.label}>SMTP Server Host</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={smtpHost}
+                      onChangeText={setSmtpHost}
+                      placeholder="e.g. smtp.gmail.com"
+                    />
+
+                    <Text style={styles.label}>SMTP Port</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={smtpPort}
+                      onChangeText={setSmtpPort}
+                      keyboardType="numeric"
+                      placeholder="e.g. 587 or 465"
+                    />
+                  </>
+                )}
 
                 <Text style={styles.label}>Username / Email Address</Text>
                 <TextInput
@@ -419,7 +470,7 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
                   onChangeText={setSmtpUser}
                   autoCapitalize="none"
                   keyboardType="email-address"
-                  placeholder="e.g. teacher@gmail.com"
+                  placeholder={provider === 'gmail' ? "e.g. teacher@gmail.com" : provider === 'outlook' ? "e.g. teacher@outlook.com" : "e.g. SMTP username"}
                 />
 
                 <Text style={styles.label}>Password / App Password</Text>
@@ -429,8 +480,19 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
                   onChangeText={setSmtpPassword}
                   secureTextEntry
                   autoCapitalize="none"
-                  placeholder="Google App Password (recommended)"
+                  placeholder={provider === 'gmail' ? "16-digit Google App Password" : "Email password / App password"}
                 />
+
+                {provider === 'gmail' && (
+                  <TouchableOpacity 
+                    onPress={() => Linking.openURL('https://support.google.com/accounts/answer/185833')}
+                    style={styles.helpLink}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="help-circle-outline" size={14} color={COLORS.primary} style={{ marginRight: 4 }} />
+                    <Text style={styles.helpLinkText}>How to generate a Google App Password</Text>
+                  </TouchableOpacity>
+                )}
 
                 <Text style={styles.sectionHeading}>Message Template</Text>
                 <Text style={styles.label}>Email Subject</Text>
@@ -863,5 +925,48 @@ const styles = StyleSheet.create({
     color: COLORS.danger,
     fontSize: 13,
     fontWeight: '600',
+  },
+  providerRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 10,
+    marginTop: 2,
+  },
+  providerBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.background,
+    gap: 6,
+  },
+  providerBtnActive: {
+    borderColor: COLORS.primary,
+    backgroundColor: COLORS.primary + '10',
+  },
+  providerBtnText: {
+    fontSize: 13,
+    color: COLORS.textLight,
+    fontWeight: '500',
+  },
+  providerBtnTextActive: {
+    color: COLORS.primary,
+    fontWeight: '600',
+  },
+  helpLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+    paddingVertical: 4,
+  },
+  helpLinkText: {
+    fontSize: 12,
+    color: COLORS.primary,
+    fontWeight: '500',
+    textDecorationLine: 'underline',
   },
 });

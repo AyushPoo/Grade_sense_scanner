@@ -16,6 +16,8 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as Haptics from 'expo-haptics';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
 import {
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,
@@ -61,6 +63,41 @@ export default function ReviewGradingScreen() {
   const [isEditingFeedback, setIsEditingFeedback] = useState(false);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [isSharingIndividual, setIsSharingIndividual] = useState(false);
+
+  const handleShareIndividualReport = async () => {
+    if (!activeSub || !token || !webappUrl) return;
+    setIsSharingIndividual(true);
+    try {
+      const sanitizedName = (activeSub.studentName || 'Student').replace(/\s+/g, '_');
+      const localUri = `${FileSystem.documentDirectory}${sanitizedName}_Graded_Report.pdf`;
+      
+      const downloadRes = await FileSystem.downloadAsync(
+        `${webappUrl}/api/v1/public/submissions/${activeSub.id}/report.pdf`,
+        localUri,
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        }
+      );
+
+      if (downloadRes.status !== 200) {
+        throw new Error('Could not download graded report PDF.');
+      }
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(downloadRes.uri);
+      } else {
+        Alert.alert('Download Complete', `Saved to documents: ${downloadRes.uri}`);
+      }
+    } catch (err: any) {
+      console.error('Failed to share individual report:', err);
+      Alert.alert('Share Failed', err.message || 'Could not download report PDF.');
+    } finally {
+      setIsSharingIndividual(false);
+    }
+  };
 
   useEffect(() => {
     const showSub = Keyboard.addListener('keyboardDidShow', () => {
@@ -670,7 +707,30 @@ export default function ReviewGradingScreen() {
       if (currentSubIndex < submissions.length - 1) {
         setCurrentSubIndex(prev => prev + 1);
       } else {
-        Alert.alert('Completed!', 'You have reviewed all student submissions for this exam.');
+        Alert.alert(
+          'Grading Completed!',
+          'All papers have been reviewed. Would you like to publish results and share/export them with the class?',
+          [
+            { text: 'Later', style: 'cancel' },
+            {
+              text: 'Publish & Share',
+              onPress: async () => {
+                try {
+                  await fetch(`${webappUrl}/api/v1/exams/${examId}/publish`, {
+                    method: 'POST',
+                    headers: {
+                      'Authorization': `Bearer ${token}`,
+                      'Bypass-Tunnel-Reminder': 'true'
+                    }
+                  });
+                } catch (err) {
+                  console.warn('Publish failed:', err);
+                }
+                setShowExportModal(true);
+              }
+            }
+          ]
+        );
       }
     } catch (err: any) {
       console.error('Failed to submit review:', err);
@@ -731,13 +791,17 @@ export default function ReviewGradingScreen() {
           </Text>
         </View>
         <View style={styles.headerActions}>
-          <TouchableOpacity
-            style={styles.headerIconBtn}
-            onPress={() => setShowExportModal(true)}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="share-outline" size={18} color={COLORS.primary} />
-          </TouchableOpacity>
+          {isSharingIndividual ? (
+            <ActivityIndicator size="small" color={COLORS.primary} style={{ marginRight: 8 }} />
+          ) : (
+            <TouchableOpacity
+              style={styles.headerIconBtn}
+              onPress={handleShareIndividualReport}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="share-outline" size={18} color={COLORS.primary} />
+            </TouchableOpacity>
+          )}
           {isReevaluating ? (
             <ActivityIndicator size="small" color={COLORS.primary} style={{ marginRight: 8 }} />
           ) : (

@@ -108,4 +108,6 @@ test_reports/
 backend/uploads/
 !frontend/assets/**
 backend/env.yaml
+backend/whatsapp_client/session/
+
 

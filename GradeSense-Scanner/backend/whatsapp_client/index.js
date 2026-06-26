@@ -4,12 +4,10 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import QRCode from 'qrcode';
-import pkg from '@whiskeysockets/baileys';
-const { 
-  default: makeWASocket, 
+import makeWASocket, { 
   useMultiFileAuthState, 
   DisconnectReason 
-} = pkg;
+} from '@whiskeysockets/baileys';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -34,7 +32,8 @@ async function initWhatsApp() {
   sock = makeWASocket({
     auth: state,
     printQRInTerminal: false,
-    logger: logger
+    logger: logger,
+    browser: ['Mac OS', 'Chrome', '121.0.0']
   });
 
   sock.ev.on('creds.update', saveCreds);
