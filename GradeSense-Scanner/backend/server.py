@@ -5889,7 +5889,8 @@ async def get_public_student_report_pdf(submission_id: str):
             total_marks=sub_row["total_marks"] or 100.0,
             teacher_feedback=sub_row["teacher_feedback"] or "",
             questions=[dict(q) for q in score_rows],
-            output_path=temp_pdf_path
+            output_path=temp_pdf_path,
+            submission_id=submission_id
         )
         
         if not success:
@@ -6004,7 +6005,8 @@ async def get_exam_export_zip(exam_id: str, authorization: Optional[str] = Heade
                         total_marks=exam_row["total_marks"] or 100.0,
                         teacher_feedback=sub["teacher_feedback"] or "",
                         questions=[dict(q) for q in score_rows],
-                        output_path=single_temp_path
+                        output_path=single_temp_path,
+                        submission_id=sub_id
                     )
                     if success:
                         pdf_name = f"{sub['student_name'] or 'Student'}_{sub['student_roll_number'] or ''}_Report.pdf".replace(" ", "_")
@@ -6193,7 +6195,8 @@ async def background_send_reports_email(
                 total_marks=total_marks,
                 teacher_feedback=sub["teacher_feedback"] or "",
                 questions=[dict(q) for q in score_rows],
-                output_path=single_temp_path
+                output_path=single_temp_path,
+                submission_id=sub_id
             )
             if success:
                 pdf_filename = f"{sub['student_name'] or 'Student'}_{sub['student_roll_number'] or ''}_Report.pdf".replace(" ", "_")

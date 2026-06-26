@@ -190,7 +190,8 @@ async def compile_student_report_pdf(
     total_marks: float,
     teacher_feedback: str,
     questions: List[Dict[str, Any]],
-    output_path: Path
+    output_path: Path,
+    submission_id: str = ""
 ) -> bool:
     """
     Stitches scanned images/PDFs together and appends a ReportLab feedback page.
@@ -198,37 +199,39 @@ async def compile_student_report_pdf(
     """
     with tempfile.TemporaryDirectory() as temp_dir:
         writer = PdfWriter()
-        
-        # 1. Download and append student scan pages
-        sorted_files = sorted(files_metadata, key=lambda x: x.get("id", ""))
         has_pages = False
-        
-        for f_meta in sorted_files:
-            # Prefer annotation key if available
-            gcs_key = f_meta.get("annotation_gcs_key") or f_meta.get("gcs_key")
-            if not gcs_key:
-                continue
-            
-            filename = gcs_key.split("/")[-1]
-            local_path = await download_file_from_storage(storage_service, session_id, filename, temp_dir)
-            if not local_path or not local_path.exists():
-                logger.warning(f"Could not load scan file for compile: {filename}")
-                continue
-                
-            content_type = f_meta.get("content_type", "")
-            if is_pdf_file(filename, content_type):
-                # Append PDF pages directly
+
+        # Try to load annotated images from GridFS first
+        annotated_images = []
+        if submission_id:
+            try:
+                mongo_url = os.environ.get("MONGO_URL")
+                if mongo_url:
+                    from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
+                    from bson import ObjectId
+                    import pickle
+                    
+                    client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=3000)
+                    db = client["gradesense"]
+                    sub = await db.submissions.find_one({"submission_id": submission_id})
+                    if sub and sub.get("annotated_images_gridfs_id"):
+                        ann_id = sub["annotated_images_gridfs_id"]
+                        fs = AsyncIOMotorGridFSBucket(db)
+                        grid_in = io.BytesIO()
+                        await fs.download_to_stream(ObjectId(ann_id), grid_in)
+                        annotated_images = pickle.loads(grid_in.getvalue())
+                        logger.info(f"Loaded {len(annotated_images)} annotated pages from GridFS for submission {submission_id}")
+                    client.close()
+            except Exception as e:
+                logger.error(f"Failed to load annotated images from GridFS for {submission_id}: {e}")
+
+        # 1. Download/convert and append student scan pages
+        if annotated_images:
+            for idx, img_b64 in enumerate(annotated_images):
                 try:
-                    reader = PdfReader(local_path)
-                    for page in reader.pages:
-                        writer.add_page(page)
-                    has_pages = True
-                except Exception as ex:
-                    logger.error(f"Error reading PDF pages from {filename}: {ex}")
-            else:
-                # Convert image to single-page PDF
-                try:
-                    img = Image.open(local_path)
+                    import base64
+                    img_bytes = base64.b64decode(img_b64)
+                    img = Image.open(io.BytesIO(img_bytes))
                     if img.mode != 'RGB':
                         img = img.convert('RGB')
                         
@@ -239,7 +242,7 @@ async def compile_student_report_pdf(
                         img = img.resize((int(img.width * ratio), int(img.height * ratio)), Image.Resampling.LANCZOS)
                         
                     # Save image page to a temp PDF file
-                    img_pdf_path = Path(temp_dir) / f"{filename}.pdf"
+                    img_pdf_path = Path(temp_dir) / f"annotated_page_{idx}.pdf"
                     
                     loop = asyncio.get_event_loop()
                     def save_img_as_pdf():
@@ -252,7 +255,60 @@ async def compile_student_report_pdf(
                         writer.add_page(reader.pages[0])
                         has_pages = True
                 except Exception as ex:
-                    logger.error(f"Error converting image to PDF page: {ex}")
+                    logger.error(f"Error converting annotated page {idx} to PDF: {ex}")
+        else:
+            sorted_files = sorted(files_metadata, key=lambda x: x.get("id", ""))
+            
+            for f_meta in sorted_files:
+                # Prefer annotation key if available
+                gcs_key = f_meta.get("annotation_gcs_key") or f_meta.get("gcs_key")
+                if not gcs_key:
+                    continue
+                
+                filename = gcs_key.split("/")[-1]
+                local_path = await download_file_from_storage(storage_service, session_id, filename, temp_dir)
+                if not local_path or not local_path.exists():
+                    logger.warning(f"Could not load scan file for compile: {filename}")
+                    continue
+                    
+                content_type = f_meta.get("content_type", "")
+                if is_pdf_file(filename, content_type):
+                    # Append PDF pages directly
+                    try:
+                        reader = PdfReader(local_path)
+                        for page in reader.pages:
+                            writer.add_page(page)
+                        has_pages = True
+                    except Exception as ex:
+                        logger.error(f"Error reading PDF pages from {filename}: {ex}")
+                else:
+                    # Convert image to single-page PDF
+                    try:
+                        img = Image.open(local_path)
+                        if img.mode != 'RGB':
+                            img = img.convert('RGB')
+                            
+                        # Resize if extremely large to prevent OOM
+                        max_dim = 1600
+                        if max(img.width, img.height) > max_dim:
+                            ratio = max_dim / max(img.width, img.height)
+                            img = img.resize((int(img.width * ratio), int(img.height * ratio)), Image.Resampling.LANCZOS)
+                            
+                        # Save image page to a temp PDF file
+                        img_pdf_path = Path(temp_dir) / f"{filename}.pdf"
+                        
+                        loop = asyncio.get_event_loop()
+                        def save_img_as_pdf():
+                            img.save(img_pdf_path, "PDF")
+                        await loop.run_in_executor(None, save_img_as_pdf)
+                        img.close()
+                        
+                        if img_pdf_path.exists():
+                            reader = PdfReader(img_pdf_path)
+                            writer.add_page(reader.pages[0])
+                            has_pages = True
+                    except Exception as ex:
+                        logger.error(f"Error converting image to PDF page: {ex}")
                     
         # 2. Draw the ReportLab feedback sheet
         feedback_pdf_path = Path(temp_dir) / "feedback_sheet.pdf"

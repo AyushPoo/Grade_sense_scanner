@@ -12,6 +12,7 @@ import {
   Dimensions,
   Image,
   Linking,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -215,11 +216,67 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
     ]);
   };
 
-  const handleDownloadZip = async () => {
+  const handleDownloadZipOnly = async () => {
     setIsExporting(true);
     setExportProgress('Downloading ZIP...');
     try {
       const localUri = `${FileSystem.documentDirectory}${examName.replace(/\s+/g, '_')}_Reports.zip`;
+      const downloadRes = await FileSystem.downloadAsync(
+        `${getBackendUrl()}/api/v1/exams/${examId}/export/zip`,
+        localUri,
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        }
+      );
+
+      if (downloadRes.status !== 200) {
+        throw new Error('Download failed. Ensure results are graded and online.');
+      }
+
+      if (Platform.OS === 'android') {
+        setExportProgress('Saving to device storage...');
+        const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+        if (permissions.granted) {
+          const directoryUri = permissions.directoryUri;
+          const fileName = `${examName.replace(/\s+/g, '_')}_Reports.zip`;
+          const fileUri = await FileSystem.StorageAccessFramework.createFileAsync(
+            directoryUri,
+            fileName,
+            'application/zip'
+          );
+          const base64 = await FileSystem.readAsStringAsync(downloadRes.uri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          await FileSystem.StorageAccessFramework.writeAsStringAsync(fileUri, base64, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          Alert.alert('Download Complete', 'ZIP file saved successfully to your selected folder.');
+        } else {
+          Alert.alert('Permission Denied', 'Folder permission was denied. Cannot save ZIP.');
+        }
+      } else {
+        setExportProgress('Saving to files...');
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(downloadRes.uri, { UTI: 'public.zip-archive' });
+        } else {
+          Alert.alert('Export Complete', `Saved to documents: ${downloadRes.uri}`);
+        }
+      }
+    } catch (err: any) {
+      Alert.alert('ZIP Download Failed', err.message || 'Could not compile reports ZIP.');
+    } finally {
+      setIsExporting(false);
+      setExportProgress('');
+    }
+  };
+
+  const handleShareZip = async () => {
+    setIsExporting(true);
+    setExportProgress('Preparing ZIP for share...');
+    try {
+      const localUri = `${FileSystem.documentDirectory}${examName.replace(/\s+/g, '_')}_Reports_Share.zip`;
       const downloadRes = await FileSystem.downloadAsync(
         `${getBackendUrl()}/api/v1/exams/${examId}/export/zip`,
         localUri,
@@ -241,7 +298,7 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
         Alert.alert('Export Complete', `Saved to documents: ${downloadRes.uri}`);
       }
     } catch (err: any) {
-      Alert.alert('ZIP Download Failed', err.message || 'Could not compile reports ZIP.');
+      Alert.alert('ZIP Share Failed', err.message || 'Could not share reports ZIP.');
     } finally {
       setIsExporting(false);
       setExportProgress('');
@@ -395,9 +452,14 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
                   </Text>
                 </View>
 
-                <TouchableOpacity style={styles.submitButton} onPress={handleDownloadZip}>
+                <TouchableOpacity style={styles.submitButton} onPress={handleDownloadZipOnly}>
                   <Ionicons name="download-outline" size={20} color={COLORS.textInverse} />
-                  <Text style={styles.submitBtnText}>Download ZIP & Share</Text>
+                  <Text style={styles.submitBtnText}>Download ZIP</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity style={styles.secondaryButton} onPress={handleShareZip}>
+                  <Ionicons name="share-social-outline" size={20} color={COLORS.primary} />
+                  <Text style={styles.secondaryBtnText}>Share ZIP</Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -740,12 +802,29 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     gap: 8,
   },
+  secondaryButton: {
+    borderWidth: 1,
+    borderColor: COLORS.primary,
+    backgroundColor: 'transparent',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    borderRadius: 10,
+    gap: 8,
+    marginTop: 12,
+  },
   whatsappBtn: {
     backgroundColor: '#25D366',
     marginTop: 10,
   },
   submitBtnText: {
     color: COLORS.textInverse,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  secondaryBtnText: {
+    color: COLORS.primary,
     fontSize: 15,
     fontWeight: '600',
   },
