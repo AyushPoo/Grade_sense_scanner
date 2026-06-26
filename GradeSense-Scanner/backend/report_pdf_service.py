@@ -161,10 +161,13 @@ def generate_feedback_page(
         ob_m = f"{q.get('obtained_marks', 0.0):.1f}"
         max_m = f"{q.get('max_marks', 0.0):.1f}"
         
-        # Combine AI feedback and Teacher corrections if any
+        # Combine Question text, AI feedback and Teacher corrections if any
+        q_text = q.get("question_text") or ""
         ai_feed = q.get("ai_feedback") or ""
         teach_corr = q.get("teacher_correction") or ""
         feedback_parts = []
+        if q_text.strip():
+            feedback_parts.append(f"<b>Question:</b> {q_text.strip()}")
         if ai_feed.strip():
             feedback_parts.append(f"<b>AI Comment:</b> {ai_feed.strip()}")
         if teach_corr.strip():

@@ -5850,10 +5850,11 @@ async def get_public_student_report_pdf(submission_id: str):
         
         score_rows = await conn.fetch(
             '''
-            SELECT question_number, obtained_marks, max_marks, ai_feedback, teacher_correction
-            FROM question_scores
-            WHERE submission_id = $1
-            ORDER BY sort_order ASC, question_number ASC
+            SELECT qs.question_number, qs.obtained_marks, qs.max_marks, qs.ai_feedback, qs.teacher_correction, qi.question_text
+            FROM question_scores qs
+            LEFT JOIN question_items qi ON qi.id = qs.question_id
+            WHERE qs.submission_id = $1
+            ORDER BY qs.sort_order ASC, qs.question_number ASC
             ''',
             submission_id
         )
@@ -5983,10 +5984,11 @@ async def get_exam_export_zip(exam_id: str, authorization: Optional[str] = Heade
                     continue
                 score_rows = await conn.fetch(
                     '''
-                    SELECT question_number, obtained_marks, max_marks, ai_feedback, teacher_correction
-                    FROM question_scores
-                    WHERE submission_id = $1
-                    ORDER BY sort_order ASC, question_number ASC
+                    SELECT qs.question_number, qs.obtained_marks, qs.max_marks, qs.ai_feedback, qs.teacher_correction, qi.question_text
+                    FROM question_scores qs
+                    LEFT JOIN question_items qi ON qi.id = qs.question_id
+                    WHERE qs.submission_id = $1
+                    ORDER BY qs.sort_order ASC, qs.question_number ASC
                     ''',
                     sub_id
                 )
@@ -6164,10 +6166,11 @@ async def background_send_reports_email(
             )
             score_rows = await conn.fetch(
                 '''
-                SELECT question_number, obtained_marks, max_marks, ai_feedback, teacher_correction
-                FROM question_scores
-                WHERE submission_id = $1
-                ORDER BY sort_order ASC, question_number ASC
+                SELECT qs.question_number, qs.obtained_marks, qs.max_marks, qs.ai_feedback, qs.teacher_correction, qi.question_text
+                FROM question_scores qs
+                LEFT JOIN question_items qi ON qi.id = qs.question_id
+                WHERE qs.submission_id = $1
+                ORDER BY qs.sort_order ASC, qs.question_number ASC
                 ''',
                 sub_id
             )
