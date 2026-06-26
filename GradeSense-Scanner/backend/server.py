@@ -2718,6 +2718,36 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                             '''
                         )
 
+                        # Load batch roster for student matching
+                        batch_id = None
+                        try:
+                            batch_id = await conn.fetchval("SELECT batch_id FROM exams WHERE id = $1", exam_id)
+                        except Exception as e:
+                            logger.error(f"Error fetching batch_id for exam {exam_id}: {e}")
+
+                        roster = []
+                        if batch_id:
+                            try:
+                                roster_rows = await conn.fetch(
+                                    '''
+                                    SELECT bs.student_id AS roster_student_id, u.name AS student_name, u.roll_number AS student_roll_number, u.email AS student_email
+                                    FROM batch_students bs
+                                    JOIN users u ON u.id = bs.student_id
+                                    WHERE bs.batch_id = $1
+
+                                    UNION ALL
+
+                                    SELECT COALESCE(si.accepted_by_user_id, si.id) AS roster_student_id, si.name AS student_name, si.roll_number AS student_roll_number, si.email AS student_email
+                                    FROM student_invitations si
+                                    WHERE si.batch_id = $1 AND COALESCE(si.status, '') NOT IN ('cancelled', 'deleted')
+                                    ''',
+                                    batch_id
+                                )
+                                roster = [dict(r) for r in roster_rows]
+                                logger.info(f"Loaded {len(roster)} roster entries for batch {batch_id} to match scanner submissions.")
+                            except Exception as e:
+                                logger.error(f"Error loading roster for batch {batch_id}: {e}")
+
                         for idx, student in enumerate(students):
                             st_pages = student.get("pages", [])
                             if not st_pages:
@@ -2763,6 +2793,79 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                                 raw_blob = storage.bucket.blob(raw_sub_gcs_key)
                                 raw_blob.upload_from_filename(str(raw_pdf_path), content_type="application/pdf")
 
+                            # Identify and match student in roster
+                            scanned_roll = str(student.get("roll_number") or "").strip().lower()
+                            scanned_label = str(student.get("label") or "").strip().lower()
+
+                            matched_student = None
+
+                            # 1. Match by roll number first (if not empty)
+                            if scanned_roll:
+                                for r in roster:
+                                    r_roll = str(r["student_roll_number"] or "").strip().lower()
+                                    if r_roll and r_roll == scanned_roll:
+                                        matched_student = r
+                                        break
+
+                            # 2. Match by exact name (if no roll match and name not empty)
+                            if not matched_student and scanned_label:
+                                for r in roster:
+                                    r_name = str(r["student_name"] or "").strip().lower()
+                                    if r_name and r_name == scanned_label:
+                                        matched_student = r
+                                        break
+
+                            if matched_student:
+                                matched_student_id = matched_student["roster_student_id"]
+                                matched_name = matched_student["student_name"] or student.get("label") or f"Student #{idx + 1}"
+                                matched_roll = matched_student["student_roll_number"] or student.get("roll_number")
+                                matched_email = matched_student["student_email"]
+                                logger.info(f"Matched scanned student '{student.get('label')}' (roll: {student.get('roll_number')}) to roster student {matched_student_id}")
+                            else:
+                                # Create new student invitation
+                                new_inv_id = generate_drizzle_id("inv_")
+                                # Clean name for email
+                                clean_name_for_email = "".join(c for c in scanned_label if c.isalnum() or c in (" ", "_", "-")).strip()
+                                clean_name_for_email = clean_name_for_email.replace(" ", "-").lower() or "student"
+                                new_email = f"scanned-{clean_name_for_email}-{new_inv_id[4:]}@example.com"
+                                
+                                now_iso = datetime.utcnow().isoformat() + 'Z'
+                                try:
+                                    await conn.execute(
+                                        '''
+                                        INSERT INTO student_invitations (
+                                            id, teacher_id, batch_id, name, email, status, roll_number, created_at, updated_at
+                                        ) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8)
+                                        ''',
+                                        new_inv_id,
+                                        user_id,
+                                        batch_id,
+                                        student.get("label") or f"Student #{idx + 1}",
+                                        new_email,
+                                        student.get("roll_number"),
+                                        now_iso,
+                                        now_iso
+                                    )
+                                    logger.info(f"Auto-created roster invitation {new_inv_id} for scanned student '{student.get('label')}'")
+                                    
+                                    new_roster_entry = {
+                                        "roster_student_id": new_inv_id,
+                                        "student_name": student.get("label") or f"Student #{idx + 1}",
+                                        "student_roll_number": student.get("roll_number"),
+                                        "student_email": new_email
+                                    }
+                                    roster.append(new_roster_entry)
+                                except Exception as roster_insert_err:
+                                    logger.error(f"Failed to auto-create roster invitation for {student.get('label')}: {roster_insert_err}")
+                                    # Fallback if DB insert fails
+                                    new_inv_id = None
+                                    new_email = None
+
+                                matched_student_id = new_inv_id
+                                matched_name = student.get("label") or f"Student #{idx + 1}"
+                                matched_roll = student.get("roll_number")
+                                matched_email = new_email
+
                             await conn.execute(
                                 '''
                                 INSERT INTO submissions (
@@ -2773,9 +2876,9 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                                 ''',
                                 sub_id,
                                 exam_id,
-                                None,
-                                student.get("label") or f"Student #{idx + 1}",
-                                None,
+                                matched_student_id,
+                                matched_name,
+                                matched_email,
                                 "teacher_bulk",
                                 "pending",
                                 0.0,
@@ -2787,7 +2890,7 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                                 None,
                                 datetime.utcnow().isoformat() + 'Z',
                                 datetime.utcnow().isoformat() + 'Z',
-                                student.get("roll_number"),
+                                matched_roll,
                             )
 
                             if has_ann_col:
@@ -4157,6 +4260,151 @@ async def post_submission_review_proxy(submission_id: str, data: dict, authoriza
 
     logger.info(f"Mock review saved for submission {submission_id}: {data}")
     return {"success": True, "message": "Review saved successfully (mock)"}
+
+
+@api_router.post("/v1/submissions/{submission_id}/merge")
+async def merge_submission_student(
+    submission_id: str,
+    data: dict,
+    authorization: Optional[str] = Header(None)
+):
+    """
+    Merge/link a submission to a target student.
+    Body format: { "target_student_id": "usr_..." or "inv_..." }
+    """
+    user = await get_current_user(authorization)
+    target_student_id = data.get("target_student_id")
+    if not target_student_id:
+        raise HTTPException(status_code=400, detail="target_student_id is required")
+
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if not webapp_db_url:
+        # Fallback for mock/local mode
+        return {"success": True, "message": "Merged successfully (mock)"}
+
+    conn = await connect_to_neon_db(webapp_db_url)
+    try:
+        # 1. Fetch submission details and ensure it exists and is owned by the current teacher
+        sub_row = await conn.fetchrow(
+            '''
+            SELECT s.id, s.student_id, e.batch_id
+            FROM submissions s
+            JOIN exams e ON e.id = s.exam_id
+            WHERE s.id = $1 AND e.teacher_id = $2
+            ''',
+            submission_id,
+            user.user_id
+        )
+        if not sub_row:
+            raise HTTPException(status_code=404, detail="Submission not found or unauthorized")
+
+        batch_id = sub_row["batch_id"]
+        source_student_id = sub_row["student_id"]
+
+        # 2. Fetch target student details from users or student_invitations
+        target_student = await conn.fetchrow(
+            '''
+            SELECT 'user' AS source,
+                   u.id AS student_id,
+                   u.name,
+                   u.email,
+                   u.roll_number
+            FROM batch_students bs
+            JOIN users u ON u.id = bs.student_id
+            WHERE bs.batch_id = $1 AND bs.student_id = $2
+
+            UNION ALL
+
+            SELECT 'invitation' AS source,
+                   si.id AS student_id,
+                   si.name,
+                   si.email,
+                   si.roll_number
+            FROM student_invitations si
+            WHERE si.batch_id = $1 AND si.id = $2 AND COALESCE(si.status, '') NOT IN ('cancelled', 'deleted')
+            LIMIT 1
+            ''',
+            batch_id,
+            target_student_id
+        )
+
+        if not target_student:
+            raise HTTPException(status_code=404, detail="Target student not found in batch roster")
+
+        target_name = target_student["name"]
+        target_email = target_student["email"]
+        target_roll = target_student["roll_number"]
+
+        async with conn.transaction():
+            # 3. Update the submission with target student's details
+            await conn.execute(
+                '''
+                UPDATE submissions
+                SET student_id = $2,
+                    student_name = $3,
+                    student_email = $4,
+                    student_roll_number = $5,
+                    updated_at = $6
+                WHERE id = $1
+                ''',
+                submission_id,
+                target_student_id,
+                target_name,
+                target_email,
+                target_roll,
+                datetime.utcnow().isoformat() + 'Z'
+            )
+
+            # 4. Clean up source student if different and has no other submissions in this batch
+            if source_student_id and source_student_id != target_student_id:
+                other_subs_count = await conn.fetchval(
+                    '''
+                    SELECT COUNT(s.id)
+                    FROM submissions s
+                    JOIN exams e ON e.id = s.exam_id
+                    WHERE s.student_id = $1 AND e.batch_id = $2 AND s.id <> $3 AND COALESCE(s.status, '') <> 'deleted'
+                    ''',
+                    source_student_id,
+                    batch_id,
+                    submission_id
+                )
+                if other_subs_count == 0:
+                    # Check if source student is an invitation
+                    if source_student_id.startswith("inv_"):
+                        # Delete invitation or set status to deleted
+                        await conn.execute(
+                            "UPDATE student_invitations SET status = 'deleted', updated_at = $2 WHERE id = $1 AND batch_id = $3",
+                            source_student_id,
+                            datetime.utcnow().isoformat() + 'Z',
+                            batch_id
+                        )
+                        logger.info(f"Cleaned up duplicate invitation student {source_student_id} from batch {batch_id}")
+                    else:
+                        # Delete from batch_students
+                        await conn.execute(
+                            "DELETE FROM batch_students WHERE student_id = $1 AND batch_id = $2",
+                            source_student_id,
+                            batch_id
+                        )
+                        logger.info(f"Cleaned up duplicate enrolled student {source_student_id} from batch {batch_id}")
+
+        return {
+            "success": True,
+            "message": "Submission merged successfully",
+            "student": {
+                "student_id": target_student_id,
+                "name": target_name,
+                "roll_number": target_roll,
+                "email": target_email
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error merging submission {submission_id} into target student {target_student_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await conn.close()
 
 
 @api_router.get("/v1/analytics/overview")

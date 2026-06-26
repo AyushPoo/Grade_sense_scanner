@@ -5,6 +5,8 @@ export interface SubmissionListItem {
   totalScore: number;
   totalMarks: number;
   status: string;
+  batchId?: string;
+  matchedStudentId?: string | null;
 }
 
 export interface ScoreItem {

@@ -10,6 +10,9 @@ import {
   KeyboardAvoidingView,
   Platform,
   Keyboard,
+  TextInput,
+  Modal,
+  ScrollView,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -26,6 +29,7 @@ import { Image } from 'expo-image';
 import { COLORS, getBackendUrl } from '../src/config';
 import { useAuthStore } from '../src/store/authStore';
 import { useScanStore } from '../src/store/scanStore';
+import { fetchBatchStudents } from '../src/api/manage';
 import { GradingControlPanel } from '../src/components/review/GradingControlPanel';
 import { PaperFileViewer, PaperFileViewerState } from '../src/components/review/PaperFileViewer';
 import { RubricReviewPanel } from '../src/components/review/RubricReviewPanel';
@@ -178,6 +182,14 @@ export default function ReviewGradingScreen() {
   const [showDictationModal, setShowDictationModal] = useState(false);
   const [dictationText, setDictationText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
+
+  // Link/Merge student state
+  const [isMergeModalVisible, setIsMergeModalVisible] = useState(false);
+  const [rosterStudents, setRosterStudents] = useState<any[]>([]);
+  const [rosterSearchQuery, setRosterSearchQuery] = useState('');
+  const [isMerging, setIsMerging] = useState(false);
+  const [isLoadingRoster, setIsLoadingRoster] = useState(false);
+
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const activeSub = submissions[currentSubIndex];
   const activeSubId = activeSub?.id;
@@ -393,73 +405,72 @@ export default function ReviewGradingScreen() {
     }
   };
 
+  const fetchSubmissionsList = useCallback(async () => {
+    if (!examId || !token || !webappUrl) return;
+    try {
+      setIsLoadingList(true);
+      let res: Response | null = null;
+      let lastError: any = null;
+      const retries = 3;
+      const delayMs = 1500;
+
+      for (let i = 0; i < retries; i++) {
+        try {
+          res = await fetch(`${webappUrl}/api/v1/exams/${examId}/submissions`, {
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Bypass-Tunnel-Reminder': 'true',
+            },
+          });
+          if (res.ok) {
+            lastError = null;
+            break;
+          }
+          lastError = new Error(`Status ${res.status}`);
+        } catch (err: any) {
+          lastError = err;
+        }
+        if (i < retries - 1) {
+          console.warn(`Failed fetching student list (attempt ${i + 1}/${retries}). Retrying in ${delayMs}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+      }
+
+      if (lastError || !res) {
+        throw lastError || new Error('Failed to fetch student list after retries');
+      }
+
+      const json = await res.json();
+      const list: SubmissionListItem[] = json.data || [];
+      setSubmissions(list);
+      if (list.length > 0) {
+        const savedIndexRaw = await AsyncStorage.getItem(`gradesense.reviewProgress.${examId}`);
+        const savedIndex = savedIndexRaw ? Number(savedIndexRaw) : Number.NaN;
+        const firstUnreviewedIndex = list.findIndex(item => String(item.status || '').toLowerCase() !== 'reviewed');
+        const validSavedIndex = Number.isInteger(savedIndex) && savedIndex >= 0 && savedIndex < list.length
+          ? savedIndex
+          : -1;
+
+        setCurrentSubIndex(
+          validSavedIndex >= 0 && String(list[validSavedIndex]?.status || '').toLowerCase() !== 'reviewed'
+            ? validSavedIndex
+            : firstUnreviewedIndex >= 0
+              ? firstUnreviewedIndex
+              : 0
+        );
+      }
+    } catch (err: any) {
+      console.error('Failed to fetch submissions list:', err);
+      Alert.alert('Error', `Failed to load student list: ${err.message}`);
+    } finally {
+      setIsLoadingList(false);
+    }
+  }, [examId, token, webappUrl]);
+
   // Fetch all submissions on mount
   useEffect(() => {
-    if (!examId || !token || !webappUrl) return;
-
-    const fetchSubmissionsList = async () => {
-      try {
-        setIsLoadingList(true);
-        let res: Response | null = null;
-        let lastError: any = null;
-        const retries = 3;
-        const delayMs = 1500;
-
-        for (let i = 0; i < retries; i++) {
-          try {
-            res = await fetch(`${webappUrl}/api/v1/exams/${examId}/submissions`, {
-              headers: {
-                'Authorization': `Bearer ${token}`,
-                'Bypass-Tunnel-Reminder': 'true',
-              },
-            });
-            if (res.ok) {
-              lastError = null;
-              break;
-            }
-            lastError = new Error(`Status ${res.status}`);
-          } catch (err: any) {
-            lastError = err;
-          }
-          if (i < retries - 1) {
-            console.warn(`Failed fetching student list (attempt ${i + 1}/${retries}). Retrying in ${delayMs}ms...`);
-            await new Promise(resolve => setTimeout(resolve, delayMs));
-          }
-        }
-
-        if (lastError || !res) {
-          throw lastError || new Error('Failed to fetch student list after retries');
-        }
-
-        const json = await res.json();
-        const list: SubmissionListItem[] = json.data || [];
-        setSubmissions(list);
-        if (list.length > 0) {
-          const savedIndexRaw = await AsyncStorage.getItem(`gradesense.reviewProgress.${examId}`);
-          const savedIndex = savedIndexRaw ? Number(savedIndexRaw) : Number.NaN;
-          const firstUnreviewedIndex = list.findIndex(item => String(item.status || '').toLowerCase() !== 'reviewed');
-          const validSavedIndex = Number.isInteger(savedIndex) && savedIndex >= 0 && savedIndex < list.length
-            ? savedIndex
-            : -1;
-
-          setCurrentSubIndex(
-            validSavedIndex >= 0 && String(list[validSavedIndex]?.status || '').toLowerCase() !== 'reviewed'
-              ? validSavedIndex
-              : firstUnreviewedIndex >= 0
-                ? firstUnreviewedIndex
-                : 0
-          );
-        }
-      } catch (err: any) {
-        console.error('Failed to fetch submissions list:', err);
-        Alert.alert('Error', `Failed to load student list: ${err.message}`);
-      } finally {
-        setIsLoadingList(false);
-      }
-    };
-
     fetchSubmissionsList();
-  }, [examId, token, webappUrl]);
+  }, [fetchSubmissionsList]);
 
   const fetchSubmissionDetail = useCallback(async (submissionId: string, force = false): Promise<SubmissionReviewDetail> => {
     if (!token || !webappUrl) {
@@ -629,6 +640,71 @@ export default function ReviewGradingScreen() {
     setFailedImageIds({});
     await fetchActiveSubmissionDetail(true);
   }, [fetchActiveSubmissionDetail]);
+
+  const handleOpenMergeModal = useCallback(async () => {
+    if (!activeSub?.batchId || !token) {
+      Alert.alert('Error', 'Batch ID or Authentication Token is missing');
+      return;
+    }
+    setIsMergeModalVisible(true);
+    setIsLoadingRoster(true);
+    setRosterSearchQuery('');
+    try {
+      const roster = await fetchBatchStudents({
+        backendUrl: webappUrl,
+        token,
+        batchId: activeSub.batchId,
+      });
+      setRosterStudents(roster || []);
+    } catch (err: any) {
+      console.error('Failed to load roster:', err);
+      Alert.alert('Error', `Failed to load batch roster: ${err.message}`);
+    } finally {
+      setIsLoadingRoster(false);
+    }
+  }, [activeSub?.batchId, webappUrl, token]);
+
+  const handleMergeStudent = useCallback(async (targetStudentId: string) => {
+    if (!activeSub || !token || !webappUrl) return;
+    setIsMerging(true);
+    try {
+      const res = await fetch(`${webappUrl}/api/v1/submissions/${activeSub.id}/merge`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'Bypass-Tunnel-Reminder': 'true',
+        },
+        body: JSON.stringify({
+          target_student_id: targetStudentId,
+        }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `Status ${res.status}`);
+      }
+
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert('Success', 'Submission linked and merged successfully!');
+      setIsMergeModalVisible(false);
+      await fetchSubmissionsList();
+    } catch (err: any) {
+      console.error('Failed to merge student:', err);
+      Alert.alert('Merge Failed', err.message || 'An error occurred during merge.');
+    } finally {
+      setIsMerging(false);
+    }
+  }, [activeSub, token, webappUrl, fetchSubmissionsList]);
+
+  const filteredRoster = useMemo(() => {
+    const q = rosterSearchQuery.trim().toLowerCase();
+    if (!q) return rosterStudents;
+    return rosterStudents.filter(student => 
+      (student.name || '').toLowerCase().includes(q) || 
+      (student.rollNumber || student.roll_number || '').toLowerCase().includes(q)
+    );
+  }, [rosterStudents, rosterSearchQuery]);
 
   const handleScoreChange = (scoreId: string, obtained: number) => {
     setScores(prev =>
@@ -830,7 +906,17 @@ export default function ReviewGradingScreen() {
 
           <View style={styles.studentDetails}>
             <Text style={styles.studentLabel}>Active paper</Text>
-            <Text style={styles.studentName}>{activeSub?.studentName || 'Unknown Student'}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+              <Text style={styles.studentName}>{activeSub?.studentName || 'Unknown Student'}</Text>
+              <TouchableOpacity
+                style={styles.mergeIconBtn}
+                onPress={handleOpenMergeModal}
+                activeOpacity={0.7}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Ionicons name="git-merge-outline" size={14} color={COLORS.primary} />
+              </TouchableOpacity>
+            </View>
             <Text style={styles.studentRoll}>Roll: {activeSub?.studentRollNumber || 'N/A'}</Text>
             <Text style={styles.studentScore}>
               Score: {formatMarks(activeTotalScore)} / {formatMarks(activeTotalMarks)}
@@ -978,6 +1064,90 @@ export default function ReviewGradingScreen() {
         examName={sessionName || 'Exam'}
         token={token}
       />
+      <Modal
+        visible={isMergeModalVisible}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setIsMergeModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Link Submission to Student</Text>
+              <TouchableOpacity onPress={() => setIsMergeModalVisible(false)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+                <Ionicons name="close" size={24} color={COLORS.textLight} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.modalSubtitle}>
+              Link this answer sheet to an existing student in the batch roster.
+            </Text>
+
+            <TextInput
+              style={styles.searchBar}
+              placeholder="Search student name or roll number..."
+              placeholderTextColor={COLORS.textMuted}
+              value={rosterSearchQuery}
+              onChangeText={setRosterSearchQuery}
+              autoCorrect={false}
+              clearButtonMode="while-editing"
+            />
+
+            {isLoadingRoster ? (
+              <View style={styles.modalLoaderContainer}>
+                <ActivityIndicator size="large" color={COLORS.primary} />
+                <Text style={styles.modalLoaderText}>Loading roster students...</Text>
+              </View>
+            ) : filteredRoster.length === 0 ? (
+              <View style={styles.modalEmptyContainer}>
+                <Ionicons name="people-outline" size={40} color={COLORS.textMuted} />
+                <Text style={styles.modalEmptyText}>No matching roster students found</Text>
+              </View>
+            ) : (
+              <ScrollView style={styles.rosterList} keyboardShouldPersistTaps="handled">
+                {filteredRoster.map((student) => {
+                  const sId = student.id || student.student_id;
+                  const roll = student.rollNumber || student.roll_number;
+                  const isCurrent = sId === activeSub?.matchedStudentId;
+                  return (
+                    <TouchableOpacity
+                      key={sId}
+                      style={[styles.rosterItem, isCurrent && styles.rosterItemActive]}
+                      onPress={() => !isMerging && handleMergeStudent(sId)}
+                      disabled={isMerging}
+                    >
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.rosterStudentName, isCurrent && styles.rosterTextActive]}>
+                          {student.name || 'Unnamed Student'}
+                        </Text>
+                        <Text style={styles.rosterStudentSub}>
+                          Roll: {roll || 'N/A'} • {student.email || 'No Email'}
+                        </Text>
+                      </View>
+                      {isMerging && (
+                        <ActivityIndicator size="small" color={COLORS.primary} />
+                      )}
+                      {!isMerging && isCurrent && (
+                        <Ionicons name="checkmark-circle" size={20} color={COLORS.primary} />
+                      )}
+                      {!isMerging && !isCurrent && (
+                        <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            )}
+
+            <TouchableOpacity
+              style={styles.modalCloseBtn}
+              onPress={() => setIsMergeModalVisible(false)}
+            >
+              <Text style={styles.modalCloseBtnText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -1255,5 +1425,118 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 11,
     fontWeight: '800',
+  },
+  mergeIconBtn: {
+    padding: 3,
+    borderRadius: 6,
+    backgroundColor: COLORS.primaryXLight,
+    marginLeft: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: COLORS.surface,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 25,
+    paddingBottom: Platform.OS === 'ios' ? 40 : 25,
+    maxHeight: '80%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: COLORS.text,
+  },
+  modalSubtitle: {
+    fontSize: 13,
+    color: COLORS.textLight,
+    marginBottom: 16,
+    lineHeight: 18,
+  },
+  searchBar: {
+    backgroundColor: COLORS.backgroundDark,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: COLORS.text,
+    borderColor: COLORS.border,
+    borderWidth: 1,
+    marginBottom: 16,
+  },
+  modalLoaderContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 32,
+  },
+  modalLoaderText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: COLORS.textLight,
+  },
+  modalEmptyContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 32,
+  },
+  modalEmptyText: {
+    marginTop: 8,
+    fontSize: 14,
+    color: COLORS.textMuted,
+    textAlign: 'center',
+  },
+  rosterList: {
+    maxHeight: 300,
+    marginBottom: 16,
+  },
+  rosterItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.borderLight,
+    borderRadius: 8,
+    marginBottom: 4,
+  },
+  rosterItemActive: {
+    backgroundColor: COLORS.primaryXLight,
+  },
+  rosterStudentName: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  rosterTextActive: {
+    color: COLORS.primaryDark,
+  },
+  rosterStudentSub: {
+    fontSize: 12,
+    color: COLORS.textLight,
+    marginTop: 2,
+  },
+  modalCloseBtn: {
+    backgroundColor: COLORS.backgroundDark,
+    borderRadius: 12,
+    padding: 14,
+    alignItems: 'center',
+    borderColor: COLORS.border,
+    borderWidth: 1,
+  },
+  modalCloseBtnText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: COLORS.text,
   },
 });
