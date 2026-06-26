@@ -7,3 +7,9 @@ __pycache__/
 uploads/
 tests/
 .env
+node_modules/
+whatsapp_client/node_modules/
+whatsapp_client/session/
+*.zip
+*.pdf
+
