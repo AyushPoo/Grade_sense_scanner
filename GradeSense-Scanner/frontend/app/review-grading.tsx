@@ -37,6 +37,7 @@ import { submitQuestionImprovement } from '../src/api/improveAI';
 import { fetchExamReviewSettings } from '../src/api/reviewSettings';
 import { useReviewDensityPreference } from '../src/hooks/useReviewDensityPreference';
 import { useKeyboardLift } from '../src/hooks/useKeyboardLift';
+import { ExportModal } from '../src/components/review/ExportModal';
 
 interface SubmissionReviewDetail {
   files: ReviewFileItem[];
@@ -59,6 +60,7 @@ export default function ReviewGradingScreen() {
   const { density: reviewDensity, setDensity: setReviewDensity } = useReviewDensityPreference();
   const [isEditingFeedback, setIsEditingFeedback] = useState(false);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
 
   useEffect(() => {
     const showSub = Keyboard.addListener('keyboardDidShow', () => {
@@ -729,6 +731,13 @@ export default function ReviewGradingScreen() {
           </Text>
         </View>
         <View style={styles.headerActions}>
+          <TouchableOpacity
+            style={styles.headerIconBtn}
+            onPress={() => setShowExportModal(true)}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="share-outline" size={18} color={COLORS.primary} />
+          </TouchableOpacity>
           {isReevaluating ? (
             <ActivityIndicator size="small" color={COLORS.primary} style={{ marginRight: 8 }} />
           ) : (
@@ -897,6 +906,13 @@ export default function ReviewGradingScreen() {
         isSubmitting={isSubmittingImprovement}
         onClose={() => setShowImproveAIModal(false)}
         onSubmit={handleSubmitQuestionImprovement}
+      />
+      <ExportModal
+        visible={showExportModal}
+        onClose={() => setShowExportModal(false)}
+        examId={examId}
+        examName={sessionName || 'Exam'}
+        token={token}
       />
       </KeyboardAvoidingView>
     </SafeAreaView>

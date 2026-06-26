@@ -83,6 +83,18 @@ from google_invite_auth_service import (
 )
 import jwt as pyjwt
 import asyncpg
+from report_pdf_service import compile_student_report_pdf
+from email_service import send_smtp_email_async
+from whatsapp_service import (
+    start_whatsapp_node_service,
+    stop_whatsapp_node_service,
+    query_whatsapp_status,
+    get_whatsapp_qr,
+    get_whatsapp_pair_code,
+    send_whatsapp_message,
+    logout_whatsapp,
+)
+from fastapi.responses import StreamingResponse
 
 # Configure logging early so startup failures are visible.
 logging.basicConfig(
@@ -3572,6 +3584,9 @@ async def get_exam_submissions_proxy(exam_id: str, authorization: Optional[str] 
                        s.status,
                        roster.name AS roster_student_name,
                        roster.roll_number AS roster_student_roll_number,
+                       COALESCE(roster.email, s.student_email, si.email) AS email,
+                       roster.phone AS mobile_number,
+                       e.batch_id,
                        ROW_NUMBER() OVER (
                          ORDER BY s.student_roll_number ASC NULLS LAST,
                                   s.created_at ASC NULLS LAST,
@@ -3580,7 +3595,7 @@ async def get_exam_submissions_proxy(exam_id: str, authorization: Optional[str] 
                 FROM submissions s
                 JOIN exams e ON e.id = s.exam_id
                 LEFT JOIN LATERAL (
-                    SELECT u.id, u.name, u.roll_number
+                    SELECT u.id, u.name, u.roll_number, u.email, u.phone
                     FROM users u
                     LEFT JOIN batch_students bs
                       ON bs.student_id = u.id
@@ -3595,6 +3610,7 @@ async def get_exam_submissions_proxy(exam_id: str, authorization: Optional[str] 
                     ORDER BY CASE WHEN u.id = s.student_id THEN 0 ELSE 1 END
                     LIMIT 1
                 ) roster ON TRUE
+                LEFT JOIN student_invitations si ON si.accepted_by_user_id = s.student_id OR (s.student_id IS NULL AND si.roll_number = s.student_roll_number AND si.batch_id = e.batch_id)
                 WHERE s.exam_id = $1
                   AND COALESCE(s.status, '') <> 'deleted'
                 ORDER BY s.student_roll_number ASC NULLS LAST,
@@ -3614,7 +3630,10 @@ async def get_exam_submissions_proxy(exam_id: str, authorization: Optional[str] 
                     "matchedStudentId": identity.matched_student_id,
                     "totalScore": row["total_score"] or 0,
                     "totalMarks": row["total_marks"] or 100,
-                    "status": row["status"] or "graded"
+                    "status": row["status"] or "graded",
+                    "email": row["email"] or "",
+                    "mobileNumber": row["mobile_number"] or "",
+                    "batchId": row["batch_id"] or ""
                 })
             return {"data": submissions, "total": len(submissions)}
         except Exception as e:
@@ -5790,6 +5809,561 @@ async def system_readiness():
     return {"data": readiness}
 
 
+# ==================== GRADED PDF REPORT EXPORT ENDPOINTS ====================
+
+@api_router.get("/v1/public/submissions/{submission_id}/report.pdf")
+async def get_public_student_report_pdf(submission_id: str):
+    """Public endpoint to stream the compiled PDF report for a student without authentication"""
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if not webapp_db_url:
+        raise HTTPException(status_code=500, detail="Database connection not configured")
+        
+    conn = None
+    try:
+        conn = await asyncpg.connect(webapp_db_url)
+        sub_row = await conn.fetchrow(
+            '''
+            SELECT s.id, s.exam_id, s.student_id, s.student_name, s.student_roll_number,
+                   s.total_score, s.teacher_feedback, e.name AS exam_name, e.total_marks
+            FROM submissions s
+            JOIN exams e ON e.id = s.exam_id
+            WHERE s.id = $1 AND COALESCE(s.status, '') <> 'deleted'
+            ''',
+            submission_id
+        )
+        if not sub_row:
+            raise HTTPException(status_code=404, detail="Submission not found")
+            
+        file_rows = await conn.fetch(
+            '''
+            SELECT id, kind, original_name, content_type, gcs_key, annotation_gcs_key
+            FROM submission_files
+            WHERE submission_id = $1
+            ''',
+            submission_id
+        )
+        
+        score_rows = await conn.fetch(
+            '''
+            SELECT question_number, obtained_marks, max_marks, ai_feedback, teacher_correction
+            FROM question_scores
+            WHERE submission_id = $1
+            ORDER BY sort_order ASC, question_number ASC
+            ''',
+            submission_id
+        )
+        await conn.close()
+    except Exception as e:
+        if conn:
+            await conn.close()
+        logger.error(f"Error querying database for public PDF report: {e}")
+        raise HTTPException(status_code=500, detail=f"Database query error: {str(e)}")
+
+    if not file_rows:
+        raise HTTPException(status_code=404, detail="No scan files found for this submission")
+
+    # Extract session prefix
+    sample_key = file_rows[0]["annotation_gcs_key"] or file_rows[0]["gcs_key"]
+    parts = sample_key.split("/")
+    session_id = "/".join(parts[:-1]) if len(parts) > 1 else ""
+
+    import tempfile
+    from pathlib import Path
+    
+    uploads_dir = Path(__file__).parent / "uploads"
+    storage_service = get_storage_service(uploads_dir)
+    
+    temp_fd, temp_pdf_path_str = tempfile.mkstemp(suffix=".pdf")
+    os.close(temp_fd)
+    temp_pdf_path = Path(temp_pdf_path_str)
+
+    try:
+        success = await compile_student_report_pdf(
+            storage_service=storage_service,
+            session_id=session_id,
+            files_metadata=[dict(f) for f in file_rows],
+            student_name=sub_row["student_name"] or "Student",
+            roll_number=sub_row["student_roll_number"] or "",
+            exam_name=sub_row["exam_name"] or "Exam",
+            total_score=sub_row["total_score"] or 0.0,
+            total_marks=sub_row["total_marks"] or 100.0,
+            teacher_feedback=sub_row["teacher_feedback"] or "",
+            questions=[dict(q) for q in score_rows],
+            output_path=temp_pdf_path
+        )
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to compile PDF report")
+            
+        def iterfile():
+            try:
+                with open(temp_pdf_path, mode="rb") as fh:
+                    yield from fh
+            finally:
+                if temp_pdf_path.exists():
+                    os.remove(temp_pdf_path)
+
+        filename = f"{sub_row['student_name'] or 'Student'}_Report.pdf".replace(" ", "_")
+        return StreamingResponse(
+            iterfile(), 
+            media_type="application/pdf", 
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except Exception as exc:
+        if temp_pdf_path.exists():
+            os.remove(temp_pdf_path)
+        logger.error(f"Error compiling public PDF report: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@api_router.get("/v1/exams/{exam_id}/export/zip")
+async def get_exam_export_zip(exam_id: str, authorization: Optional[str] = Header(None)):
+    """Downloads all student papers compiled with feedback in a single ZIP file"""
+    user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if not webapp_db_url:
+        raise HTTPException(status_code=500, detail="Database connection not configured")
+        
+    conn = None
+    try:
+        conn = await asyncpg.connect(webapp_db_url)
+        exam_row = await conn.fetchrow("SELECT name, total_marks FROM exams WHERE id = $1", exam_id)
+        if not exam_row:
+            raise HTTPException(status_code=404, detail="Exam not found")
+            
+        sub_rows = await conn.fetch(
+            '''
+            SELECT s.id, s.student_name, s.student_roll_number, s.total_score, s.teacher_feedback
+            FROM submissions s
+            WHERE s.exam_id = $1 AND COALESCE(s.status, '') <> 'deleted'
+            ''',
+            exam_id
+        )
+        await conn.close()
+    except Exception as e:
+        if conn:
+            await conn.close()
+        logger.error(f"Error querying database for ZIP export: {e}")
+        raise HTTPException(status_code=500, detail=f"Database query error: {str(e)}")
+
+    if not sub_rows:
+        raise HTTPException(status_code=404, detail="No submissions found for this exam")
+
+    import tempfile
+    import zipfile
+    from pathlib import Path
+    
+    uploads_dir = Path(__file__).parent / "uploads"
+    storage_service = get_storage_service(uploads_dir)
+    
+    temp_zip_fd, temp_zip_path_str = tempfile.mkstemp(suffix=".zip")
+    os.close(temp_zip_fd)
+    temp_zip_path = Path(temp_zip_path_str)
+
+    try:
+        with zipfile.ZipFile(temp_zip_path, 'w') as zip_file:
+            conn = await asyncpg.connect(webapp_db_url)
+            for sub in sub_rows:
+                sub_id = sub["id"]
+                file_rows = await conn.fetch(
+                    '''
+                    SELECT id, kind, original_name, content_type, gcs_key, annotation_gcs_key
+                    FROM submission_files
+                    WHERE submission_id = $1
+                    ''',
+                    sub_id
+                )
+                if not file_rows:
+                    continue
+                score_rows = await conn.fetch(
+                    '''
+                    SELECT question_number, obtained_marks, max_marks, ai_feedback, teacher_correction
+                    FROM question_scores
+                    WHERE submission_id = $1
+                    ORDER BY sort_order ASC, question_number ASC
+                    ''',
+                    sub_id
+                )
+                
+                # Extract session prefix
+                sample_key = file_rows[0]["annotation_gcs_key"] or file_rows[0]["gcs_key"]
+                parts = sample_key.split("/")
+                session_id = "/".join(parts[:-1]) if len(parts) > 1 else ""
+
+                with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as single_temp:
+                    single_temp_path = Path(single_temp.name)
+                try:
+                    success = await compile_student_report_pdf(
+                        storage_service=storage_service,
+                        session_id=session_id,
+                        files_metadata=[dict(f) for f in file_rows],
+                        student_name=sub["student_name"] or "Student",
+                        roll_number=sub["student_roll_number"] or "",
+                        exam_name=exam_row["name"] or "Exam",
+                        total_score=sub["total_score"] or 0.0,
+                        total_marks=exam_row["total_marks"] or 100.0,
+                        teacher_feedback=sub["teacher_feedback"] or "",
+                        questions=[dict(q) for q in score_rows],
+                        output_path=single_temp_path
+                    )
+                    if success:
+                        pdf_name = f"{sub['student_name'] or 'Student'}_{sub['student_roll_number'] or ''}_Report.pdf".replace(" ", "_")
+                        zip_file.write(single_temp_path, pdf_name)
+                finally:
+                    if single_temp_path.exists():
+                        os.remove(single_temp_path)
+            await conn.close()
+            
+        def iterfile():
+            try:
+                with open(temp_zip_path, mode="rb") as fh:
+                    yield from fh
+            finally:
+                if temp_zip_path.exists():
+                    os.remove(temp_zip_path)
+
+        zip_filename = f"{exam_row['name'] or 'Exam'}_Reports.zip".replace(" ", "_")
+        return StreamingResponse(
+            iterfile(), 
+            media_type="application/zip", 
+            headers={"Content-Disposition": f"attachment; filename={zip_filename}"}
+        )
+    except Exception as exc:
+        if temp_zip_path.exists():
+            os.remove(temp_zip_path)
+        logger.error(f"Error generating ZIP export: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+class EmailExportRequest(BaseModel):
+    smtp_host: str
+    smtp_port: int
+    smtp_username: str
+    smtp_password: str
+    subject: str
+    body: str
+
+@api_router.post("/v1/exams/{exam_id}/export/email")
+async def export_exam_emails(
+    exam_id: str,
+    data: EmailExportRequest,
+    background_tasks: BackgroundTasks,
+    authorization: Optional[str] = Header(None)
+):
+    """Enqueues SMTP email dispatches for all exam submissions with compiled PDFs in the background"""
+    user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if not webapp_db_url:
+        raise HTTPException(status_code=500, detail="Database connection not configured")
+        
+    conn = None
+    try:
+        conn = await asyncpg.connect(webapp_db_url)
+        exam_row = await conn.fetchrow("SELECT name, total_marks FROM exams WHERE id = $1", exam_id)
+        if not exam_row:
+            raise HTTPException(status_code=404, detail="Exam not found")
+            
+        sub_rows = await conn.fetch(
+            '''
+            SELECT s.id, s.student_name, s.student_roll_number, s.total_score, s.teacher_feedback,
+                   COALESCE(u.email, s.student_email, si.email) AS email
+            FROM submissions s
+            LEFT JOIN users u ON u.id = s.student_id
+            LEFT JOIN student_invitations si ON si.accepted_by_user_id = s.student_id OR (s.student_id IS NULL AND si.roll_number = s.student_roll_number AND si.batch_id = e.batch_id)
+            FROM submissions s_dummy
+            JOIN exams e ON e.id = s.exam_id
+            WHERE s.exam_id = $1 AND COALESCE(s.status, '') <> 'deleted'
+            ''',
+            exam_id
+        )
+        # Note: The query above joined submissions s with exams e. Let's fix the FROM clause to be clean:
+        # SELECT s.id, s.student_name, s.student_roll_number, s.total_score, s.teacher_feedback,
+        #        COALESCE(u.email, s.student_email, si.email) AS email
+        # FROM submissions s
+        # JOIN exams e ON e.id = s.exam_id
+        # LEFT JOIN users u ON u.id = s.student_id
+        # LEFT JOIN student_invitations si ON si.accepted_by_user_id = s.student_id
+        # WHERE s.exam_id = $1 AND COALESCE(s.status, '') <> 'deleted'
+        # Let's write the clean version:
+        sub_rows = await conn.fetch(
+            '''
+            SELECT s.id, s.student_name, s.student_roll_number, s.total_score, s.teacher_feedback,
+                   COALESCE(u.email, s.student_email, si.email) AS email
+            FROM submissions s
+            JOIN exams e ON e.id = s.exam_id
+            LEFT JOIN users u ON u.id = s.student_id
+            LEFT JOIN student_invitations si ON si.accepted_by_user_id = s.student_id
+            WHERE s.exam_id = $1 AND COALESCE(s.status, '') <> 'deleted'
+            ''',
+            exam_id
+        )
+        await conn.close()
+    except Exception as e:
+        if conn:
+            await conn.close()
+        logger.error(f"Error querying database for Email export: {e}")
+        raise HTTPException(status_code=500, detail=f"Database query error: {str(e)}")
+
+    if not sub_rows:
+        raise HTTPException(status_code=404, detail="No submissions found for this exam")
+
+    valid_subs = [dict(s) for s in sub_rows if s["email"]]
+    
+    if not valid_subs:
+        return {"success": False, "sent_count": 0, "message": "No students have email addresses configured."}
+
+    background_tasks.add_task(
+        background_send_reports_email,
+        webapp_db_url=webapp_db_url,
+        exam_name=exam_row["name"],
+        total_marks=exam_row["total_marks"] or 100.0,
+        submissions=valid_subs,
+        email_data=data.dict()
+    )
+    
+    return {
+        "success": True, 
+        "queued_count": len(valid_subs), 
+        "message": f"Successfully queued {len(valid_subs)} reports for email dispatch."
+    }
+
+async def background_send_reports_email(
+    webapp_db_url: str,
+    exam_name: str,
+    total_marks: float,
+    submissions: list,
+    email_data: dict
+):
+    import tempfile
+    from pathlib import Path
+    
+    uploads_dir = Path(__file__).parent / "uploads"
+    storage_service = get_storage_service(uploads_dir)
+    
+    for sub in submissions:
+        sub_id = sub["id"]
+        to_email = sub["email"]
+        
+        conn = None
+        try:
+            conn = await asyncpg.connect(webapp_db_url)
+            file_rows = await conn.fetch(
+                '''
+                SELECT id, kind, original_name, content_type, gcs_key, annotation_gcs_key
+                FROM submission_files
+                WHERE submission_id = $1
+                ''',
+                sub_id
+            )
+            score_rows = await conn.fetch(
+                '''
+                SELECT question_number, obtained_marks, max_marks, ai_feedback, teacher_correction
+                FROM question_scores
+                WHERE submission_id = $1
+                ORDER BY sort_order ASC, question_number ASC
+                ''',
+                sub_id
+            )
+            await conn.close()
+        except Exception as e:
+            if conn:
+                await conn.close()
+            logger.error(f"Error querying details for background email sub {sub_id}: {e}")
+            continue
+
+        if not file_rows:
+            continue
+            
+        sample_key = file_rows[0]["annotation_gcs_key"] or file_rows[0]["gcs_key"]
+        parts = sample_key.split("/")
+        session_id = "/".join(parts[:-1]) if len(parts) > 1 else ""
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as single_temp:
+            single_temp_path = Path(single_temp.name)
+            
+        try:
+            success = await compile_student_report_pdf(
+                storage_service=storage_service,
+                session_id=session_id,
+                files_metadata=[dict(f) for f in file_rows],
+                student_name=sub["student_name"] or "Student",
+                roll_number=sub["student_roll_number"] or "",
+                exam_name=exam_name,
+                total_score=sub["total_score"] or 0.0,
+                total_marks=total_marks,
+                teacher_feedback=sub["teacher_feedback"] or "",
+                questions=[dict(q) for q in score_rows],
+                output_path=single_temp_path
+            )
+            if success:
+                pdf_filename = f"{sub['student_name'] or 'Student'}_{sub['student_roll_number'] or ''}_Report.pdf".replace(" ", "_")
+                body_content = email_data["body"]
+                body_content = body_content.replace("{student_name}", sub["student_name"] or "Student")
+                body_content = body_content.replace("{exam_name}", exam_name)
+                body_content = body_content.replace("{score}", f"{sub['total_score']} / {total_marks}")
+                
+                await send_smtp_email_async(
+                    smtp_host=email_data["smtp_host"],
+                    smtp_port=email_data["smtp_port"],
+                    username=email_data["smtp_username"],
+                    password=email_data["smtp_password"],
+                    to_email=to_email,
+                    subject=email_data["subject"],
+                    body=body_content,
+                    pdf_path=single_temp_path,
+                    pdf_filename=pdf_filename
+                )
+        except Exception as e:
+            logger.error(f"Error in background email task for sub {sub_id} to {to_email}: {e}")
+        finally:
+            if single_temp_path.exists():
+                os.remove(single_temp_path)
+
+
+@api_router.get("/v1/whatsapp/status")
+async def get_wa_status(authorization: Optional[str] = Header(None)):
+    """Gets the connection status of the WhatsApp service"""
+    await get_current_user(authorization)
+    status = await query_whatsapp_status()
+    return {"status": status}
+
+
+@api_router.get("/v1/whatsapp/qr")
+async def get_wa_qr(authorization: Optional[str] = Header(None)):
+    """Gets the WhatsApp pairing QR code"""
+    await get_current_user(authorization)
+    qr_data = await get_whatsapp_qr()
+    return qr_data
+
+
+@api_router.get("/v1/whatsapp/pair-code")
+async def get_wa_pair_code(phone: str, authorization: Optional[str] = Header(None)):
+    """Gets an 8-character pairing code for direct phone linking"""
+    await get_current_user(authorization)
+    code_data = await get_whatsapp_pair_code(phone)
+    return code_data
+
+
+@api_router.post("/v1/whatsapp/logout")
+async def post_wa_logout(authorization: Optional[str] = Header(None)):
+    """Logs out and clears the WhatsApp session"""
+    await get_current_user(authorization)
+    success = await logout_whatsapp()
+    return {"success": success}
+
+
+class WhatsAppExportRequest(BaseModel):
+    message_template: str
+
+
+@api_router.post("/v1/exams/{exam_id}/export/whatsapp")
+async def export_exam_whatsapp(
+    exam_id: str,
+    data: WhatsAppExportRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    authorization: Optional[str] = Header(None)
+):
+    """Enqueues bulk WhatsApp report links to students in the background"""
+    user = await get_current_user(authorization)
+    
+    wa_status = await query_whatsapp_status()
+    if wa_status != "connected":
+        raise HTTPException(status_code=400, detail="WhatsApp is not linked. Please pair your account first.")
+        
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if not webapp_db_url:
+        raise HTTPException(status_code=500, detail="Database connection not configured")
+        
+    conn = None
+    try:
+        conn = await asyncpg.connect(webapp_db_url)
+        exam_row = await conn.fetchrow("SELECT name, total_marks FROM exams WHERE id = $1", exam_id)
+        if not exam_row:
+            raise HTTPException(status_code=404, detail="Exam not found")
+            
+        sub_rows = await conn.fetch(
+            '''
+            SELECT s.id, s.student_name, s.student_roll_number, s.total_score,
+                   u.phone AS mobile_number
+            FROM submissions s
+            LEFT JOIN users u ON u.id = s.student_id
+            WHERE s.exam_id = $1 AND COALESCE(s.status, '') <> 'deleted'
+            ''',
+            exam_id
+        )
+        await conn.close()
+    except Exception as e:
+        if conn:
+            await conn.close()
+        logger.error(f"Error querying database for WhatsApp export: {e}")
+        raise HTTPException(status_code=500, detail=f"Database query error: {str(e)}")
+
+    if not sub_rows:
+        raise HTTPException(status_code=404, detail="No submissions found for this exam")
+
+    valid_subs = []
+    for s in sub_rows:
+        phone = s["mobile_number"]
+        if phone:
+            clean_phone = "".join(c for c in str(phone) if c.isdigit())
+            if clean_phone:
+                valid_subs.append({
+                    "id": s["id"],
+                    "student_name": s["student_name"] or "Student",
+                    "student_roll_number": s["student_roll_number"] or "",
+                    "total_score": s["total_score"] or 0.0,
+                    "phone": clean_phone
+                })
+
+    if not valid_subs:
+        return {"success": False, "sent_count": 0, "message": "No students have valid phone numbers configured."}
+
+    base_url = public_request_base_url(request)
+    
+    background_tasks.add_task(
+        background_send_whatsapp_reports,
+        exam_name=exam_row["name"],
+        total_marks=exam_row["total_marks"] or 100.0,
+        submissions=valid_subs,
+        message_template=data.message_template,
+        base_url=base_url
+    )
+
+    return {
+        "success": True,
+        "queued_count": len(valid_subs),
+        "message": f"Successfully queued {len(valid_subs)} WhatsApp messages in the background."
+    }
+
+async def background_send_whatsapp_reports(
+    exam_name: str,
+    total_marks: float,
+    submissions: list,
+    message_template: str,
+    base_url: str
+):
+    for sub in submissions:
+        sub_id = sub["id"]
+        phone = sub["phone"]
+        
+        report_url = f"{base_url.rstrip('/')}/api/v1/public/submissions/{sub_id}/report.pdf"
+        
+        msg = message_template
+        msg = msg.replace("{student_name}", sub["student_name"])
+        msg = msg.replace("{exam_name}", exam_name)
+        msg = msg.replace("{score}", f"{sub['total_score']} / {total_marks}")
+        msg = msg.replace("{report_link}", report_url)
+        
+        try:
+            success = await send_whatsapp_message(phone, msg)
+            if not success:
+                logger.error(f"Failed to send WhatsApp message to {phone}")
+            await asyncio.sleep(1.5)
+        except Exception as e:
+            logger.error(f"Failed in WhatsApp background dispatch to {phone}: {e}")
+
+
 # Include the router
 app.include_router(api_router)
 
@@ -5813,6 +6387,7 @@ async def startup_db_client():
     try:
         await client.admin.command("ping")
         logger.info("Connected to MongoDB successfully")
+        start_whatsapp_node_service()
     except PyMongoError as exc:
         logger.exception("MongoDB ping failed during startup")
         raise RuntimeError("Failed to connect to MongoDB during startup") from exc
@@ -5825,3 +6400,4 @@ async def startup_db_client():
 async def shutdown_db_client():
     client.close()
     logger.info("MongoDB client closed")
+    stop_whatsapp_node_service()
