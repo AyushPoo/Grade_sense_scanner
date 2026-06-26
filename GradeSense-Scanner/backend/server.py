@@ -2866,6 +2866,10 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                                 matched_roll = student.get("roll_number")
                                 matched_email = new_email
 
+                            # Constraint fix: submissions.student_id references users.id. 
+                            # If it is an invitation (inv_...), we insert NULL (None) instead.
+                            db_student_id = matched_student_id if matched_student_id and not matched_student_id.startswith("inv_") else None
+
                             await conn.execute(
                                 '''
                                 INSERT INTO submissions (
@@ -2876,7 +2880,7 @@ async def async_sync_session_data(session_id: str, user_id: str, token: str, exa
                                 ''',
                                 sub_id,
                                 exam_id,
-                                matched_student_id,
+                                db_student_id,
                                 matched_name,
                                 matched_email,
                                 "teacher_bulk",
@@ -3695,6 +3699,7 @@ async def get_exam_submissions_proxy(exam_id: str, authorization: Optional[str] 
                        COALESCE(roster.email, s.student_email, si.email) AS email,
                        roster.phone AS mobile_number,
                        e.batch_id,
+                       si.id AS invitation_id,
                        ROW_NUMBER() OVER (
                          ORDER BY s.student_roll_number ASC NULLS LAST,
                                   s.created_at ASC NULLS LAST,
@@ -3735,7 +3740,7 @@ async def get_exam_submissions_proxy(exam_id: str, authorization: Optional[str] 
                     "id": str(row["id"]),
                     "studentName": identity.student_name,
                     "studentRollNumber": identity.student_roll_number,
-                    "matchedStudentId": identity.matched_student_id,
+                    "matchedStudentId": row["student_id"] or row["invitation_id"],
                     "totalScore": row["total_score"] or 0,
                     "totalMarks": row["total_marks"] or 100,
                     "status": row["status"] or "graded",
@@ -3814,7 +3819,8 @@ async def get_submission_detail_proxy(submission_id: str, request: Request, auth
                        rs.total_marks,
                        rs.display_ordinal,
                        roster.name AS roster_student_name,
-                       roster.roll_number AS roster_student_roll_number
+                       roster.roll_number AS roster_student_roll_number,
+                       si.id AS invitation_id
                 FROM ranked_submissions rs
                 LEFT JOIN LATERAL (
                     SELECT u.id, u.name, u.roll_number
@@ -3832,6 +3838,7 @@ async def get_submission_detail_proxy(submission_id: str, request: Request, auth
                     ORDER BY CASE WHEN u.id = rs.student_id THEN 0 ELSE 1 END
                     LIMIT 1
                 ) roster ON TRUE
+                LEFT JOIN student_invitations si ON si.accepted_by_user_id = rs.student_id OR (rs.student_id IS NULL AND si.roll_number = rs.student_roll_number AND si.batch_id = rs.batch_id)
                 WHERE rs.id = $1 AND rs.teacher_id = $2
                 ''',
                 submission_id,
@@ -3942,7 +3949,7 @@ async def get_submission_detail_proxy(submission_id: str, request: Request, auth
                             "id": str(sub_row["id"]),
                             "studentName": identity.student_name,
                             "studentRollNumber": identity.student_roll_number,
-                            "matchedStudentId": identity.matched_student_id,
+                            "matchedStudentId": identity.matched_student_id if identity.matched_student_id and not str(identity.matched_student_id).startswith("inv_") else sub_row["invitation_id"],
                             "totalScore": sub_row["total_score"] or 0,
                             "totalMarks": sub_row["total_marks"] or 100,
                             "status": sub_row["status"] or "graded",
@@ -4287,9 +4294,14 @@ async def merge_submission_student(
         # 1. Fetch submission details and ensure it exists and is owned by the current teacher
         sub_row = await conn.fetchrow(
             '''
-            SELECT s.id, s.student_id, e.batch_id
+            SELECT s.id, 
+                   COALESCE(s.student_id, si.id) AS source_student_id,
+                   e.batch_id
             FROM submissions s
             JOIN exams e ON e.id = s.exam_id
+            LEFT JOIN student_invitations si 
+              ON si.accepted_by_user_id = s.student_id 
+              OR (s.student_id IS NULL AND si.roll_number = s.student_roll_number AND si.batch_id = e.batch_id)
             WHERE s.id = $1 AND e.teacher_id = $2
             ''',
             submission_id,
@@ -4299,7 +4311,7 @@ async def merge_submission_student(
             raise HTTPException(status_code=404, detail="Submission not found or unauthorized")
 
         batch_id = sub_row["batch_id"]
-        source_student_id = sub_row["student_id"]
+        source_student_id = sub_row["source_student_id"]
 
         # 2. Fetch target student details from users or student_invitations
         target_student = await conn.fetchrow(
@@ -4335,6 +4347,8 @@ async def merge_submission_student(
         target_email = target_student["email"]
         target_roll = target_student["roll_number"]
 
+        db_student_id = target_student_id if target_student_id and not target_student_id.startswith("inv_") else None
+
         async with conn.transaction():
             # 3. Update the submission with target student's details
             await conn.execute(
@@ -4348,7 +4362,7 @@ async def merge_submission_student(
                 WHERE id = $1
                 ''',
                 submission_id,
-                target_student_id,
+                db_student_id,
                 target_name,
                 target_email,
                 target_roll,
@@ -4357,17 +4371,37 @@ async def merge_submission_student(
 
             # 4. Clean up source student if different and has no other submissions in this batch
             if source_student_id and source_student_id != target_student_id:
-                other_subs_count = await conn.fetchval(
-                    '''
-                    SELECT COUNT(s.id)
-                    FROM submissions s
-                    JOIN exams e ON e.id = s.exam_id
-                    WHERE s.student_id = $1 AND e.batch_id = $2 AND s.id <> $3 AND COALESCE(s.status, '') <> 'deleted'
-                    ''',
-                    source_student_id,
-                    batch_id,
-                    submission_id
-                )
+                if source_student_id.startswith("inv_"):
+                    # Check if there are other submissions in this batch with the same roll number as the source invitation
+                    other_subs_count = await conn.fetchval(
+                        '''
+                        SELECT COUNT(s.id)
+                        FROM submissions s
+                        JOIN exams e ON e.id = s.exam_id
+                        JOIN student_invitations si ON si.batch_id = e.batch_id AND si.id = $1
+                        WHERE s.student_id IS NULL 
+                          AND s.student_roll_number = si.roll_number 
+                          AND e.batch_id = $2 
+                          AND s.id <> $3 
+                          AND COALESCE(s.status, '') <> 'deleted'
+                        ''',
+                        source_student_id,
+                        batch_id,
+                        submission_id
+                    )
+                else:
+                    other_subs_count = await conn.fetchval(
+                        '''
+                        SELECT COUNT(s.id)
+                        FROM submissions s
+                        JOIN exams e ON e.id = s.exam_id
+                        WHERE s.student_id = $1 AND e.batch_id = $2 AND s.id <> $3 AND COALESCE(s.status, '') <> 'deleted'
+                        ''',
+                        source_student_id,
+                        batch_id,
+                        submission_id
+                    )
+                
                 if other_subs_count == 0:
                     # Check if source student is an invitation
                     if source_student_id.startswith("inv_"):
