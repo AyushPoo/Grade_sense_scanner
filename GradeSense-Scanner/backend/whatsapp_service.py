@@ -31,13 +31,13 @@ def start_whatsapp_node_service():
 
     logger.info(f"Starting WhatsApp Node service in {client_dir}...")
     try:
-        # Start node service in background
+        # Start node service in background, letting stdout/stderr go to container logs
         whatsapp_process = subprocess.Popen(
             ["node", "index.js"],
             cwd=str(client_dir),
             env={**os.environ, "WHATSAPP_PORT": str(WHATSAPP_PORT)},
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            stdout=None,
+            stderr=None
         )
         logger.info(f"WhatsApp Node service started with PID: {whatsapp_process.pid}")
     except Exception as e:

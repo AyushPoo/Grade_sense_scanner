@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Header, BackgroundTasks, Request
+from fastapi import FastAPI, APIRouter, HTTPException, Header, BackgroundTasks, Request, Query
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -367,12 +367,17 @@ async def validate_token_with_webapp(token: str) -> Optional[dict]:
         return None
 
 
-async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
+async def get_current_user(
+    authorization: Optional[str] = Header(None),
+    token_query: Optional[str] = Query(None, alias="token")
+) -> User:
     """Get current user from session token"""
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Authorization header required")
+    if not authorization and not token_query:
+        raise HTTPException(status_code=401, detail="Authorization token required")
     
-    token = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else authorization
+    token = token_query
+    if authorization:
+        token = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else authorization
     
     # 1. Check guest/mock token bypass
     if token == "sess_mock_token_12345":

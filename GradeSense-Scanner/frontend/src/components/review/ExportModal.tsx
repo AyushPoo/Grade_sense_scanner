@@ -220,50 +220,8 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
     setIsExporting(true);
     setExportProgress('Downloading ZIP...');
     try {
-      const localUri = `${FileSystem.documentDirectory}${examName.replace(/\s+/g, '_')}_Reports.zip`;
-      const downloadRes = await FileSystem.downloadAsync(
-        `${getBackendUrl()}/api/v1/exams/${examId}/export/zip`,
-        localUri,
-        {
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
-        }
-      );
-
-      if (downloadRes.status !== 200) {
-        throw new Error('Download failed. Ensure results are graded and online.');
-      }
-
-      if (Platform.OS === 'android') {
-        setExportProgress('Saving to device storage...');
-        const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
-        if (permissions.granted) {
-          const directoryUri = permissions.directoryUri;
-          const fileName = `${examName.replace(/\s+/g, '_')}_Reports.zip`;
-          const fileUri = await FileSystem.StorageAccessFramework.createFileAsync(
-            directoryUri,
-            fileName,
-            'application/zip'
-          );
-          const base64 = await FileSystem.readAsStringAsync(downloadRes.uri, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          await FileSystem.StorageAccessFramework.writeAsStringAsync(fileUri, base64, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          Alert.alert('Download Complete', 'ZIP file saved successfully to your selected folder.');
-        } else {
-          Alert.alert('Permission Denied', 'Folder permission was denied. Cannot save ZIP.');
-        }
-      } else {
-        setExportProgress('Saving to files...');
-        if (await Sharing.isAvailableAsync()) {
-          await Sharing.shareAsync(downloadRes.uri, { UTI: 'public.zip-archive' });
-        } else {
-          Alert.alert('Export Complete', `Saved to documents: ${downloadRes.uri}`);
-        }
-      }
+      const downloadUrl = `${getBackendUrl()}/api/v1/exams/${examId}/export/zip?token=${token}`;
+      await Linking.openURL(downloadUrl);
     } catch (err: any) {
       Alert.alert('ZIP Download Failed', err.message || 'Could not compile reports ZIP.');
     } finally {

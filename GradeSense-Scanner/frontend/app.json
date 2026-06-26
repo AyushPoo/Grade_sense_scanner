@@ -2,7 +2,7 @@
   "expo": {
     "name": "GradeSense",
     "slug": "gradesense-scanner",
-    "version": "1.0.101",
+    "version": "1.0.102",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": [
@@ -26,7 +26,7 @@
       }
     },
     "android": {
-      "versionCode": 101,
+      "versionCode": 102,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#FFFFFF"
@@ -116,5 +116,6 @@
     }
   }
 }
+
 
 

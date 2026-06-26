@@ -23,7 +23,8 @@ async def download_file_from_storage(
     storage_service: Any, 
     session_id: str, 
     filename: str, 
-    temp_dir: str
+    temp_dir: str,
+    gcs_key: Optional[str] = None
 ) -> Optional[Path]:
     """Downloads a file from storage (Local or GCS) to a local temp folder"""
     local_temp_path = Path(temp_dir) / filename
@@ -42,18 +43,26 @@ async def download_file_from_storage(
     provider = os.environ.get("STORAGE_PROVIDER", "local").lower()
     if provider == "gcs":
         try:
-            blob_path = f"{session_id}/{filename}"
+            blob_path = gcs_key if gcs_key else f"{session_id}/{filename}"
             # GcsStorageService bucket is accessible on storage_service.bucket
             blob = storage_service.bucket.blob(blob_path)
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, blob.download_to_filename, str(local_temp_path))
             return local_temp_path
         except Exception as e:
-            logger.error(f"Failed to download GCS file {filename}: {e}")
+            logger.error(f"Failed to download GCS file {filename} from path {blob_path}: {e}")
             return None
     else:
         # Local storage
-        local_src_path = storage_service.get_file_path(session_id, filename)
+        local_src_path = None
+        if gcs_key and hasattr(storage_service, "base_dir") and storage_service.base_dir:
+            potential_path = Path(storage_service.base_dir) / gcs_key
+            if potential_path.exists():
+                local_src_path = potential_path
+
+        if not local_src_path:
+            local_src_path = storage_service.get_file_path(session_id, filename)
+
         if local_src_path and local_src_path.exists():
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, shutil.copy, local_src_path, local_temp_path)
@@ -201,7 +210,7 @@ async def compile_student_report_pdf(
         writer = PdfWriter()
         has_pages = False
 
-        # Try to load annotated images from GridFS first
+        # Try to load annotated images from GridFS first (if any exist)
         annotated_images = []
         if submission_id:
             try:
@@ -257,18 +266,32 @@ async def compile_student_report_pdf(
                 except Exception as ex:
                     logger.error(f"Error converting annotated page {idx} to PDF: {ex}")
         else:
-            sorted_files = sorted(files_metadata, key=lambda x: x.get("id", ""))
+            # Check if there is an annotated file in files_metadata
+            has_graded_files = any(
+                "graded" in str(f.get("original_name") or "").lower() or "annotated" in str(f.get("gcs_key") or "").lower()
+                for f in files_metadata
+            )
+            
+            if has_graded_files:
+                filtered_files = [
+                    f for f in files_metadata
+                    if "graded" in str(f.get("original_name") or "").lower() or "annotated" in str(f.get("gcs_key") or "").lower()
+                ]
+                logger.info(f"Filtering files: compiling only the {len(filtered_files)} graded/annotated PDF file(s).")
+            else:
+                filtered_files = files_metadata
+
+            sorted_files = sorted(filtered_files, key=lambda x: x.get("id", ""))
             
             for f_meta in sorted_files:
-                # Prefer annotation key if available
                 gcs_key = f_meta.get("annotation_gcs_key") or f_meta.get("gcs_key")
                 if not gcs_key:
                     continue
                 
                 filename = gcs_key.split("/")[-1]
-                local_path = await download_file_from_storage(storage_service, session_id, filename, temp_dir)
+                local_path = await download_file_from_storage(storage_service, session_id, filename, temp_dir, gcs_key)
                 if not local_path or not local_path.exists():
-                    logger.warning(f"Could not load scan file for compile: {filename}")
+                    logger.warning(f"Could not load scan file for compile: {filename} from key {gcs_key}")
                     continue
                     
                 content_type = f_meta.get("content_type", "")
@@ -328,7 +351,6 @@ async def compile_student_report_pdf(
             )
         except Exception as e:
             logger.error(f"Error drawing ReportLab feedback sheet: {e}")
-            # If drawing feedback fails, write standard plain page if we have scanned pages, or return false
             if not has_pages:
                 return False
                 
