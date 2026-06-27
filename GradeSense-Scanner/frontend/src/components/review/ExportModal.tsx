@@ -79,10 +79,7 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
 
       console.log('Starting Google OAuth session:', { authUrl, returnUrl });
       
-      const result = await AuthSession.startAsync({
-        authUrl: authUrl,
-        returnUrl: returnUrl,
-      });
+      const result = await WebBrowser.openAuthSessionAsync(authUrl, returnUrl);
 
       if (result.type === 'success' && result.url) {
         const urlString = result.url;
