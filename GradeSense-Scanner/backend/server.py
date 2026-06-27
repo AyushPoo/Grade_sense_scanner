@@ -32,6 +32,7 @@ from review_settings_service import (
 from improve_ai_service import ImproveAIServiceError, save_question_improvement
 from review_save_service import ReviewSaveServiceError, save_submission_review_edits
 from student_roster_service import StudentRosterServiceError, update_batch_student_profile
+from student_import_service import generate_csv_template, import_students_csv
 from grading_lifecycle_service import (
     build_grading_jobs,
     build_grading_submission_queue,
@@ -1623,6 +1624,163 @@ async def regrade_exam(exam_id: str, authorization: Optional[str] = Header(None)
             raise HTTPException(status_code=response.status_code, detail=response.text)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/batches/{batch_id}/students/export")
+async def export_roster_csv(
+    batch_id: str,
+    authorization: Optional[str] = Header(None)
+):
+    """Generates and downloads a CSV template populated with existing students in the batch."""
+    user = await get_current_user(authorization)
+    token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
+    
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if webapp_db_url and token != "sess_mock_token_12345":
+        conn = None
+        try:
+            conn = await connect_to_neon_db(webapp_db_url)
+            from batch_sync_service import fetch_batch_roster
+            students = await fetch_batch_roster(conn, user.user_id, batch_id)
+            await conn.close()
+        except Exception as e:
+            if conn:
+                await conn.close()
+            logger.error(f"Error fetching roster for CSV export: {e}")
+            raise HTTPException(status_code=500, detail="Failed to fetch batch roster")
+    else:
+        students = await db.students.find({"batch_id": batch_id}, {"_id": 0}).to_list(1000)
+
+    csv_content = generate_csv_template(students)
+    
+    batch_name = "roster"
+    batch_doc = await db.batches.find_one({"batch_id": batch_id})
+    if batch_doc:
+        batch_name = batch_doc.get("name") or batch_doc.get("batch_name") or "roster"
+        batch_name = "".join(c for c in batch_name if c.isalnum() or c in ("-", "_")).strip()
+        
+    filename = f"{batch_name}_students.csv"
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}"
+        }
+    )
+
+
+@api_router.post("/batches/{batch_id}/students/import")
+async def import_roster_csv(
+    batch_id: str,
+    file: UploadFile = File(...),
+    authorization: Optional[str] = Header(None)
+):
+    """Uploads and imports student details from a CSV roster sheet."""
+    user = await get_current_user(authorization)
+    token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
+    
+    try:
+        content_bytes = await file.read()
+        csv_content = content_bytes.decode("utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Failed to read uploaded file. Ensure it is a valid UTF-8 text file.")
+        
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if webapp_db_url and token != "sess_mock_token_12345":
+        conn = None
+        try:
+            conn = await connect_to_neon_db(webapp_db_url)
+            result = await import_students_csv(
+                conn,
+                teacher_id=user.user_id,
+                batch_id=batch_id,
+                csv_content=csv_content
+            )
+            await conn.close()
+            
+            if not result.get("success"):
+                raise HTTPException(status_code=400, detail=result.get("error"))
+                
+            return result
+        except HTTPException:
+            raise
+        except Exception as e:
+            if conn:
+                await conn.close()
+            logger.error(f"Error importing student CSV in Neon: {e}")
+            raise HTTPException(status_code=500, detail=f"Roster import error: {str(e)}")
+    else:
+        import csv
+        import io
+        from student_import_service import REQUIRED_HEADERS
+        
+        f = io.StringIO(csv_content.strip())
+        reader = csv.reader(f)
+        try:
+            headers = [h.strip() for h in next(reader)]
+        except StopIteration:
+            raise HTTPException(status_code=400, detail="CSV file is empty.")
+            
+        expected_normalized = [h.lower().replace(" ", "").replace("_", "") for h in REQUIRED_HEADERS]
+        headers_normalized = [h.lower().replace(" ", "").replace("_", "") for h in headers]
+        
+        header_map = {}
+        for req, req_norm in zip(REQUIRED_HEADERS, expected_normalized):
+            try:
+                idx = headers_normalized.index(req_norm)
+                header_map[req] = idx
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Required column '{req}' is missing.")
+                
+        added = 0
+        updated = 0
+        errors = []
+        row_num = 1
+        for row in reader:
+            row_num += 1
+            if not row or all(not cell.strip() for cell in row):
+                continue
+            try:
+                roll = row[header_map["Roll Number"]].strip()
+                name = row[header_map["Name"]].strip()
+                email = row[header_map["Email"]].strip().lower()
+                phone = row[header_map["Mobile Number"]].strip()
+            except IndexError:
+                errors.append(f"Row {row_num}: Column count mismatch")
+                continue
+                
+            if not name or not email:
+                errors.append(f"Row {row_num}: Name and Email are required")
+                continue
+                
+            existing = await db.students.find_one({"batch_id": batch_id, "email": email})
+            doc = {
+                "student_id": existing.get("student_id") if existing else f"std_local_{generate_drizzle_id('')}",
+                "name": name,
+                "email": email,
+                "roll_number": roll,
+                "rollNumber": roll,
+                "mobile_number": phone,
+                "mobileNumber": phone,
+                "batch_id": batch_id
+            }
+            await db.students.update_one(
+                {"batch_id": batch_id, "email": email},
+                {"$set": doc},
+                upsert=True
+            )
+            if existing:
+                updated += 1
+            else:
+                added += 1
+                
+        return {
+            "success": True,
+            "added": added,
+            "updated": updated,
+            "linked": 0,
+            "errors": errors
+        }
 
 
 @api_router.get("/batches/{batch_id}/students")
