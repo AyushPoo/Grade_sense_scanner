@@ -92,6 +92,8 @@ async def update_batch_student_profile(
             name=updated.get("name"),
             roll_number=updated.get("roll_number"),
             email=updated.get("email"),
+            old_email=existing_student.get("email"),
+            is_invitation=(existing_student.get("source") == "invitation" and not existing_student.get("accepted_by_user_id")),
         )
 
     mobile_number = updated.get(phone_column) if phone_column else update.get("mobile_number")
@@ -253,27 +255,52 @@ async def _sync_submission_identity(
     name: str | None,
     roll_number: str | None,
     email: str | None,
+    old_email: str | None = None,
+    is_invitation: bool = False,
 ) -> None:
-    await conn.execute(
-        '''
-        UPDATE submissions s
-        SET student_name = $4,
-            student_roll_number = $5,
-            student_email = $6
-        FROM exams e
-        WHERE e.id = s.exam_id
-          AND e.teacher_id = $1
-          AND e.batch_id = $2
-          AND s.student_id = $3
-          AND COALESCE(e.status, '') NOT IN ('deleted', 'archived')
-        ''',
-        teacher_id,
-        batch_id,
-        student_id,
-        name,
-        roll_number,
-        email,
-    )
+    if is_invitation and old_email:
+        await conn.execute(
+            '''
+            UPDATE submissions s
+            SET student_name = $4,
+                student_roll_number = $5,
+                student_email = $6
+            FROM exams e
+            WHERE e.id = s.exam_id
+              AND e.teacher_id = $1
+              AND e.batch_id = $2
+              AND s.student_id IS NULL
+              AND LOWER(s.student_email) = LOWER($3)
+              AND COALESCE(e.status, '') NOT IN ('deleted', 'archived')
+            ''',
+            teacher_id,
+            batch_id,
+            old_email,
+            name,
+            roll_number,
+            email,
+        )
+    else:
+        await conn.execute(
+            '''
+            UPDATE submissions s
+            SET student_name = $4,
+                student_roll_number = $5,
+                student_email = $6
+            FROM exams e
+            WHERE e.id = s.exam_id
+              AND e.teacher_id = $1
+              AND e.batch_id = $2
+              AND s.student_id = $3
+              AND COALESCE(e.status, '') NOT IN ('deleted', 'archived')
+            ''',
+            teacher_id,
+            batch_id,
+            student_id,
+            name,
+            roll_number,
+            email,
+        )
 
 
 def _has_any_key(data: dict[str, Any], keys: tuple[str, ...]) -> bool:
