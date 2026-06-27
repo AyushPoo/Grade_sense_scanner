@@ -370,16 +370,19 @@ async def validate_token_with_webapp(token: str) -> Optional[dict]:
 
 
 async def get_current_user(
-    authorization: Optional[str] = Header(None),
-    token_query: Optional[str] = Query(None, alias="token")
+    authorization: Optional[str] = None,
+    token_query: Optional[str] = None
 ) -> User:
     """Get current user from session token"""
-    if not authorization and not token_query:
-        raise HTTPException(status_code=401, detail="Authorization token required")
-    
     token = token_query
     if authorization:
         token = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else authorization
+        
+    if not isinstance(token, str):
+        token = None
+        
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
     
     # 1. Check guest/mock token bypass
     if token == "sess_mock_token_12345":
