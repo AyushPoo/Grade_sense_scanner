@@ -185,6 +185,10 @@ async def _update_user_profile(
 
     phone_select = f", {phone_column}" if phone_column else ""
     phone_assignment = f", {phone_column} = $5" if phone_column else ""
+    args = [user_id, name, roll_number, email]
+    if phone_column:
+        args.append(mobile_number)
+
     return await conn.fetchrow(
         f'''
         UPDATE users
@@ -199,11 +203,7 @@ async def _update_user_profile(
                   roll_number
                   {phone_select}
         ''',
-        user_id,
-        name,
-        roll_number,
-        email,
-        mobile_number,
+        *args,
     )
 
 
@@ -222,6 +222,10 @@ async def _update_invitation_profile(
 
     phone_select = f", {phone_column}" if phone_column else ""
     phone_assignment = f", {phone_column} = $5" if phone_column else ""
+    args = [invitation_id, name, roll_number, email]
+    if phone_column:
+        args.append(mobile_number)
+
     return await conn.fetchrow(
         f'''
         UPDATE student_invitations
@@ -236,11 +240,7 @@ async def _update_invitation_profile(
                   roll_number
                   {phone_select}
         ''',
-        invitation_id,
-        name,
-        roll_number,
-        email,
-        mobile_number,
+        *args,
     )
 
 
