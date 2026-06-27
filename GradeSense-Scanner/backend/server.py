@@ -6565,6 +6565,87 @@ async def export_exam_emails(
         "message": f"Successfully queued {len(valid_subs)} reports for email dispatch."
     }
 
+@api_router.get("/v1/auth/google/login")
+async def google_oauth_login(request: Request):
+    """Redirects the client to Google's OAuth2 authorization page using the Web Client ID"""
+    client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+    if not client_id:
+        raise HTTPException(status_code=500, detail="Google Client ID not configured on backend")
+        
+    public_url = public_request_base_url(request)
+    redirect_uri = f"{public_url.rstrip('/')}/api/v1/auth/google/callback"
+    
+    scopes = "https://www.googleapis.com/auth/gmail.send openid email profile"
+    
+    auth_url = (
+        "https://accounts.google.com/o/oauth2/v2/auth?"
+        f"client_id={client_id}"
+        f"&redirect_uri={redirect_uri}"
+        "&response_type=code"
+        f"&scope={scopes}"
+        "&access_type=offline"
+        "&prompt=consent"
+    )
+    return RedirectResponse(auth_url)
+
+
+@api_router.get("/v1/auth/google/callback")
+async def google_oauth_callback(code: str, request: Request):
+    """Exchanges authorization code for access and refresh tokens, then deep links back to the app"""
+    client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+    client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
+    
+    if not client_id or not client_secret:
+        return Response(
+            content="Backend error: GOOGLE_OAUTH_CLIENT_ID or GOOGLE_OAUTH_CLIENT_SECRET not configured on the backend.",
+            status_code=500
+        )
+        
+    public_url = public_request_base_url(request)
+    redirect_uri = f"{public_url.rstrip('/')}/api/v1/auth/google/callback"
+    
+    async with httpx.AsyncClient() as client:
+        token_resp = await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "code": code,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code"
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"}
+        )
+        
+        if token_resp.status_code != 200:
+            logger.error(f"Failed to exchange Google OAuth code: {token_resp.text}")
+            return Response(
+                content=f"Google OAuth token exchange failed: {token_resp.text}",
+                status_code=400
+            )
+            
+        tokens = token_resp.json()
+        access_token = tokens.get("access_token")
+        refresh_token = tokens.get("refresh_token")
+        
+        if not refresh_token:
+            return Response(
+                content="Warning: No refresh token received from Google. If you already linked your account, please go to Google Account Permissions and remove GradeSense, then try linking again.",
+                status_code=400
+            )
+            
+        userinfo_resp = await client.get(
+            "https://www.googleapis.com/oauth2/v3/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"}
+        )
+        
+        email = ""
+        if userinfo_resp.status_code == 200:
+            email = userinfo_resp.json().get("email", "")
+            
+        app_redirect_url = f"gradesense://oauth2redirect?email={email}&refresh_token={refresh_token}"
+        return RedirectResponse(app_redirect_url)
+
 async def refresh_google_token(refresh_token: str, client_id: str) -> str:
     async with httpx.AsyncClient() as client:
         resp = await client.post(

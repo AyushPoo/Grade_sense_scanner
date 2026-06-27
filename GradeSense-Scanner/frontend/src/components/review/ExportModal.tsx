@@ -67,118 +67,56 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
     'Please find attached your graded answer sheet.'
   );
 
-  // Google OAuth for Gmail Send
-  const [googleRequest, googleResponse, promptGoogleAsync] = Google.useAuthRequest({
-    clientId: GOOGLE_CLIENT_ID,
-    androidClientId: GOOGLE_ANDROID_CLIENT_ID,
-    iosClientId: GOOGLE_CLIENT_ID,
-    redirectUri: redirectUri,
-    scopes: ['https://www.googleapis.com/auth/gmail.send'],
-    responseType: 'code',
-    extraParams: {
-      access_type: 'offline',
-      prompt: 'consent',
-    }
-  });
-
   const handleGmailLogin = async () => {
-    try {
-      setIsLinkingGmail(true);
-      await promptGoogleAsync();
-    } catch (err: any) {
-      Alert.alert('Google Sign-In Error', err.message || 'Could not start sign-in.');
-      setIsLinkingGmail(false);
-    }
-  };
-
-  const handleGmailOAuthSuccess = async (code: string) => {
     setIsLinkingGmail(true);
     try {
-      let resolvedClientId = Platform.select({
-        android: GOOGLE_ANDROID_CLIENT_ID,
-        ios: GOOGLE_CLIENT_ID,
-        default: GOOGLE_CLIENT_ID
-      }) || GOOGLE_CLIENT_ID;
-      let resolvedRedirectUri = redirectUri;
-
-      if (googleRequest) {
-        try {
-          const authUrl = await googleRequest.makeUrlAsync(Google.discovery);
-          
-          const clientIdMatch = authUrl.match(/[?&]client_id=([^&]+)/);
-          if (clientIdMatch) {
-            resolvedClientId = decodeURIComponent(clientIdMatch[1]);
-          }
-          
-          const redirectUriMatch = authUrl.match(/[?&]redirect_uri=([^&]+)/);
-          if (redirectUriMatch) {
-            resolvedRedirectUri = decodeURIComponent(redirectUriMatch[1]);
-          }
-          
-          console.log('Successfully resolved actual OAuth params:', { resolvedClientId, resolvedRedirectUri });
-        } catch (urlErr) {
-          console.warn('Failed to parse actual authorize parameters from URL:', urlErr);
-        }
-      }
-
-      const tokenResponse = await AuthSession.exchangeCodeAsync(
-        {
-          clientId: resolvedClientId!,
-          code: code,
-          redirectUri: resolvedRedirectUri,
-          extraParams: {
-            code_verifier: googleRequest?.codeVerifier || '',
-          },
-        },
-        Google.discovery
-      );
-
-      const refreshToken = tokenResponse.refreshToken;
-      if (!refreshToken) {
-        throw new Error('No refresh token received. Please remove GradeSense from your Google account third-party permissions and link again.');
-      }
-
-      const userinfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-        headers: {
-          Authorization: `Bearer ${tokenResponse.accessToken}`
-        }
+      const backendUrl = getBackendUrl();
+      const authUrl = `${backendUrl.replace(/\/$/, '')}/api/v1/auth/google/login`;
+      const returnUrl = AuthSession.makeRedirectUri({
+        scheme: 'gradesense',
+        path: 'oauth2redirect'
       });
 
-      if (!userinfoRes.ok) {
-        throw new Error('Failed to fetch user email from Google.');
+      console.log('Starting Google OAuth session:', { authUrl, returnUrl });
+      
+      const result = await AuthSession.startAsync({
+        authUrl: authUrl,
+        returnUrl: returnUrl,
+      });
+
+      if (result.type === 'success' && result.url) {
+        const urlString = result.url;
+        
+        const emailMatch = urlString.match(/[?&]email=([^&]+)/);
+        const refreshTokenMatch = urlString.match(/[?&]refresh_token=([^&]+)/);
+        
+        if (emailMatch && refreshTokenMatch) {
+          const userEmail = decodeURIComponent(emailMatch[1]);
+          const refreshToken = decodeURIComponent(refreshTokenMatch[1]);
+          
+          setGmailOAuthUser(userEmail);
+          setGmailOAuthRefreshToken(refreshToken);
+          await AsyncStorage.setItem('gradesense.gmail_oauth.email', userEmail);
+          await AsyncStorage.setItem('gradesense.gmail_oauth.refresh_token', refreshToken);
+          
+          Alert.alert('Success', `Successfully linked Google account: ${userEmail}`);
+        } else {
+          const errorMatch = urlString.match(/[?&]error=([^&]+)/);
+          const errorMsg = errorMatch ? decodeURIComponent(errorMatch[1]) : 'Failed to receive linked credentials from server.';
+          throw new Error(errorMsg);
+        }
+      } else if (result.type === 'cancel' || result.type === 'dismiss') {
+        console.log('Google Sign-In was cancelled by user');
+      } else {
+        throw new Error('Google Sign-In failed or was not completed.');
       }
-
-      const userinfo = await userinfoRes.json();
-      const userEmail = userinfo.email;
-
-      if (!userEmail) {
-        throw new Error('Google account email not found.');
-      }
-
-      setGmailOAuthUser(userEmail);
-      setGmailOAuthRefreshToken(refreshToken);
-      await AsyncStorage.setItem('gradesense.gmail_oauth.email', userEmail);
-      await AsyncStorage.setItem('gradesense.gmail_oauth.refresh_token', refreshToken);
-
-      Alert.alert('Success', `Successfully linked Google account: ${userEmail}`);
     } catch (err: any) {
-      console.error('Gmail OAuth exchange error:', err);
-      Alert.alert('Link Failed', err.message || 'Could not exchange code for tokens.');
+      console.error('Google Sign-In error:', err);
+      Alert.alert('Google Sign-In Error', err.message || 'Could not start sign-in.');
     } finally {
       setIsLinkingGmail(false);
     }
   };
-
-  useEffect(() => {
-    if (googleResponse?.type === 'success' && googleResponse.params?.code) {
-      handleGmailOAuthSuccess(googleResponse.params.code);
-    } else if (googleResponse?.type === 'error') {
-      Alert.alert('Google Link Failed', googleResponse.error?.message || 'Authentication failed.');
-      setIsLinkingGmail(false);
-    } else if (googleResponse?.type === 'dismiss' || googleResponse?.type === 'cancel') {
-      setIsLinkingGmail(false);
-    }
-  }, [googleResponse]);
 
   // WhatsApp Connection & Sending States
   const [waStatus, setWaStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
@@ -597,7 +535,7 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
                       <TouchableOpacity 
                         style={[styles.oauthBtn, isLinkingGmail && { opacity: 0.65 }]}
                         onPress={handleGmailLogin}
-                        disabled={isLinkingGmail || !googleRequest}
+                        disabled={isLinkingGmail}
                         activeOpacity={0.8}
                       >
                         <Ionicons name="logo-google" size={16} color="#FFF" style={{ marginRight: 8 }} />
