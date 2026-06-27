@@ -19,6 +19,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
 import { COLORS, getBackendUrl } from '../../src/config';
 import { useAuthStore } from '../../src/store/authStore';
 import { useScanStore } from '../../src/store/scanStore';
@@ -759,6 +761,106 @@ export default function ManageScreen() {
     );
   };
 
+  const handleExportRoster = async (batchId: string) => {
+    if (!token) {
+      Alert.alert('Authentication required', 'Please log in again.');
+      return;
+    }
+    
+    try {
+      const batchObj = batches.find(b => b.batch_id === batchId);
+      const batchName = batchObj ? (batchObj.name || batchObj.batch_name || 'class') : 'class';
+      const cleanBatchName = batchName.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
+      const localUri = `${FileSystem.documentDirectory}${cleanBatchName}_roster.csv`;
+      
+      const downloadRes = await FileSystem.downloadAsync(
+        `${getBackendUrl()}/api/batches/${batchId}/students/export`,
+        localUri,
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        }
+      );
+
+      if (downloadRes.status !== 200) {
+        throw new Error('Failed to download roster CSV template.');
+      }
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(downloadRes.uri);
+      } else {
+        Alert.alert('Roster Exported', `CSV template saved to: ${downloadRes.uri}`);
+      }
+    } catch (err: any) {
+      Alert.alert('Export Failed', err.message || 'Could not export class roster.');
+    }
+  };
+
+  const handleImportRoster = async (batchId: string) => {
+    if (!token) {
+      Alert.alert('Authentication required', 'Please log in again.');
+      return;
+    }
+
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: '*/*',
+        copyToCacheDirectory: true,
+      });
+
+      if (result.canceled || !result.assets?.length) {
+        return;
+      }
+
+      const asset = result.assets[0];
+      
+      if (asset.name && !asset.name.toLowerCase().endsWith('.csv')) {
+        Alert.alert('Invalid file format', 'Please select a valid CSV (.csv) file.');
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('file', {
+        uri: asset.uri,
+        name: asset.name || 'roster.csv',
+        type: 'text/csv',
+      } as any);
+
+      const response = await fetch(`${getBackendUrl()}/api/batches/${batchId}/students/import`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(errText || 'Import request failed.');
+      }
+
+      const data = await response.json();
+      if (data.success) {
+        let msg = `Roster synced successfully!\n\nAdded: ${data.added}\nUpdated: ${data.updated}\nLinked: ${data.linked}`;
+        if (data.errors && data.errors.length > 0) {
+          msg += `\n\nWarnings/Errors:\n${data.errors.slice(0, 3).join('\n')}`;
+          if (data.errors.length > 3) {
+            msg += `\n...and ${data.errors.length - 3} more errors.`;
+          }
+        }
+        Alert.alert('Import Success', msg);
+        
+        fetchStudents(batchId);
+        fetchBatches();
+      } else {
+        throw new Error(data.error || 'Failed to sync CSV data.');
+      }
+    } catch (err: any) {
+      Alert.alert('Import Failed', err.message || 'Could not parse or sync uploaded CSV file.');
+    }
+  };
+
   const handleUpdateStudent = async (studentId: string, input: StudentProfileUpdateInput) => {
     if (!token) return;
     const batchId = selectedBatchId
@@ -1140,16 +1242,34 @@ export default function ManageScreen() {
                         <View style={styles.studentsList}>
                           <View style={styles.studentListHeader}>
                             <Text style={styles.studentListTitle}>Student Roster</Text>
-                            <TouchableOpacity
-                              style={styles.addStudentBtn}
-                              onPress={() => {
-                                setSelectedBatchId(batch.batch_id);
-                                setShowAddStudentModal(true);
-                              }}
-                            >
-                              <Ionicons name="person-add" size={14} color={COLORS.primary} />
-                              <Text style={styles.addStudentBtnText}>Add Student</Text>
-                            </TouchableOpacity>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+                              <TouchableOpacity
+                                style={styles.addStudentBtn}
+                                onPress={() => handleExportRoster(batch.batch_id)}
+                              >
+                                <Ionicons name="download-outline" size={14} color={COLORS.primary} />
+                                <Text style={styles.addStudentBtnText}>Export</Text>
+                              </TouchableOpacity>
+                              
+                              <TouchableOpacity
+                                style={styles.addStudentBtn}
+                                onPress={() => handleImportRoster(batch.batch_id)}
+                              >
+                                <Ionicons name="upload-outline" size={14} color={COLORS.primary} />
+                                <Text style={styles.addStudentBtnText}>Import</Text>
+                              </TouchableOpacity>
+
+                              <TouchableOpacity
+                                style={styles.addStudentBtn}
+                                onPress={() => {
+                                  setSelectedBatchId(batch.batch_id);
+                                  setShowAddStudentModal(true);
+                                }}
+                              >
+                                <Ionicons name="person-add" size={14} color={COLORS.primary} />
+                                <Text style={styles.addStudentBtnText}>Add Student</Text>
+                              </TouchableOpacity>
+                            </View>
                           </View>
 
                           {loadingStudents === batch.batch_id && (
