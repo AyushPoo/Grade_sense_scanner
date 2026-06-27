@@ -25,7 +25,13 @@ import * as AuthSession from 'expo-auth-session';
 
 WebBrowser.maybeCompleteAuthSession();
 
-const GOOGLE_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_ID = "952978433882-f15al0p4202d9m5lj7n7c1n1j25o7pcg.apps.googleusercontent.com";
+const GOOGLE_ANDROID_CLIENT_ID = "952978433882-paueq6l9gqjgioc5f22nlrggt9dp29o0.apps.googleusercontent.com";
+
+const redirectUri = AuthSession.makeRedirectUri({
+  scheme: 'gradesense',
+  path: 'oauth2redirect'
+});
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -64,8 +70,9 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
   // Google OAuth for Gmail Send
   const [googleRequest, googleResponse, promptGoogleAsync] = Google.useAuthRequest({
     clientId: GOOGLE_CLIENT_ID,
-    androidClientId: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID || GOOGLE_CLIENT_ID,
-    iosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID || GOOGLE_CLIENT_ID,
+    androidClientId: GOOGLE_ANDROID_CLIENT_ID,
+    iosClientId: GOOGLE_CLIENT_ID,
+    redirectUri: redirectUri,
     scopes: ['https://www.googleapis.com/auth/gmail.send'],
     responseType: 'code',
     extraParams: {
@@ -87,8 +94,12 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
   const handleGmailOAuthSuccess = async (code: string) => {
     setIsLinkingGmail(true);
     try {
-      let resolvedClientId = googleRequest?.clientId || GOOGLE_CLIENT_ID;
-      let resolvedRedirectUri = googleRequest?.redirectUri || '';
+      let resolvedClientId = Platform.select({
+        android: GOOGLE_ANDROID_CLIENT_ID,
+        ios: GOOGLE_CLIENT_ID,
+        default: GOOGLE_CLIENT_ID
+      }) || GOOGLE_CLIENT_ID;
+      let resolvedRedirectUri = redirectUri;
 
       if (googleRequest) {
         try {
