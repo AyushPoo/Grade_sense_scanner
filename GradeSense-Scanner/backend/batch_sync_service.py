@@ -117,6 +117,34 @@ def _subject_performance(attempts: list[dict[str, Any]]) -> list[dict[str, Any]]
     return sorted(subjects, key=lambda item: item["subjectName"])
 
 
+def _is_better_name(new_name: str, old_name: str) -> bool:
+    new_clean = new_name.strip()
+    old_clean = old_name.strip()
+    if not new_clean:
+        return False
+    if not old_clean or old_clean == "Unnamed Student":
+        return True
+    new_lower = new_clean.lower()
+    old_lower = old_clean.lower()
+    old_generic = (
+        old_lower.startswith("adobe scan") or 
+        old_lower.startswith("student #") or 
+        old_lower.startswith("student_") or 
+        old_lower.startswith("scanned-")
+    )
+    new_generic = (
+        new_lower.startswith("adobe scan") or 
+        new_lower.startswith("student #") or 
+        new_lower.startswith("student_") or 
+        new_lower.startswith("scanned-")
+    )
+    if old_generic and not new_generic:
+        return True
+    if not old_generic and new_generic:
+        return False
+    return len(new_clean) > len(old_clean)
+
+
 def build_student_roster_response(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[str, dict[str, Any]] = {}
 
@@ -137,6 +165,9 @@ def build_student_roster_response(rows: Iterable[dict[str, Any]]) -> list[dict[s
             "batch_id": row.get("batch_id"),
             "examHistory": [],
         })
+
+        if _is_better_name(row.get("student_name") or "", student["name"]):
+            student["name"] = row.get("student_name")
 
         if not student["email"] and row.get("student_email"):
             student["email"] = row.get("student_email")
@@ -308,7 +339,7 @@ async def fetch_batch_roster(conn: Any, teacher_id: str, batch_id: str) -> list[
             UNION ALL
 
             SELECT e.batch_id,
-                   s.student_id,
+                   COALESCE(s.student_id, si.id) AS student_id,
                    s.student_name,
                    s.student_email,
                    s.student_roll_number,
@@ -329,6 +360,10 @@ async def fetch_batch_roster(conn: Any, teacher_id: str, batch_id: str) -> list[
              AND b.teacher_id = e.teacher_id
              AND COALESCE(b.status, 'active') NOT IN ('archived', 'deleted')
             LEFT JOIN subjects subj ON subj.id = e.subject_id
+            LEFT JOIN student_invitations si
+              ON si.batch_id = e.batch_id
+             AND LOWER(si.email) = LOWER(s.student_email)
+             AND COALESCE(si.status, '') NOT IN ('cancelled', 'deleted')
             WHERE e.teacher_id = $1
               AND e.batch_id = $2
               AND COALESCE(e.status, '') NOT IN ('deleted', 'archived')

@@ -160,7 +160,7 @@ async def _fetch_owned_student(conn: Any, teacher_id: str, batch_id: str, studen
          AND b.teacher_id = $3
          AND COALESCE(b.status, 'active') NOT IN ('archived', 'deleted')
         WHERE si.batch_id = $1
-          AND (si.id = $2 OR si.accepted_by_user_id = $2)
+          AND (si.id = $2 OR si.accepted_by_user_id = $2 OR LOWER(si.email) = LOWER($2))
           AND COALESCE(si.status, '') NOT IN ('cancelled', 'deleted')
         LIMIT 1
         ''',
