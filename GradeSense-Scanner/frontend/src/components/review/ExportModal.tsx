@@ -87,14 +87,34 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
   const handleGmailOAuthSuccess = async (code: string) => {
     setIsLinkingGmail(true);
     try {
-      const clientId = googleRequest?.clientId || GOOGLE_CLIENT_ID;
-      const redirectUri = googleRequest?.redirectUri || '';
+      let resolvedClientId = googleRequest?.clientId || GOOGLE_CLIENT_ID;
+      let resolvedRedirectUri = googleRequest?.redirectUri || '';
+
+      if (googleRequest) {
+        try {
+          const authUrl = await googleRequest.makeUrlAsync(Google.discovery);
+          
+          const clientIdMatch = authUrl.match(/[?&]client_id=([^&]+)/);
+          if (clientIdMatch) {
+            resolvedClientId = decodeURIComponent(clientIdMatch[1]);
+          }
+          
+          const redirectUriMatch = authUrl.match(/[?&]redirect_uri=([^&]+)/);
+          if (redirectUriMatch) {
+            resolvedRedirectUri = decodeURIComponent(redirectUriMatch[1]);
+          }
+          
+          console.log('Successfully resolved actual OAuth params:', { resolvedClientId, resolvedRedirectUri });
+        } catch (urlErr) {
+          console.warn('Failed to parse actual authorize parameters from URL:', urlErr);
+        }
+      }
 
       const tokenResponse = await AuthSession.exchangeCodeAsync(
         {
-          clientId: clientId!,
+          clientId: resolvedClientId!,
           code: code,
-          redirectUri: redirectUri,
+          redirectUri: resolvedRedirectUri,
           extraParams: {
             code_verifier: googleRequest?.codeVerifier || '',
           },
@@ -180,17 +200,12 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
 
         if (savedProvider) {
           setProvider(savedProvider as any);
-          if (savedProvider !== 'gmail_oauth') {
-            setShowAdvancedSmtp(true);
-          }
-        } else if (savedHost) {
-          setShowAdvancedSmtp(true);
-          if (savedHost === 'smtp.gmail.com') setProvider('gmail');
-          else if (savedHost === 'smtp.office365.com') setProvider('outlook');
-          else setProvider('custom');
         } else if (savedOAuthToken) {
           setProvider('gmail_oauth');
+        } else {
+          setProvider('gmail_oauth');
         }
+        setShowAdvancedSmtp(false);
 
         if (savedHost) setSmtpHost(savedHost);
         if (savedPort) setSmtpPort(savedPort);
@@ -511,7 +526,7 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
               onPress={() => setActiveTab('email')}
             >
               <Ionicons name="mail-outline" size={16} color={activeTab === 'email' ? COLORS.primary : COLORS.textLight} />
-              <Text style={[styles.tabText, activeTab === 'email' && styles.activeTabText]}>Email (BCC)</Text>
+              <Text style={[styles.tabText, activeTab === 'email' && styles.activeTabText]}>Email</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -728,7 +743,7 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
 
                 <TouchableOpacity style={styles.submitButton} onPress={handleSendEmails}>
                   <Ionicons name="send-outline" size={20} color={COLORS.textInverse} />
-                  <Text style={styles.submitBtnText}>Send to All (BCC Teacher)</Text>
+                  <Text style={styles.submitBtnText}>Send Emails</Text>
                 </TouchableOpacity>
               </View>
             )}
