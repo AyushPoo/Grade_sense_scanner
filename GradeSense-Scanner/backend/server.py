@@ -6578,9 +6578,16 @@ async def export_exam_whatsapp(
         sub_rows = await conn.fetch(
             '''
             SELECT s.id, s.student_name, s.student_roll_number, s.total_score,
-                   u.phone AS mobile_number
+                   COALESCE(u.phone, si.phone) AS mobile_number
             FROM submissions s
+            JOIN exams e ON e.id = s.exam_id
             LEFT JOIN users u ON u.id = s.student_id
+            LEFT JOIN student_invitations si
+              ON si.batch_id = e.batch_id
+             AND (
+                 (s.student_id IS NULL AND LOWER(si.email) = LOWER(s.student_email))
+                 OR (s.student_id IS NULL AND NULLIF(s.student_roll_number, '') IS NOT NULL AND si.roll_number = s.student_roll_number)
+             )
             WHERE s.exam_id = $1 AND COALESCE(s.status, '') <> 'deleted'
             ''',
             exam_id
