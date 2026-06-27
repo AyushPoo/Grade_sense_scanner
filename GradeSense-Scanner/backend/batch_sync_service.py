@@ -283,8 +283,33 @@ async def fetch_batch_exams(conn: Any, teacher_id: str, batch_id: str) -> list[d
     return build_batch_exam_response([dict(row) for row in rows])
 
 
+async def _phone_select_expression(conn: Any, table_name: str, alias: str) -> str:
+    column = await conn.fetchval(
+        '''
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = $1
+          AND column_name = ANY($2::text[])
+        ORDER BY CASE column_name
+          WHEN 'mobile_number' THEN 1
+          WHEN 'phone_number' THEN 2
+          WHEN 'phone' THEN 3
+          ELSE 4
+        END
+        LIMIT 1
+        ''',
+        table_name,
+        ["mobile_number", "phone_number", "phone"],
+    )
+    column_name = str(column or "").strip()
+    if column_name in {"mobile_number", "phone_number", "phone"}:
+        return f"{alias}.{column_name}"
+    return "NULL::text"
+
+
 async def fetch_batch_roster(conn: Any, teacher_id: str, batch_id: str) -> list[dict[str, Any]]:
-    user_phone_expr = await _user_phone_select_expression(conn, "u")
+    user_phone_expr = await _phone_select_expression(conn, "users", "u")
+    inv_phone_expr = await _phone_select_expression(conn, "student_invitations", "si")
     rows = await conn.fetch(
         f'''
         WITH roster_rows AS (
@@ -318,7 +343,7 @@ async def fetch_batch_roster(conn: Any, teacher_id: str, batch_id: str) -> list[
                    si.name AS student_name,
                    si.email AS student_email,
                    si.roll_number AS student_roll_number,
-                   NULL::text AS student_mobile_number,
+                   {inv_phone_expr} AS student_mobile_number,
                    NULL::text AS exam_id,
                    NULL::text AS exam_name,
                    NULL::text AS subject_name,
@@ -402,24 +427,4 @@ async def fetch_batch_roster(conn: Any, teacher_id: str, batch_id: str) -> list[
     return build_student_roster_response([dict(row) for row in rows])
 
 
-async def _user_phone_select_expression(conn: Any, alias: str) -> str:
-    column = await conn.fetchval(
-        '''
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_name = 'users'
-          AND column_name = ANY($1::text[])
-        ORDER BY CASE column_name
-          WHEN 'mobile_number' THEN 1
-          WHEN 'phone_number' THEN 2
-          WHEN 'phone' THEN 3
-          ELSE 4
-        END
-        LIMIT 1
-        ''',
-        ["mobile_number", "phone_number", "phone"],
-    )
-    column_name = str(column or "").strip()
-    if column_name in {"mobile_number", "phone_number", "phone"}:
-        return f"{alias}.{column_name}"
-    return "NULL::text"
+# _phone_select_expression is defined above
