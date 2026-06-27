@@ -1,5 +1,5 @@
 import React from 'react';
-import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View, TextInput, ScrollView } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View, TextInput, ScrollView, Modal, Dimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../../config';
 import { ManagedExam } from '../../utils/manageData';
@@ -187,6 +187,67 @@ export function ExamManagementPanel({
   const [selectedStatus, setSelectedStatus] = React.useState('All');
   const [sortBy, setSortBy] = React.useState<'date' | 'name' | 'submissions'>('date');
 
+  const [showFiltersModal, setShowFiltersModal] = React.useState(false);
+  const [activeFilterCategory, setActiveFilterCategory] = React.useState<'batch' | 'subject' | 'status'>('batch');
+  const [tempBatch, setTempBatch] = React.useState('All');
+  const [tempSubject, setTempSubject] = React.useState('All');
+  const [tempStatus, setTempStatus] = React.useState('All');
+
+  const openFilters = () => {
+    setTempBatch(selectedBatch);
+    setTempSubject(selectedSubject);
+    setTempStatus(selectedStatus);
+    setShowFiltersModal(true);
+  };
+
+  const applyFilters = () => {
+    setSelectedBatch(tempBatch);
+    setSelectedSubject(tempSubject);
+    setSelectedStatus(tempStatus);
+    setShowFiltersModal(false);
+  };
+
+  const clearTempFilters = () => {
+    setTempBatch('All');
+    setTempSubject('All');
+    setTempStatus('All');
+  };
+
+  const getActiveFiltersCount = () => {
+    let count = 0;
+    if (selectedBatch !== 'All') count++;
+    if (selectedSubject !== 'All') count++;
+    if (selectedStatus !== 'All') count++;
+    return count;
+  };
+
+  const tempFilteredExamsCount = React.useMemo(() => {
+    let list = [...exams];
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      list = list.filter(e =>
+        e.name.toLowerCase().includes(q) ||
+        (e.subjectName && e.subjectName.toLowerCase().includes(q)) ||
+        (e.batchName && e.batchName.toLowerCase().includes(q))
+      );
+    }
+    if (tempBatch !== 'All') {
+      list = list.filter(e => e.batchName === tempBatch);
+    }
+    if (tempSubject !== 'All') {
+      list = list.filter(e => e.subjectName === tempSubject);
+    }
+    if (tempStatus !== 'All') {
+      list = list.filter(e => {
+        if (tempStatus === 'Graded') return e.status === 'graded';
+        if (tempStatus === 'Published') return e.status === 'published';
+        if (tempStatus === 'Closed') return e.status === 'closed';
+        return true;
+      });
+    }
+    return list.length;
+  }, [exams, searchQuery, tempBatch, tempSubject, tempStatus]);
+
   const uniqueBatches = React.useMemo(() => {
     const set = new Set<string>();
     exams.forEach(e => { if (e.batchName) set.add(e.batchName); });
@@ -329,89 +390,149 @@ export function ExamManagementPanel({
             {sortBy === 'date' ? 'Latest' : sortBy === 'name' ? 'A-Z' : 'Submissions'}
           </Text>
         </TouchableOpacity>
+
+        {/* Filters Trigger */}
+        <TouchableOpacity
+          style={[
+            styles.sortToggle,
+            getActiveFiltersCount() > 0 && styles.filterToggleActive
+          ]}
+          onPress={openFilters}
+          activeOpacity={0.8}
+        >
+          <Ionicons 
+            name="funnel-outline" 
+            size={15} 
+            color={getActiveFiltersCount() > 0 ? COLORS.primary : COLORS.textMuted} 
+          />
+          <Text 
+            style={[
+              styles.sortToggleText,
+              { color: getActiveFiltersCount() > 0 ? COLORS.primary : COLORS.textMuted }
+            ]}
+          >
+            {getActiveFiltersCount() > 0 ? `Filters (${getActiveFiltersCount()})` : 'Filters'}
+          </Text>
+        </TouchableOpacity>
       </View>
 
-      {/* FILTER chips ScrollViews */}
-      <View style={styles.filtersContainer}>
-        {uniqueBatches.length > 2 && (
-          <View style={styles.filterGroup}>
-            <Text style={styles.filterGroupLabel}>Batch:</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
-              {uniqueBatches.map(batchName => (
+      {/* FILTERS MODAL */}
+      <Modal
+        visible={showFiltersModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowFiltersModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            {/* Modal Header */}
+            <View style={styles.modalHeader}>
+              <View style={styles.headerLeft}>
+                <TouchableOpacity onPress={() => setShowFiltersModal(false)} style={styles.backButton}>
+                  <Ionicons name="close" size={24} color={COLORS.text} />
+                </TouchableOpacity>
+                <Text style={styles.modalTitle}>Filters</Text>
+              </View>
+              {(tempBatch !== 'All' || tempSubject !== 'All' || tempStatus !== 'All') && (
+                <TouchableOpacity onPress={clearTempFilters}>
+                  <Text style={styles.clearAllText}>Clear Filters</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Split Content */}
+            <View style={styles.splitContent}>
+              {/* Left Column: Categories List */}
+              <View style={styles.leftColumn}>
                 <TouchableOpacity
-                  key={batchName}
-                  style={[
-                    styles.filterChip,
-                    selectedBatch === batchName && styles.filterChipActive
-                  ]}
-                  onPress={() => setSelectedBatch(batchName)}
+                  style={[styles.categoryTab, activeFilterCategory === 'batch' && styles.categoryTabActive]}
+                  onPress={() => setActiveFilterCategory('batch')}
                 >
-                  <Text
-                    style={[
-                      styles.filterChipText,
-                      selectedBatch === batchName && styles.filterChipTextActive
-                    ]}
-                  >
-                    {batchName}
+                  <Text style={[styles.categoryText, activeFilterCategory === 'batch' && styles.categoryTextActive]}>
+                    Batch {tempBatch !== 'All' ? '•' : ''}
                   </Text>
                 </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
-        )}
 
-        {uniqueSubjects.length > 2 && (
-          <View style={styles.filterGroup}>
-            <Text style={styles.filterGroupLabel}>Subject:</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
-              {uniqueSubjects.map(subjName => (
                 <TouchableOpacity
-                  key={subjName}
-                  style={[
-                    styles.filterChip,
-                    selectedSubject === subjName && styles.filterChipActive
-                  ]}
-                  onPress={() => setSelectedSubject(subjName)}
+                  style={[styles.categoryTab, activeFilterCategory === 'subject' && styles.categoryTabActive]}
+                  onPress={() => setActiveFilterCategory('subject')}
                 >
-                  <Text
-                    style={[
-                      styles.filterChipText,
-                      selectedSubject === subjName && styles.filterChipTextActive
-                    ]}
-                  >
-                    {subjName}
+                  <Text style={[styles.categoryText, activeFilterCategory === 'subject' && styles.categoryTextActive]}>
+                    Subject {tempSubject !== 'All' ? '•' : ''}
                   </Text>
                 </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
-        )}
 
-        <View style={styles.filterGroup}>
-          <Text style={styles.filterGroupLabel}>Status:</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
-            {['All', 'Graded', 'Published', 'Closed'].map(statusName => (
-              <TouchableOpacity
-                key={statusName}
-                style={[
-                  styles.filterChip,
-                  selectedStatus === statusName && styles.filterChipActive
-                ]}
-                onPress={() => setSelectedStatus(statusName)}
-              >
-                <Text
-                  style={[
-                    styles.filterChipText,
-                    selectedStatus === statusName && styles.filterChipTextActive
-                  ]}
+                <TouchableOpacity
+                  style={[styles.categoryTab, activeFilterCategory === 'status' && styles.categoryTabActive]}
+                  onPress={() => setActiveFilterCategory('status')}
                 >
-                  {statusName}
-                </Text>
+                  <Text style={[styles.categoryText, activeFilterCategory === 'status' && styles.categoryTextActive]}>
+                    Status {tempStatus !== 'All' ? '•' : ''}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Right Column: Options List */}
+              <ScrollView style={styles.rightColumn} contentContainerStyle={styles.rightColumnContent}>
+                {activeFilterCategory === 'batch' && uniqueBatches.map(batchName => (
+                  <TouchableOpacity
+                    key={batchName}
+                    style={styles.optionItem}
+                    onPress={() => setTempBatch(batchName)}
+                  >
+                    <View style={[styles.radioOuter, tempBatch === batchName && styles.radioOuterSelected]}>
+                      {tempBatch === batchName && <View style={styles.radioInner} />}
+                    </View>
+                    <Text style={[styles.optionText, tempBatch === batchName && styles.optionTextSelected]}>
+                      {batchName}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+
+                {activeFilterCategory === 'subject' && uniqueSubjects.map(subjName => (
+                  <TouchableOpacity
+                    key={subjName}
+                    style={styles.optionItem}
+                    onPress={() => setTempSubject(subjName)}
+                  >
+                    <View style={[styles.radioOuter, tempSubject === subjName && styles.radioOuterSelected]}>
+                      {tempSubject === subjName && <View style={styles.radioInner} />}
+                    </View>
+                    <Text style={[styles.optionText, tempSubject === subjName && styles.optionTextSelected]}>
+                      {subjName}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+
+                {activeFilterCategory === 'status' && ['All', 'Graded', 'Published', 'Closed'].map(statusName => (
+                  <TouchableOpacity
+                    key={statusName}
+                    style={styles.optionItem}
+                    onPress={() => setTempStatus(statusName)}
+                  >
+                    <View style={[styles.radioOuter, tempStatus === statusName && styles.radioOuterSelected]}>
+                      {tempStatus === statusName && <View style={styles.radioInner} />}
+                    </View>
+                    <Text style={[styles.optionText, tempStatus === statusName && styles.optionTextSelected]}>
+                      {statusName}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+
+            {/* Bottom Actions */}
+            <View style={styles.bottomActions}>
+              <Text style={styles.resultsText}>
+                {tempFilteredExamsCount} {tempFilteredExamsCount === 1 ? 'exam' : 'exams'} found
+              </Text>
+              <TouchableOpacity style={styles.applyButton} onPress={applyFilters}>
+                <Text style={styles.applyButtonText}>Apply</Text>
               </TouchableOpacity>
-            ))}
-          </ScrollView>
+            </View>
+          </View>
         </View>
-      </View>
+      </Modal>
 
       {/* SYNCD EXAMS LIST */}
       {filteredExams.length === 0 ? (
@@ -685,42 +806,142 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '800',
   },
-  filtersContainer: {
-    gap: 6,
-    marginBottom: 4,
-  },
-  filterGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  filterGroupLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: COLORS.textMuted,
-    width: 60,
-  },
-  filterScroll: {
-    paddingRight: 16,
-    gap: 6,
-  },
-  filterChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 12,
-    backgroundColor: COLORS.surfaceElevated,
-    borderWidth: 1,
-    borderColor: COLORS.borderLight,
-  },
-  filterChipActive: {
-    backgroundColor: COLORS.primary,
+  filterToggleActive: {
+    backgroundColor: COLORS.primaryXLight,
     borderColor: COLORS.primary,
   },
-  filterChipText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: COLORS.textLight,
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: COLORS.overlay,
+    justifyContent: 'flex-end',
   },
-  filterChipTextActive: {
-    color: '#fff',
+  modalContainer: {
+    backgroundColor: COLORS.background,
+    height: Dimensions.get('window').height * 0.75,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    overflow: 'hidden',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    height: 56,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.borderLight,
+  },
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  backButton: {
+    padding: 4,
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  clearAllText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.primary,
+  },
+  splitContent: {
+    flex: 1,
+    flexDirection: 'row',
+  },
+  leftColumn: {
+    width: '35%',
+    backgroundColor: '#F0F2F5',
+    borderRightWidth: 1,
+    borderRightColor: COLORS.borderLight,
+  },
+  categoryTab: {
+    paddingVertical: 16,
+    paddingHorizontal: 12,
+    borderLeftWidth: 4,
+    borderLeftColor: 'transparent',
+  },
+  categoryTabActive: {
+    backgroundColor: COLORS.background,
+    borderLeftColor: COLORS.primary,
+  },
+  categoryText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: COLORS.textMuted,
+  },
+  categoryTextActive: {
+    fontWeight: '700',
+    color: COLORS.primary,
+  },
+  rightColumn: {
+    flex: 1,
+    backgroundColor: COLORS.background,
+  },
+  rightColumnContent: {
+    paddingVertical: 8,
+  },
+  optionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    gap: 12,
+  },
+  radioOuter: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 2,
+    borderColor: COLORS.textMuted,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  radioOuterSelected: {
+    borderColor: COLORS.primary,
+  },
+  radioInner: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: COLORS.primary,
+  },
+  optionText: {
+    fontSize: 14,
+    color: COLORS.text,
+  },
+  optionTextSelected: {
+    color: COLORS.primary,
+    fontWeight: '600',
+  },
+  bottomActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.borderLight,
+    backgroundColor: COLORS.background,
+  },
+  resultsText: {
+    fontSize: 13,
+    color: COLORS.textMuted,
+    fontWeight: '600',
+  },
+  applyButton: {
+    backgroundColor: '#FB641B', // Flipkart orange
+    borderRadius: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 32,
+  },
+  applyButtonText: {
+    color: '#FFF',
+    fontSize: 14,
+    fontWeight: '700',
   },
 });

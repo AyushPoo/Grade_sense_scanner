@@ -13,6 +13,7 @@ import {
   LayoutAnimation,
   Platform,
   KeyboardAvoidingView,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -768,32 +769,10 @@ export default function ManageScreen() {
     }
     
     try {
-      const batchObj = batches.find(b => b.batch_id === batchId);
-      const batchName = batchObj ? (batchObj.name || batchObj.batch_name || 'class') : 'class';
-      const cleanBatchName = batchName.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
-      const localUri = `${FileSystem.documentDirectory}${cleanBatchName}_roster.csv`;
-      
-      const downloadRes = await FileSystem.downloadAsync(
-        `${getBackendUrl()}/api/batches/${batchId}/students/export`,
-        localUri,
-        {
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
-        }
-      );
-
-      if (downloadRes.status !== 200) {
-        throw new Error('Failed to download roster CSV template.');
-      }
-
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(downloadRes.uri);
-      } else {
-        Alert.alert('Roster Exported', `CSV template saved to: ${downloadRes.uri}`);
-      }
+      const downloadUrl = `${getBackendUrl()}/api/batches/${batchId}/students/export?token=${token}`;
+      await Linking.openURL(downloadUrl);
     } catch (err: any) {
-      Alert.alert('Export Failed', err.message || 'Could not export class roster.');
+      Alert.alert('Export Failed', err.message || 'Could not download class roster template.');
     }
   };
 

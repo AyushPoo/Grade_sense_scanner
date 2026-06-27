@@ -1629,14 +1629,15 @@ async def regrade_exam(exam_id: str, authorization: Optional[str] = Header(None)
 @api_router.get("/batches/{batch_id}/students/export")
 async def export_roster_csv(
     batch_id: str,
-    authorization: Optional[str] = Header(None)
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None)
 ):
     """Generates and downloads a CSV template populated with existing students in the batch."""
-    user = await get_current_user(authorization)
-    token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
+    user = await get_current_user(authorization, token)
+    resolved_token = token or (authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization)
     
     webapp_db_url = os.environ.get("WEBAPP_DB_URL")
-    if webapp_db_url and token != "sess_mock_token_12345":
+    if webapp_db_url and resolved_token != "sess_mock_token_12345":
         conn = None
         try:
             conn = await connect_to_neon_db(webapp_db_url)
