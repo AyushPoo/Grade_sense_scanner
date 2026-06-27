@@ -170,8 +170,15 @@ def public_request_base_url(request: Request) -> str:
         or ""
     ).strip()
     if configured_url and "localhost" not in configured_url and "127.0.0.1" not in configured_url:
+        if not configured_url.startswith("http://") and not configured_url.startswith("https://"):
+            configured_url = "https://" + configured_url
         return configured_url
-    return str(request.base_url)
+    
+    url_str = str(request.base_url)
+    if "localhost" not in url_str and "127.0.0.1" not in url_str:
+        if url_str.startswith("http://"):
+            url_str = "https://" + url_str[7:]
+    return url_str
 
 
 def sanitize_uploaded_filename(name: Optional[str], fallback: str) -> str:
