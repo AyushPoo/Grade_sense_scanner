@@ -4,6 +4,7 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
+import asyncio
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -6353,29 +6354,6 @@ async def export_exam_emails(
         exam_row = await conn.fetchrow("SELECT name, total_marks FROM exams WHERE id = $1", exam_id)
         if not exam_row:
             raise HTTPException(status_code=404, detail="Exam not found")
-            
-        sub_rows = await conn.fetch(
-            '''
-            SELECT s.id, s.student_name, s.student_roll_number, s.total_score, s.teacher_feedback,
-                   COALESCE(u.email, s.student_email, si.email) AS email
-            FROM submissions s
-            LEFT JOIN users u ON u.id = s.student_id
-            LEFT JOIN student_invitations si ON si.accepted_by_user_id = s.student_id OR (s.student_id IS NULL AND si.roll_number = s.student_roll_number AND si.batch_id = e.batch_id)
-            FROM submissions s_dummy
-            JOIN exams e ON e.id = s.exam_id
-            WHERE s.exam_id = $1 AND COALESCE(s.status, '') <> 'deleted'
-            ''',
-            exam_id
-        )
-        # Note: The query above joined submissions s with exams e. Let's fix the FROM clause to be clean:
-        # SELECT s.id, s.student_name, s.student_roll_number, s.total_score, s.teacher_feedback,
-        #        COALESCE(u.email, s.student_email, si.email) AS email
-        # FROM submissions s
-        # JOIN exams e ON e.id = s.exam_id
-        # LEFT JOIN users u ON u.id = s.student_id
-        # LEFT JOIN student_invitations si ON si.accepted_by_user_id = s.student_id
-        # WHERE s.exam_id = $1 AND COALESCE(s.status, '') <> 'deleted'
-        # Let's write the clean version:
         sub_rows = await conn.fetch(
             '''
             SELECT s.id, s.student_name, s.student_roll_number, s.total_score, s.teacher_feedback,
@@ -6383,7 +6361,13 @@ async def export_exam_emails(
             FROM submissions s
             JOIN exams e ON e.id = s.exam_id
             LEFT JOIN users u ON u.id = s.student_id
-            LEFT JOIN student_invitations si ON si.accepted_by_user_id = s.student_id
+            LEFT JOIN student_invitations si
+              ON si.batch_id = e.batch_id
+             AND (
+                 si.accepted_by_user_id = s.student_id
+                 OR (s.student_id IS NULL AND LOWER(si.email) = LOWER(s.student_email))
+                 OR (s.student_id IS NULL AND NULLIF(s.student_roll_number, '') IS NOT NULL AND si.roll_number = s.student_roll_number)
+             )
             WHERE s.exam_id = $1 AND COALESCE(s.status, '') <> 'deleted'
             ''',
             exam_id
