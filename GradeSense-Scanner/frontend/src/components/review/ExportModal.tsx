@@ -55,6 +55,7 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
   const [gmailOAuthUser, setGmailOAuthUser] = useState('');
   const [gmailOAuthRefreshToken, setGmailOAuthRefreshToken] = useState('');
   const [isLinkingGmail, setIsLinkingGmail] = useState(false);
+  const [showAdvancedSmtp, setShowAdvancedSmtp] = useState(false);
   const [emailSubject, setEmailSubject] = useState(`Graded Exam Results for ${examName}`);
   const [emailBody, setEmailBody] = useState(
     'Please find attached your graded answer sheet.'
@@ -86,12 +87,7 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
   const handleGmailOAuthSuccess = async (code: string) => {
     setIsLinkingGmail(true);
     try {
-      const clientId = Platform.select({
-        android: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
-        ios: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
-        default: GOOGLE_CLIENT_ID
-      }) || GOOGLE_CLIENT_ID;
-
+      const clientId = googleRequest?.clientId || GOOGLE_CLIENT_ID;
       const redirectUri = googleRequest?.redirectUri || '';
 
       const tokenResponse = await AuthSession.exchangeCodeAsync(
@@ -184,7 +180,11 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
 
         if (savedProvider) {
           setProvider(savedProvider as any);
+          if (savedProvider !== 'gmail_oauth') {
+            setShowAdvancedSmtp(true);
+          }
         } else if (savedHost) {
+          setShowAdvancedSmtp(true);
           if (savedHost === 'smtp.gmail.com') setProvider('gmail');
           else if (savedHost === 'smtp.office365.com') setProvider('outlook');
           else setProvider('custom');
@@ -557,81 +557,102 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
             {!isExporting && activeTab === 'email' && (
               <View style={styles.tabContent}>
                 <Text style={styles.sectionHeading}>Email Integration</Text>
-                <Text style={styles.sectionDesc}>Emails are sent directly from your own email account. Choose between secure Google authorization or custom SMTP settings.</Text>
                 
-                <Text style={styles.label}>Email Method</Text>
-                <View style={styles.providerRow}>
-                  <TouchableOpacity
-                    style={[styles.providerBtn, provider === 'gmail_oauth' && styles.providerBtnActive]}
-                    onPress={() => setProvider('gmail_oauth')}
-                  >
-                    <Ionicons name="logo-google" size={14} color={provider === 'gmail_oauth' ? COLORS.primary : COLORS.textLight} />
-                    <Text style={[styles.providerBtnText, provider === 'gmail_oauth' && styles.providerBtnTextActive]}>Google Auth</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[styles.providerBtn, provider === 'gmail' && styles.providerBtnActive]}
-                    onPress={() => {
-                      setProvider('gmail');
-                      setSmtpHost('smtp.gmail.com');
-                      setSmtpPort('587');
-                    }}
-                  >
-                    <Ionicons name="logo-google" size={14} color={provider === 'gmail' ? COLORS.primary : COLORS.textLight} />
-                    <Text style={[styles.providerBtnText, provider === 'gmail' && styles.providerBtnTextActive]}>Gmail SMTP</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[styles.providerBtn, provider === 'outlook' && styles.providerBtnActive]}
-                    onPress={() => {
-                      setProvider('outlook');
-                      setSmtpHost('smtp.office365.com');
-                      setSmtpPort('587');
-                    }}
-                  >
-                    <Ionicons name="mail-outline" size={14} color={provider === 'outlook' ? COLORS.primary : COLORS.textLight} />
-                    <Text style={[styles.providerBtnText, provider === 'outlook' && styles.providerBtnTextActive]}>Outlook</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[styles.providerBtn, provider === 'custom' && styles.providerBtnActive]}
-                    onPress={() => setProvider('custom')}
-                  >
-                    <Ionicons name="settings-outline" size={14} color={provider === 'custom' ? COLORS.primary : COLORS.textLight} />
-                    <Text style={[styles.providerBtnText, provider === 'custom' && styles.providerBtnTextActive]}>Custom</Text>
-                  </TouchableOpacity>
-                </View>
-
-                {provider === 'gmail_oauth' && (
-                  <View style={styles.oauthContainer}>
-                    <Text style={styles.oauthStatusText}>
-                      {gmailOAuthUser 
-                        ? `Linked account: ${gmailOAuthUser}` 
-                        : 'No Google account linked.'}
-                    </Text>
-                    <TouchableOpacity 
-                      style={[styles.oauthBtn, isLinkingGmail && { opacity: 0.65 }]}
-                      onPress={handleGmailLogin}
-                      disabled={isLinkingGmail || !googleRequest}
-                      activeOpacity={0.8}
-                    >
-                      <Ionicons name="logo-google" size={16} color="#FFF" style={{ marginRight: 8 }} />
-                      <Text style={styles.oauthBtnText}>
-                        {isLinkingGmail 
-                          ? 'Linking...' 
-                          : gmailOAuthUser 
-                            ? 'Change Google Account' 
-                            : 'Link Google Account'}
-                      </Text>
-                    </TouchableOpacity>
-                    <Text style={styles.oauthHelpText}>
-                      By linking your Google account, GradeSense will securely email reports from your address. No passwords are stored.
-                    </Text>
-                  </View>
-                )}
-
-                {provider !== 'gmail_oauth' && (
+                {!showAdvancedSmtp ? (
                   <>
+                    <Text style={styles.sectionDesc}>Emails are sent directly from your own email account. Authorize GradeSense securely to send paper PDFs directly to students.</Text>
+                    
+                    <View style={styles.oauthContainer}>
+                      <Text style={styles.oauthStatusText}>
+                        {gmailOAuthUser 
+                          ? `Linked account: ${gmailOAuthUser}` 
+                          : 'No Google account linked.'}
+                      </Text>
+                      <TouchableOpacity 
+                        style={[styles.oauthBtn, isLinkingGmail && { opacity: 0.65 }]}
+                        onPress={handleGmailLogin}
+                        disabled={isLinkingGmail || !googleRequest}
+                        activeOpacity={0.8}
+                      >
+                        <Ionicons name="logo-google" size={16} color="#FFF" style={{ marginRight: 8 }} />
+                        <Text style={styles.oauthBtnText}>
+                          {isLinkingGmail 
+                            ? 'Linking...' 
+                            : gmailOAuthUser 
+                              ? 'Change Google Account' 
+                              : 'Link Google Account'}
+                        </Text>
+                      </TouchableOpacity>
+                      <Text style={styles.oauthHelpText}>
+                        By linking your Google account, GradeSense will securely email reports from your address. No passwords are stored.
+                      </Text>
+                    </View>
+
+                    <TouchableOpacity 
+                      style={styles.helpLink} 
+                      onPress={() => {
+                        setShowAdvancedSmtp(true);
+                        setProvider('gmail');
+                        setSmtpHost('smtp.gmail.com');
+                        setSmtpPort('587');
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons name="settings-outline" size={14} color={COLORS.primary} style={{ marginRight: 4 }} />
+                      <Text style={styles.helpLinkText}>Advanced: Use custom SMTP/Outlook instead</Text>
+                    </TouchableOpacity>
+                  </>
+                ) : (
+                  <>
+                    <TouchableOpacity 
+                      style={[styles.helpLink, { marginBottom: 12 }]} 
+                      onPress={() => {
+                        setShowAdvancedSmtp(false);
+                        setProvider('gmail_oauth');
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons name="arrow-back-outline" size={14} color={COLORS.primary} style={{ marginRight: 4 }} />
+                      <Text style={styles.helpLinkText}>Back to secure Google Login</Text>
+                    </TouchableOpacity>
+
+                    <Text style={styles.sectionDesc}>Enter custom SMTP credentials. These credentials are saved locally on this device only.</Text>
+
+                    <Text style={styles.label}>Email Provider</Text>
+                    <View style={styles.providerRow}>
+                      <TouchableOpacity
+                        style={[styles.providerBtn, provider === 'gmail' && styles.providerBtnActive]}
+                        onPress={() => {
+                          setProvider('gmail');
+                          setSmtpHost('smtp.gmail.com');
+                          setSmtpPort('587');
+                        }}
+                      >
+                        <Ionicons name="logo-google" size={14} color={provider === 'gmail' ? COLORS.primary : COLORS.textLight} />
+                        <Text style={[styles.providerBtnText, provider === 'gmail' && styles.providerBtnTextActive]}>Gmail SMTP</Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={[styles.providerBtn, provider === 'outlook' && styles.providerBtnActive]}
+                        onPress={() => {
+                          setProvider('outlook');
+                          setSmtpHost('smtp.office365.com');
+                          setSmtpPort('587');
+                        }}
+                      >
+                        <Ionicons name="mail-outline" size={14} color={provider === 'outlook' ? COLORS.primary : COLORS.textLight} />
+                        <Text style={[styles.providerBtnText, provider === 'outlook' && styles.providerBtnTextActive]}>Outlook</Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={[styles.providerBtn, provider === 'custom' && styles.providerBtnActive]}
+                        onPress={() => setProvider('custom')}
+                      >
+                        <Ionicons name="settings-outline" size={14} color={provider === 'custom' ? COLORS.primary : COLORS.textLight} />
+                        <Text style={[styles.providerBtnText, provider === 'custom' && styles.providerBtnTextActive]}>Custom</Text>
+                      </TouchableOpacity>
+                    </View>
+
                     {provider === 'custom' && (
                       <>
                         <Text style={styles.label}>SMTP Server Host</Text>
