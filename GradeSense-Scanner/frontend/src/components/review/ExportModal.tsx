@@ -19,6 +19,13 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { COLORS, getBackendUrl } from '../../config';
+import * as WebBrowser from 'expo-web-browser';
+import * as Google from 'expo-auth-session/providers/google';
+import * as AuthSession from 'expo-auth-session';
+
+WebBrowser.maybeCompleteAuthSession();
+
+const GOOGLE_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID;
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -39,16 +46,112 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState('');
 
-  // Email SMTP States
-  const [provider, setProvider] = useState<'gmail' | 'outlook' | 'custom'>('gmail');
+  // Email SMTP & OAuth States
+  const [provider, setProvider] = useState<'gmail_oauth' | 'gmail' | 'outlook' | 'custom'>('gmail_oauth');
   const [smtpHost, setSmtpHost] = useState('smtp.gmail.com');
   const [smtpPort, setSmtpPort] = useState('587');
   const [smtpUser, setSmtpUser] = useState('');
   const [smtpPassword, setSmtpPassword] = useState('');
+  const [gmailOAuthUser, setGmailOAuthUser] = useState('');
+  const [gmailOAuthRefreshToken, setGmailOAuthRefreshToken] = useState('');
+  const [isLinkingGmail, setIsLinkingGmail] = useState(false);
   const [emailSubject, setEmailSubject] = useState(`Graded Exam Results for ${examName}`);
   const [emailBody, setEmailBody] = useState(
     'Please find attached your graded answer sheet.'
   );
+
+  // Google OAuth for Gmail Send
+  const [googleRequest, googleResponse, promptGoogleAsync] = Google.useAuthRequest({
+    clientId: GOOGLE_CLIENT_ID,
+    androidClientId: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID || GOOGLE_CLIENT_ID,
+    iosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID || GOOGLE_CLIENT_ID,
+    scopes: ['https://www.googleapis.com/auth/gmail.send'],
+    responseType: 'code',
+    extraParams: {
+      access_type: 'offline',
+      prompt: 'consent',
+    }
+  });
+
+  const handleGmailLogin = async () => {
+    try {
+      setIsLinkingGmail(true);
+      await promptGoogleAsync();
+    } catch (err: any) {
+      Alert.alert('Google Sign-In Error', err.message || 'Could not start sign-in.');
+      setIsLinkingGmail(false);
+    }
+  };
+
+  const handleGmailOAuthSuccess = async (code: string) => {
+    setIsLinkingGmail(true);
+    try {
+      const clientId = Platform.select({
+        android: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
+        ios: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
+        default: GOOGLE_CLIENT_ID
+      }) || GOOGLE_CLIENT_ID;
+
+      const redirectUri = googleRequest?.redirectUri || '';
+
+      const tokenResponse = await AuthSession.exchangeCodeAsync(
+        {
+          clientId: clientId!,
+          code: code,
+          redirectUri: redirectUri,
+          extraParams: {
+            code_verifier: googleRequest?.codeVerifier || '',
+          },
+        },
+        Google.discovery
+      );
+
+      const refreshToken = tokenResponse.refreshToken;
+      if (!refreshToken) {
+        throw new Error('No refresh token received. Please remove GradeSense from your Google account third-party permissions and link again.');
+      }
+
+      const userinfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+        headers: {
+          Authorization: `Bearer ${tokenResponse.accessToken}`
+        }
+      });
+
+      if (!userinfoRes.ok) {
+        throw new Error('Failed to fetch user email from Google.');
+      }
+
+      const userinfo = await userinfoRes.json();
+      const userEmail = userinfo.email;
+
+      if (!userEmail) {
+        throw new Error('Google account email not found.');
+      }
+
+      setGmailOAuthUser(userEmail);
+      setGmailOAuthRefreshToken(refreshToken);
+      await AsyncStorage.setItem('gradesense.gmail_oauth.email', userEmail);
+      await AsyncStorage.setItem('gradesense.gmail_oauth.refresh_token', refreshToken);
+
+      Alert.alert('Success', `Successfully linked Google account: ${userEmail}`);
+    } catch (err: any) {
+      console.error('Gmail OAuth exchange error:', err);
+      Alert.alert('Link Failed', err.message || 'Could not exchange code for tokens.');
+    } finally {
+      setIsLinkingGmail(false);
+    }
+  };
+
+  useEffect(() => {
+    if (googleResponse?.type === 'success' && googleResponse.params?.code) {
+      handleGmailOAuthSuccess(googleResponse.params.code);
+    } else if (googleResponse?.type === 'error') {
+      Alert.alert('Google Link Failed', googleResponse.error?.message || 'Authentication failed.');
+      setIsLinkingGmail(false);
+    } else if (googleResponse?.type === 'dismiss' || googleResponse?.type === 'cancel') {
+      setIsLinkingGmail(false);
+    }
+  }, [googleResponse]);
 
   // WhatsApp Connection & Sending States
   const [waStatus, setWaStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
@@ -74,12 +177,19 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
         const savedSubject = await AsyncStorage.getItem(`gradesense.smtp.subject.${examId}`);
         const savedBody = await AsyncStorage.getItem('gradesense.smtp.body');
         
+        const savedOAuthEmail = await AsyncStorage.getItem('gradesense.gmail_oauth.email');
+        const savedOAuthToken = await AsyncStorage.getItem('gradesense.gmail_oauth.refresh_token');
+        if (savedOAuthEmail) setGmailOAuthUser(savedOAuthEmail);
+        if (savedOAuthToken) setGmailOAuthRefreshToken(savedOAuthToken);
+
         if (savedProvider) {
           setProvider(savedProvider as any);
         } else if (savedHost) {
           if (savedHost === 'smtp.gmail.com') setProvider('gmail');
           else if (savedHost === 'smtp.office365.com') setProvider('outlook');
           else setProvider('custom');
+        } else if (savedOAuthToken) {
+          setProvider('gmail_oauth');
         }
 
         if (savedHost) setSmtpHost(savedHost);
@@ -264,12 +374,18 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
   };
 
   const handleSendEmails = async () => {
-    if (!smtpHost || !smtpPort || !smtpUser || !smtpPassword) {
-      Alert.alert('Missing SMTP settings', 'Please fill in all SMTP credentials.');
-      return;
+    if (provider === 'gmail_oauth') {
+      if (!gmailOAuthRefreshToken) {
+        Alert.alert('Link Required', 'Please link your Google account first.');
+        return;
+      }
+    } else {
+      if (!smtpHost || !smtpPort || !smtpUser || !smtpPassword) {
+        Alert.alert('Missing SMTP settings', 'Please fill in all SMTP credentials.');
+        return;
+      }
     }
     
-    // Save SMTP credentials locally (except password if user prefers, but we save it locally for convenience)
     try {
       await AsyncStorage.setItem('gradesense.smtp.provider', provider);
       await AsyncStorage.setItem('gradesense.smtp.host', smtpHost);
@@ -285,20 +401,36 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
     setIsExporting(true);
     setExportProgress('Queueing emails on backend...');
     try {
+      const clientId = Platform.select({
+        android: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
+        ios: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
+        default: GOOGLE_CLIENT_ID
+      }) || GOOGLE_CLIENT_ID;
+
+      const bodyPayload = provider === 'gmail_oauth' ? {
+        provider: 'gmail_oauth',
+        google_refresh_token: gmailOAuthRefreshToken,
+        google_client_id: clientId,
+        google_email: gmailOAuthUser,
+        subject: emailSubject,
+        body: emailBody
+      } : {
+        provider: 'custom',
+        smtp_host: smtpHost,
+        smtp_port: parseInt(smtpPort),
+        smtp_username: smtpUser,
+        smtp_password: smtpPassword,
+        subject: emailSubject,
+        body: emailBody
+      };
+
       const res = await fetch(`${getBackendUrl()}/api/v1/exams/${examId}/export/email`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({
-          smtp_host: smtpHost,
-          smtp_port: parseInt(smtpPort),
-          smtp_username: smtpUser,
-          smtp_password: smtpPassword,
-          subject: emailSubject,
-          body: emailBody
-        })
+        body: JSON.stringify(bodyPayload)
       });
 
       const data = await res.json();
@@ -424,11 +556,19 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
 
             {!isExporting && activeTab === 'email' && (
               <View style={styles.tabContent}>
-                <Text style={styles.sectionHeading}>SMTP Configuration</Text>
-                <Text style={styles.sectionDesc}>Emails are sent directly from your own email account. Your credentials are saved locally on this device only.</Text>
+                <Text style={styles.sectionHeading}>Email Integration</Text>
+                <Text style={styles.sectionDesc}>Emails are sent directly from your own email account. Choose between secure Google authorization or custom SMTP settings.</Text>
                 
-                <Text style={styles.label}>Email Provider</Text>
+                <Text style={styles.label}>Email Method</Text>
                 <View style={styles.providerRow}>
+                  <TouchableOpacity
+                    style={[styles.providerBtn, provider === 'gmail_oauth' && styles.providerBtnActive]}
+                    onPress={() => setProvider('gmail_oauth')}
+                  >
+                    <Ionicons name="logo-google" size={14} color={provider === 'gmail_oauth' ? COLORS.primary : COLORS.textLight} />
+                    <Text style={[styles.providerBtnText, provider === 'gmail_oauth' && styles.providerBtnTextActive]}>Google Auth</Text>
+                  </TouchableOpacity>
+
                   <TouchableOpacity
                     style={[styles.providerBtn, provider === 'gmail' && styles.providerBtnActive]}
                     onPress={() => {
@@ -438,7 +578,7 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
                     }}
                   >
                     <Ionicons name="logo-google" size={14} color={provider === 'gmail' ? COLORS.primary : COLORS.textLight} />
-                    <Text style={[styles.providerBtnText, provider === 'gmail' && styles.providerBtnTextActive]}>Gmail</Text>
+                    <Text style={[styles.providerBtnText, provider === 'gmail' && styles.providerBtnTextActive]}>Gmail SMTP</Text>
                   </TouchableOpacity>
 
                   <TouchableOpacity
@@ -462,56 +602,88 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
                   </TouchableOpacity>
                 </View>
 
-                {provider === 'custom' && (
-                  <>
-                    <Text style={styles.label}>SMTP Server Host</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={smtpHost}
-                      onChangeText={setSmtpHost}
-                      placeholder="e.g. smtp.gmail.com"
-                    />
-
-                    <Text style={styles.label}>SMTP Port</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={smtpPort}
-                      onChangeText={setSmtpPort}
-                      keyboardType="numeric"
-                      placeholder="e.g. 587 or 465"
-                    />
-                  </>
+                {provider === 'gmail_oauth' && (
+                  <View style={styles.oauthContainer}>
+                    <Text style={styles.oauthStatusText}>
+                      {gmailOAuthUser 
+                        ? `Linked account: ${gmailOAuthUser}` 
+                        : 'No Google account linked.'}
+                    </Text>
+                    <TouchableOpacity 
+                      style={[styles.oauthBtn, isLinkingGmail && { opacity: 0.65 }]}
+                      onPress={handleGmailLogin}
+                      disabled={isLinkingGmail || !googleRequest}
+                      activeOpacity={0.8}
+                    >
+                      <Ionicons name="logo-google" size={16} color="#FFF" style={{ marginRight: 8 }} />
+                      <Text style={styles.oauthBtnText}>
+                        {isLinkingGmail 
+                          ? 'Linking...' 
+                          : gmailOAuthUser 
+                            ? 'Change Google Account' 
+                            : 'Link Google Account'}
+                      </Text>
+                    </TouchableOpacity>
+                    <Text style={styles.oauthHelpText}>
+                      By linking your Google account, GradeSense will securely email reports from your address. No passwords are stored.
+                    </Text>
+                  </View>
                 )}
 
-                <Text style={styles.label}>Username / Email Address</Text>
-                <TextInput
-                  style={styles.input}
-                  value={smtpUser}
-                  onChangeText={setSmtpUser}
-                  autoCapitalize="none"
-                  keyboardType="email-address"
-                  placeholder={provider === 'gmail' ? "e.g. teacher@gmail.com" : provider === 'outlook' ? "e.g. teacher@outlook.com" : "e.g. SMTP username"}
-                />
+                {provider !== 'gmail_oauth' && (
+                  <>
+                    {provider === 'custom' && (
+                      <>
+                        <Text style={styles.label}>SMTP Server Host</Text>
+                        <TextInput
+                          style={styles.input}
+                          value={smtpHost}
+                          onChangeText={setSmtpHost}
+                          placeholder="e.g. smtp.gmail.com"
+                        />
 
-                <Text style={styles.label}>Password / App Password</Text>
-                <TextInput
-                  style={styles.input}
-                  value={smtpPassword}
-                  onChangeText={setSmtpPassword}
-                  secureTextEntry
-                  autoCapitalize="none"
-                  placeholder={provider === 'gmail' ? "16-digit Google App Password" : "Email password / App password"}
-                />
+                        <Text style={styles.label}>SMTP Port</Text>
+                        <TextInput
+                          style={styles.input}
+                          value={smtpPort}
+                          onChangeText={setSmtpPort}
+                          keyboardType="numeric"
+                          placeholder="e.g. 587 or 465"
+                        />
+                      </>
+                    )}
 
-                {provider === 'gmail' && (
-                  <TouchableOpacity 
-                    onPress={() => Linking.openURL('https://support.google.com/accounts/answer/185833')}
-                    style={styles.helpLink}
-                    activeOpacity={0.7}
-                  >
-                    <Ionicons name="help-circle-outline" size={14} color={COLORS.primary} style={{ marginRight: 4 }} />
-                    <Text style={styles.helpLinkText}>How to generate a Google App Password</Text>
-                  </TouchableOpacity>
+                    <Text style={styles.label}>Username / Email Address</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={smtpUser}
+                      onChangeText={setSmtpUser}
+                      autoCapitalize="none"
+                      keyboardType="email-address"
+                      placeholder={provider === 'gmail' ? "e.g. teacher@gmail.com" : provider === 'outlook' ? "e.g. teacher@outlook.com" : "e.g. SMTP username"}
+                    />
+
+                    <Text style={styles.label}>Password / App Password</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={smtpPassword}
+                      onChangeText={setSmtpPassword}
+                      secureTextEntry
+                      autoCapitalize="none"
+                      placeholder={provider === 'gmail' ? "16-digit Google App Password" : "Email password / App password"}
+                    />
+
+                    {provider === 'gmail' && (
+                      <TouchableOpacity 
+                        onPress={() => Linking.openURL('https://support.google.com/accounts/answer/185833')}
+                        style={styles.helpLink}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons name="help-circle-outline" size={14} color={COLORS.primary} style={{ marginRight: 4 }} />
+                        <Text style={styles.helpLinkText}>How to generate a Google App Password</Text>
+                      </TouchableOpacity>
+                    )}
+                  </>
                 )}
 
                 <Text style={styles.sectionHeading}>Message Template</Text>
@@ -965,12 +1137,14 @@ const styles = StyleSheet.create({
   },
   providerRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
     marginBottom: 10,
     marginTop: 2,
   },
   providerBtn: {
-    flex: 1,
+    minWidth: '45%',
+    flexGrow: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1005,5 +1179,43 @@ const styles = StyleSheet.create({
     color: COLORS.primary,
     fontWeight: '500',
     textDecorationLine: 'underline',
+  },
+  oauthContainer: {
+    backgroundColor: COLORS.backgroundDark,
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginVertical: 12,
+    alignItems: 'center',
+    width: '100%',
+  },
+  oauthStatusText: {
+    fontSize: 13,
+    color: COLORS.text,
+    fontWeight: '600',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  oauthBtn: {
+    backgroundColor: COLORS.primary,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 8,
+  },
+  oauthBtnText: {
+    color: '#FFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  oauthHelpText: {
+    fontSize: 11,
+    color: COLORS.textMuted,
+    marginTop: 12,
+    lineHeight: 16,
+    textAlign: 'center',
   },
 });

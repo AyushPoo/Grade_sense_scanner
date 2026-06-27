@@ -6487,10 +6487,14 @@ async def get_exam_export_zip(exam_id: str, authorization: Optional[str] = Heade
 
 
 class EmailExportRequest(BaseModel):
-    smtp_host: str
-    smtp_port: int
-    smtp_username: str
-    smtp_password: str
+    smtp_host: Optional[str] = None
+    smtp_port: Optional[int] = None
+    smtp_username: Optional[str] = None
+    smtp_password: Optional[str] = None
+    provider: Optional[str] = "custom"
+    google_refresh_token: Optional[str] = None
+    google_client_id: Optional[str] = None
+    google_email: Optional[str] = None
     subject: str
     body: str
 
@@ -6561,6 +6565,63 @@ async def export_exam_emails(
         "message": f"Successfully queued {len(valid_subs)} reports for email dispatch."
     }
 
+async def refresh_google_token(refresh_token: str, client_id: str) -> str:
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": client_id,
+                "refresh_token": refresh_token,
+                "grant_type": "refresh_token"
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"}
+        )
+        if resp.status_code != 200:
+            raise Exception(f"Failed to refresh Google token: {resp.text}")
+        return resp.json()["access_token"]
+
+async def send_gmail_api_email(
+    access_token: str,
+    to_email: str,
+    from_email: str,
+    subject: str,
+    body: str,
+    pdf_path: Path,
+    pdf_filename: str
+) -> None:
+    import base64
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.application import MIMEApplication
+
+    msg = MIMEMultipart()
+    msg['From'] = from_email
+    msg['To'] = to_email
+    msg['Subject'] = subject
+    msg['Bcc'] = from_email
+    
+    msg.attach(MIMEText(body, 'html'))
+    
+    with open(pdf_path, 'rb') as f:
+        attachment = MIMEApplication(f.read(), _subtype="pdf")
+        attachment.add_header('Content-Disposition', 'attachment', filename=pdf_filename)
+        msg.attach(attachment)
+        
+    raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode('utf-8')
+    
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
+            },
+            json={"raw": raw_message},
+            timeout=15.0
+        )
+        if resp.status_code != 200:
+            raise Exception(f"Gmail API send failed: {resp.text}")
+
 async def background_send_reports_email(
     webapp_db_url: str,
     exam_name: str,
@@ -6571,6 +6632,28 @@ async def background_send_reports_email(
     import tempfile
     from pathlib import Path
     
+    provider = email_data.get("provider", "custom")
+    google_refresh_token = email_data.get("google_refresh_token")
+    google_client_id = email_data.get("google_client_id")
+    google_email = email_data.get("google_email")
+    
+    access_token = None
+    if provider == "gmail_oauth":
+        if not google_refresh_token:
+            logger.error("Missing refresh token for gmail_oauth provider")
+            return
+        
+        client_id = google_client_id or os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+        if not client_id:
+            logger.error("Missing Google Client ID for gmail_oauth provider")
+            return
+            
+        try:
+            access_token = await refresh_google_token(google_refresh_token, client_id)
+        except Exception as e:
+            logger.error(f"Failed to refresh Google token for email dispatch: {e}")
+            return
+            
     uploads_dir = Path(__file__).parent / "uploads"
     storage_service = get_storage_service(uploads_dir)
     
@@ -6638,17 +6721,28 @@ async def background_send_reports_email(
                 body_content = body_content.replace("{exam_name}", exam_name)
                 body_content = body_content.replace("{score}", f"{sub['total_score']} / {total_marks}")
                 
-                await send_smtp_email_async(
-                    smtp_host=email_data["smtp_host"],
-                    smtp_port=email_data["smtp_port"],
-                    username=email_data["smtp_username"],
-                    password=email_data["smtp_password"],
-                    to_email=to_email,
-                    subject=email_data["subject"],
-                    body=body_content,
-                    pdf_path=single_temp_path,
-                    pdf_filename=pdf_filename
-                )
+                if provider == "gmail_oauth" and access_token:
+                    await send_gmail_api_email(
+                        access_token=access_token,
+                        to_email=to_email,
+                        from_email=google_email or "me",
+                        subject=email_data["subject"],
+                        body=body_content,
+                        pdf_path=single_temp_path,
+                        pdf_filename=pdf_filename
+                    )
+                else:
+                    await send_smtp_email_async(
+                        smtp_host=email_data["smtp_host"],
+                        smtp_port=email_data["smtp_port"],
+                        username=email_data["smtp_username"],
+                        password=email_data["smtp_password"],
+                        to_email=to_email,
+                        subject=email_data["subject"],
+                        body=body_content,
+                        pdf_path=single_temp_path,
+                        pdf_filename=pdf_filename
+                    )
         except Exception as e:
             logger.error(f"Error in background email task for sub {sub_id} to {to_email}: {e}")
         finally:
