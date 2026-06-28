@@ -70,43 +70,14 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
   const handleGmailLogin = async () => {
     setIsLinkingGmail(true);
     try {
+      setProvider('gmail_oauth');
+      await AsyncStorage.setItem('gradesense.smtp.provider', 'gmail_oauth');
+
       const backendUrl = getBackendUrl();
       const authUrl = `${backendUrl.replace(/\/$/, '')}/api/v1/auth/google/login`;
-      const returnUrl = AuthSession.makeRedirectUri({
-        scheme: 'gradesense',
-        path: 'oauth2redirect'
-      });
 
-      console.log('Starting Google OAuth session:', { authUrl, returnUrl });
-      
-      const result = await WebBrowser.openAuthSessionAsync(authUrl, returnUrl);
-
-      if (result.type === 'success' && result.url) {
-        const urlString = result.url;
-        
-        const emailMatch = urlString.match(/[?&]email=([^&]+)/);
-        const refreshTokenMatch = urlString.match(/[?&]refresh_token=([^&]+)/);
-        
-        if (emailMatch && refreshTokenMatch) {
-          const userEmail = decodeURIComponent(emailMatch[1]);
-          const refreshToken = decodeURIComponent(refreshTokenMatch[1]);
-          
-          setGmailOAuthUser(userEmail);
-          setGmailOAuthRefreshToken(refreshToken);
-          await AsyncStorage.setItem('gradesense.gmail_oauth.email', userEmail);
-          await AsyncStorage.setItem('gradesense.gmail_oauth.refresh_token', refreshToken);
-          
-          Alert.alert('Success', `Successfully linked Google account: ${userEmail}`);
-        } else {
-          const errorMatch = urlString.match(/[?&]error=([^&]+)/);
-          const errorMsg = errorMatch ? decodeURIComponent(errorMatch[1]) : 'Failed to receive linked credentials from server.';
-          throw new Error(errorMsg);
-        }
-      } else if (result.type === 'cancel' || result.type === 'dismiss') {
-        console.log('Google Sign-In was cancelled by user');
-      } else {
-        throw new Error('Google Sign-In failed or was not completed.');
-      }
+      console.log('Opening Google OAuth in browser:', authUrl);
+      await WebBrowser.openBrowserAsync(authUrl);
     } catch (err: any) {
       console.error('Google Sign-In error:', err);
       Alert.alert('Google Sign-In Error', err.message || 'Could not start sign-in.');
@@ -146,12 +117,14 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
 
         if (savedProvider) {
           setProvider(savedProvider as any);
+          setShowAdvancedSmtp(savedProvider !== 'gmail_oauth');
         } else if (savedOAuthToken) {
           setProvider('gmail_oauth');
+          setShowAdvancedSmtp(false);
         } else {
           setProvider('gmail_oauth');
+          setShowAdvancedSmtp(false);
         }
-        setShowAdvancedSmtp(false);
 
         if (savedHost) setSmtpHost(savedHost);
         if (savedPort) setSmtpPort(savedPort);
