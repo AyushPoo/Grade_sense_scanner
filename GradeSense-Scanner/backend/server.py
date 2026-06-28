@@ -6656,15 +6656,19 @@ async def google_oauth_callback(code: str, request: Request):
         app_redirect_url = f"gradesense://oauth2redirect?email={email}&refresh_token={refresh_token}"
         return RedirectResponse(app_redirect_url)
 
-async def refresh_google_token(refresh_token: str, client_id: str) -> str:
+async def refresh_google_token(refresh_token: str, client_id: str, client_secret: Optional[str] = None) -> str:
+    data = {
+        "client_id": client_id,
+        "refresh_token": refresh_token,
+        "grant_type": "refresh_token"
+    }
+    if client_secret:
+        data["client_secret"] = client_secret
+        
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             "https://oauth2.googleapis.com/token",
-            data={
-                "client_id": client_id,
-                "refresh_token": refresh_token,
-                "grant_type": "refresh_token"
-            },
+            data=data,
             headers={"Content-Type": "application/x-www-form-urlencoded"}
         )
         if resp.status_code != 200:
@@ -6735,12 +6739,13 @@ async def background_send_reports_email(
             return
         
         client_id = google_client_id or os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
-        if not client_id:
-            logger.error("Missing Google Client ID for gmail_oauth provider")
+        client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
+        if not client_id or not client_secret:
+            logger.error("Missing Google Client ID or Client Secret for gmail_oauth provider")
             return
             
         try:
-            access_token = await refresh_google_token(google_refresh_token, client_id)
+            access_token = await refresh_google_token(google_refresh_token, client_id, client_secret)
         except Exception as e:
             logger.error(f"Failed to refresh Google token for email dispatch: {e}")
             return
