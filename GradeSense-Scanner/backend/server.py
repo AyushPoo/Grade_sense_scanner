@@ -6817,12 +6817,17 @@ async def background_send_reports_email(
                 body_content = body_content.replace("{exam_name}", exam_name)
                 body_content = body_content.replace("{score}", f"{sub['total_score']} / {total_marks}")
                 
+                subject_content = email_data["subject"]
+                subject_content = subject_content.replace("{student_name}", sub["student_name"] or "Student")
+                subject_content = subject_content.replace("{exam_name}", exam_name)
+                subject_content = subject_content.replace("{score}", f"{sub['total_score']} / {total_marks}")
+                
                 if provider == "gmail_oauth" and access_token:
                     await send_gmail_api_email(
                         access_token=access_token,
                         to_email=to_email,
                         from_email=google_email or "me",
-                        subject=email_data["subject"],
+                        subject=subject_content,
                         body=body_content,
                         pdf_path=single_temp_path,
                         pdf_filename=pdf_filename
@@ -6834,7 +6839,7 @@ async def background_send_reports_email(
                         username=email_data["smtp_username"],
                         password=email_data["smtp_password"],
                         to_email=to_email,
-                        subject=email_data["subject"],
+                        subject=subject_content,
                         body=body_content,
                         pdf_path=single_temp_path,
                         pdf_filename=pdf_filename

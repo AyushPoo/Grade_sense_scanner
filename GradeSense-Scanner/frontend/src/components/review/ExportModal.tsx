@@ -62,9 +62,9 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
   const [gmailOAuthRefreshToken, setGmailOAuthRefreshToken] = useState('');
   const [isLinkingGmail, setIsLinkingGmail] = useState(false);
   const [showAdvancedSmtp, setShowAdvancedSmtp] = useState(false);
-  const [emailSubject, setEmailSubject] = useState(`Graded Exam Results for ${examName}`);
+  const [emailSubject, setEmailSubject] = useState('Graded Exam Results for {exam_name}');
   const [emailBody, setEmailBody] = useState(
-    'Please find attached your graded answer sheet.'
+    'Hello {student_name},\n\nPlease find attached your graded answer sheet for {exam_name}.\nYour score is: {score}.\n\nRegards,\nGradeSense Team'
   );
 
   const handleGmailLogin = async () => {
@@ -659,6 +659,7 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
                   numberOfLines={5}
                   placeholder="Supports placeholders: {student_name}, {exam_name}, {score}"
                 />
+                <Text style={styles.hint}>Placeholders: {`{student_name}, {exam_name}, {score}`}</Text>
 
                 <TouchableOpacity style={styles.submitButton} onPress={handleSendEmails}>
                   <Ionicons name="send-outline" size={20} color={COLORS.textInverse} />
