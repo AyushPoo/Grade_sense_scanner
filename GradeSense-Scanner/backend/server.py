@@ -6738,7 +6738,7 @@ async def background_send_reports_email(
             logger.error("Missing refresh token for gmail_oauth provider")
             return
         
-        client_id = google_client_id or os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+        client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
         client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
         if not client_id or not client_secret:
             logger.error("Missing Google Client ID or Client Secret for gmail_oauth provider")
