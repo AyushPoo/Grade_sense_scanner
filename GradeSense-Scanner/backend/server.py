@@ -6566,7 +6566,8 @@ async def export_exam_emails(
         exam_name=exam_row["name"],
         total_marks=exam_row["total_marks"] or 100.0,
         submissions=valid_subs,
-        email_data=data.dict()
+        email_data=data.dict(),
+        teacher_name=user.name
     )
     
     return {
@@ -6722,7 +6723,8 @@ async def background_send_reports_email(
     exam_name: str,
     total_marks: float,
     submissions: list,
-    email_data: dict
+    email_data: dict,
+    teacher_name: Optional[str] = None
 ):
     import tempfile
     from pathlib import Path
@@ -6816,11 +6818,13 @@ async def background_send_reports_email(
                 body_content = body_content.replace("{student_name}", sub["student_name"] or "Student")
                 body_content = body_content.replace("{exam_name}", exam_name)
                 body_content = body_content.replace("{score}", f"{sub['total_score']} / {total_marks}")
+                body_content = body_content.replace("{teacher_name}", teacher_name or "Your Teacher")
                 
                 subject_content = email_data["subject"]
                 subject_content = subject_content.replace("{student_name}", sub["student_name"] or "Student")
                 subject_content = subject_content.replace("{exam_name}", exam_name)
                 subject_content = subject_content.replace("{score}", f"{sub['total_score']} / {total_marks}")
+                subject_content = subject_content.replace("{teacher_name}", teacher_name or "Your Teacher")
                 
                 if provider == "gmail_oauth" and access_token:
                     await send_gmail_api_email(
