@@ -130,8 +130,22 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
         if (savedPort) setSmtpPort(savedPort);
         if (savedUser) setSmtpUser(savedUser);
         if (savedPass) setSmtpPassword(savedPass);
-        if (savedSubject) setEmailSubject(savedSubject);
-        if (savedBody) setEmailBody(savedBody);
+        const isOldSubject = !savedSubject || savedSubject === 'Graded Exam Results for' || savedSubject.startsWith('Graded Exam Results for ');
+        const isOldBody = !savedBody || savedBody === 'Please find attached your graded answer sheet.';
+
+        if (savedSubject && !isOldSubject) {
+          setEmailSubject(savedSubject);
+        } else {
+          setEmailSubject('Graded Exam Results for {exam_name}');
+        }
+
+        if (savedBody && !isOldBody) {
+          setEmailBody(savedBody);
+        } else {
+          setEmailBody(
+            'Hello {student_name},\n\nPlease find attached your graded answer sheet for {exam_name}.\nYour score is: {score}.\n\nRegards,\n{teacher_name}'
+          );
+        }
       } catch (err) {
         console.error('Failed to load SMTP settings:', err);
       }
