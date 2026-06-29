@@ -135,7 +135,7 @@ interface ScanState {
   silentNextStudent: () => void;
   renameStudent: (studentIndex: number, newLabel: string) => void;
   deletePage: (studentIndex: number, pageIndex: number, phase?: string) => void;
-  updatePagePathAndFilter: (pageId: string, phase: string | undefined, studentIndex: number | undefined, newFilePath: string, filterMode: string) => void;
+  updatePagePathAndFilter: (pageId: string, phase: string | undefined, studentIndex: number | undefined, newFilePath: string, filterMode: string, cropQuad?: Quadrilateral) => void;
   rotatePage: (pageId: string, phase: string | undefined, studentIndex: number | undefined, newFilePath: string, newOriginalFilePath?: string) => void;
   updateSessionId: (oldId: string, newId: string) => void;
   updateSessionDetails: (
@@ -1599,7 +1599,7 @@ export const useScanStore = create<ScanState>()(
         }
       },
 
-      updatePagePathAndFilter: (pageId, phase, studentIndex, newFilePath, filterMode) => {
+      updatePagePathAndFilter: (pageId, phase, studentIndex, newFilePath, filterMode, cropQuad) => {
         const { currentSession, savedSessions } = get();
         if (!currentSession) return;
         const updatedSession = { ...currentSession };
@@ -1607,7 +1607,12 @@ export const useScanStore = create<ScanState>()(
         const updatePageInArray = (pages: ScannedPage[]) => {
           const idx = pages.findIndex(p => p.id === pageId);
           if (idx > -1) {
-            pages[idx] = { ...pages[idx], file_path: newFilePath, filter_mode: filterMode as any };
+            pages[idx] = { 
+              ...pages[idx], 
+              file_path: newFilePath, 
+              filter_mode: filterMode as any,
+              ...(cropQuad ? { crop_quad: cropQuad, crop_applied: true, crop_confidence: undefined } : {})
+            };
           }
         };
 

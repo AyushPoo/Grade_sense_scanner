@@ -96,12 +96,12 @@ function normalizeSingleExam(value: unknown): ManagedExam {
 export async function fetchManagedExams({ backendUrl, token }: ManageApiOptions): Promise<ManagedExam[]> {
   const res = await fetchWithTimeout(`${backendUrl}/api/v1/exams`, {
     headers: authHeaders(token),
-  }, 8000);
+  }, 20000);
 
   return parseJsonResponse(res, normalizeManagedExams);
 }
 
-export async function fetchManagedBatches({ backendUrl, token, timeoutMs = 8000 }: ManageApiOptions): Promise<ManagedBatch[]> {
+export async function fetchManagedBatches({ backendUrl, token, timeoutMs = 20000 }: ManageApiOptions): Promise<ManagedBatch[]> {
   const res = await fetchWithTimeout(`${backendUrl}/api/batches`, {
     headers: authHeaders(token),
   }, timeoutMs);
@@ -117,7 +117,7 @@ export async function updateManagedBatch(
     method: 'PATCH',
     headers: jsonHeaders(token),
     body: JSON.stringify(input),
-  }, 8000);
+  }, 20000);
 
   const batch = await parseJsonResponse(res, normalizeManagedBatches);
   if (!batch[0]) {
@@ -134,7 +134,7 @@ export async function createManagedBatch(
     method: 'POST',
     headers: jsonHeaders(token),
     body: JSON.stringify(input),
-  }, 8000);
+  }, 20000);
 
   if (!res.ok) {
     const text = await res.text();
@@ -146,7 +146,7 @@ export async function deleteManagedBatch({ backendUrl, token, batchId }: BatchAp
   const res = await fetchWithTimeout(`${backendUrl}/api/batches/${batchId}`, {
     method: 'DELETE',
     headers: authHeaders(token),
-  }, 8000);
+  }, 20000);
 
   if (!res.ok) {
     const text = await res.text();
@@ -158,7 +158,7 @@ export async function archiveManagedBatch({ backendUrl, token, batchId }: BatchA
   const res = await fetchWithTimeout(`${backendUrl}/api/batches/${batchId}/archive`, {
     method: 'POST',
     headers: authHeaders(token),
-  }, 8000);
+  }, 20000);
 
   if (!res.ok) {
     const text = await res.text();
@@ -170,7 +170,7 @@ export async function fetchBatchStudents({
   backendUrl,
   batchId,
   token,
-  timeoutMs = 8000,
+  timeoutMs = 20000,
 }: BatchStudentsApiOptions): Promise<ManagedRosterStudent[]> {
   const res = await fetchWithTimeout(`${backendUrl}/api/batches/${batchId}/students`, {
     headers: authHeaders(token),
@@ -182,7 +182,7 @@ export async function fetchBatchStudents({
 export async function fetchManagePerformance({ backendUrl, token }: ManageApiOptions): Promise<ManagePerformance> {
   const res = await fetchWithTimeout(`${backendUrl}/api/v1/analytics/performance`, {
     headers: authHeaders(token),
-  }, 8000);
+  }, 20000);
 
   return parseJsonResponse(res, normalizeManagePerformance);
 }
@@ -204,7 +204,7 @@ export async function publishManagedExam({ backendUrl, token, examId }: ExamApiO
   const res = await fetchWithTimeout(`${backendUrl}/api/v1/exams/${examId}/publish`, {
     method: 'POST',
     headers: authHeaders(token),
-  }, 8000);
+  }, 20000);
 
   return parseJsonResponse(res, normalizeSingleExam);
 }
@@ -213,7 +213,7 @@ export async function closeManagedExam({ backendUrl, token, examId }: ExamApiOpt
   const res = await fetchWithTimeout(`${backendUrl}/api/v1/exams/${examId}/close`, {
     method: 'POST',
     headers: authHeaders(token),
-  }, 8000);
+  }, 20000);
 
   return parseJsonResponse(res, normalizeSingleExam);
 }
@@ -222,7 +222,7 @@ export async function archiveManagedExam({ backendUrl, token, examId }: ExamApiO
   const res = await fetchWithTimeout(`${backendUrl}/api/v1/exams/${examId}`, {
     method: 'DELETE',
     headers: authHeaders(token),
-  }, 8000);
+  }, 20000);
 
   if (!res.ok) {
     const text = await res.text();
@@ -238,7 +238,7 @@ export async function updateBatchStudent(
     method: 'PATCH',
     headers: jsonHeaders(token),
     body: JSON.stringify(input),
-  }, 8000);
+  }, 20000);
 
   if (!res.ok) {
     const text = await res.text();
@@ -261,7 +261,7 @@ export async function createBatchStudent(
     method: 'POST',
     headers: jsonHeaders(token),
     body: JSON.stringify(input),
-  }, 8000);
+  }, 20000);
 
   if (!res.ok) {
     const text = await res.text();
@@ -275,7 +275,7 @@ export async function deleteBatchStudent(
   const res = await fetchWithTimeout(`${backendUrl}/api/batches/${batchId}/students/${studentId}`, {
     method: 'DELETE',
     headers: authHeaders(token),
-  }, 8000);
+  }, 20000);
 
   if (!res.ok) {
     const text = await res.text();

@@ -42,6 +42,7 @@ import { getFallbackA4Quad } from '../src/utils/geometryUtils';
 import type { ScannedPage, ScanPhase } from '../src/types';
 import * as Sentry from '@sentry/react-native';
 import { useNetworkQuality } from '../src/utils/networkUtils';
+import { CropOverlay } from '../src/components/CropOverlay';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const CAPTURE_COOLDOWN_MS = 2500;
@@ -815,7 +816,8 @@ async function refineSplitPartCrop(part: PreparedImagePart): Promise<PreparedIma
     }
 
     try {
-        const docQuadResult = await detectDocumentCorners(part.uri);
+        // Call local native DocQuad directly to avoid remote DocAligner backend latency during double page split
+        const docQuadResult = await detectDocumentWithDocQuad(part.uri);
         if (docQuadResult?.quadrilateral) {
             const gate = evaluateAutoCropCandidate(docQuadResult.quadrilateral, docQuadResult.dimensions, {
                 confidence: docQuadResult.confidence,
@@ -1017,6 +1019,105 @@ export default function ScannerScreen() {
     // Filter picker removed in favor of review screen palette.
 
     const [showShutterFlash, setShowShutterFlash] = useState(false);
+
+    // Scanner preview and edit states
+    const [previewPage, setPreviewPage] = useState<ScannedPage | null>(null);
+    const [cropPage, setCropPage] = useState<ScannedPage | null>(null);
+    const [isRotating, setIsRotating] = useState(false);
+
+    const handlePreviewPage = useCallback((page: ScannedPage) => {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        setPreviewPage(page);
+    }, []);
+
+    const handleRotatePreviewPage = async () => {
+        if (!previewPage || isRotating) return;
+        setIsRotating(true);
+        try {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            const result = await ImageManipulator.manipulateAsync(
+                previewPage.file_path,
+                [{ rotate: 90 }],
+                { compress: 0.88, format: ImageManipulator.SaveFormat.JPEG }
+            );
+
+            let newRawFilePath: string | undefined;
+            if (previewPage.raw_file_path) {
+                const rawResult = await ImageManipulator.manipulateAsync(
+                    previewPage.raw_file_path,
+                    [{ rotate: 90 }],
+                    { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG }
+                );
+                newRawFilePath = rawResult.uri;
+            }
+
+            useScanStore.getState().rotatePage(
+                previewPage.id,
+                currentPhase,
+                currentStudentIndex,
+                result.uri,
+                newRawFilePath
+            );
+
+            setPreviewPage(prev => prev ? {
+                ...prev,
+                file_path: result.uri,
+                raw_file_path: newRawFilePath ?? prev.raw_file_path,
+                orientation_degrees: (((prev.orientation_degrees || 0) + 90) % 360) as 0 | 90 | 180 | 270
+            } : null);
+        } catch (err) {
+            console.error('[Rotate] Failed to rotate preview image:', err);
+            Alert.alert('Rotation Failed', 'Could not rotate page image.');
+        } finally {
+            setIsRotating(false);
+        }
+    };
+
+    const handleCropPreviewPage = () => {
+        if (!previewPage) return;
+        setCropPage(previewPage);
+        setPreviewPage(null);
+    };
+
+    const handleDeletePreviewPage = () => {
+        if (!previewPage) return;
+        Alert.alert(
+            'Delete Page?',
+            `Are you sure you want to delete Page ${previewPage.page_number}? This cannot be undone.`,
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Delete',
+                    style: 'destructive',
+                    onPress: () => {
+                        const pageIndex = currentPages.findIndex(p => p.id === previewPage.id);
+                        if (pageIndex > -1) {
+                            useScanStore.getState().deletePage(currentStudentIndex, pageIndex, currentPhase);
+                        }
+                        setPreviewPage(null);
+                    }
+                }
+            ]
+        );
+    };
+
+    const handleRetakePreviewPage = () => {
+        if (!previewPage) return;
+        Alert.alert(
+            'Retake Page?',
+            `This will launch the camera to retake Page ${previewPage.page_number}. The existing scan will be replaced.`,
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Retake',
+                    onPress: () => {
+                        useScanStore.getState().startRetake(previewPage, currentPhase, currentStudentIndex);
+                        setPreviewPage(null);
+                    }
+                }
+            ]
+        );
+    };
 
     // Toggle flash mode helper
     const handleToggleFlash = useCallback(() => {
@@ -2219,10 +2320,14 @@ export default function ScannerScreen() {
                         data={[...recentPages].reverse()}
                         horizontal
                         showsHorizontalScrollIndicator={false}
-                        keyExtractor={(_, i) => String(i)}
+                        keyExtractor={(item) => item.id}
                         contentContainerStyle={{ paddingHorizontal: 8, gap: 6, alignItems: 'center' }}
                         renderItem={({ item }) => (
-                            <View style={styles.thumbItem}>
+                            <TouchableOpacity
+                                style={styles.thumbItem}
+                                activeOpacity={0.7}
+                                onPress={() => handlePreviewPage(item)}
+                            >
                                 {isPdfScannedPage(item) ? (
                                     <View style={[styles.thumbImage, styles.pdfThumb]}>
                                         <Ionicons name="document-text" size={22} color="#fff" />
@@ -2235,7 +2340,7 @@ export default function ScannerScreen() {
                                     />
                                 )}
                                 {item.is_blurry && <View style={styles.blurDot} />}
-                            </View>
+                            </TouchableOpacity>
                         )}
                     />
                 </View>
@@ -2267,6 +2372,114 @@ export default function ScannerScreen() {
                     }
                 }}
             />
+
+            {/* Page Preview Modal */}
+            <Modal
+                visible={previewPage !== null}
+                transparent={true}
+                animationType="slide"
+                onRequestClose={() => setPreviewPage(null)}
+            >
+                <View style={scannerModalStyles.overlay}>
+                    <View style={scannerModalStyles.container}>
+                        <View style={scannerModalStyles.header}>
+                            <Text style={scannerModalStyles.title}>
+                                Page {previewPage?.page_number} Preview
+                            </Text>
+                            <TouchableOpacity
+                                style={scannerModalStyles.closeBtn}
+                                onPress={() => setPreviewPage(null)}
+                            >
+                                <Ionicons name="close" size={24} color="#fff" />
+                            </TouchableOpacity>
+                        </View>
+
+                        <View style={scannerModalStyles.imageWrapper}>
+                            {previewPage?.file_path ? (
+                                <Image
+                                    source={{ uri: previewPage.file_path }}
+                                    style={scannerModalStyles.image}
+                                    contentFit="contain"
+                                    transition={150}
+                                />
+                            ) : null}
+                            {previewPage?.is_blurry && (
+                                <View style={scannerModalStyles.blurryAlert}>
+                                    <Ionicons name="warning" size={16} color="#FFA500" />
+                                    <Text style={scannerModalStyles.blurryText}>Warning: Image may be blurry</Text>
+                                </View>
+                            )}
+                        </View>
+
+                        <View style={scannerModalStyles.actions}>
+                            <TouchableOpacity 
+                                style={[scannerModalStyles.actionBtn, scannerModalStyles.btnRotate]}
+                                onPress={handleRotatePreviewPage}
+                                disabled={isRotating}
+                            >
+                                <Ionicons name="refresh" size={18} color="#fff" />
+                                <Text style={scannerModalStyles.actionText}>Rotate</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity 
+                                style={[scannerModalStyles.actionBtn, scannerModalStyles.btnCrop]}
+                                onPress={handleCropPreviewPage}
+                            >
+                                <Ionicons name="crop" size={18} color="#fff" />
+                                <Text style={scannerModalStyles.actionText}>Crop</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity 
+                                style={[scannerModalStyles.actionBtn, scannerModalStyles.btnRetake]}
+                                onPress={handleRetakePreviewPage}
+                            >
+                                <Ionicons name="camera" size={18} color="#fff" />
+                                <Text style={scannerModalStyles.actionText}>Retake</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity 
+                                style={[scannerModalStyles.actionBtn, scannerModalStyles.btnDelete]}
+                                onPress={handleDeletePreviewPage}
+                            >
+                                <Ionicons name="trash" size={18} color="#fff" />
+                                <Text style={scannerModalStyles.actionText}>Delete</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </View>
+            </Modal>
+
+            {cropPage && (
+                <View style={StyleSheet.absoluteFillObject}>
+                    <CropOverlay
+                        imageUri={cropPage.raw_file_path || cropPage.file_path}
+                        initialQuad={cropPage.crop_quad}
+                        onCancel={() => setCropPage(null)}
+                        onCropComplete={async (quad) => {
+                            try {
+                                const sourceUri = cropPage.raw_file_path || cropPage.file_path;
+                                const info = await ImageManipulator.manipulateAsync(sourceUri, []);
+                                const dims = { width: info.width, height: info.height };
+                                
+                                const norm = await normalizeCapturedDocument(sourceUri, quad, dims, { isManualCrop: true });
+                                
+                                useScanStore.getState().updatePagePathAndFilter(
+                                    cropPage.id,
+                                    currentPhase,
+                                    currentStudentIndex,
+                                    norm.uri,
+                                    cropPage.filter_mode || 'grayscale',
+                                    quad
+                                );
+                            } catch (e) {
+                                Alert.alert('Error', 'Failed to apply crop');
+                            } finally {
+                                setCropPage(null);
+                            }
+                        }}
+                    />
+                </View>
+            )}
 
         </View>
     );
@@ -2348,4 +2561,100 @@ const styles = StyleSheet.create({
     thumbImage: { width: '100%', height: '100%' },
     pdfThumb: { alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(235,87,34,0.38)' },
     blurDot: { position: 'absolute', top: 4, right: 4, width: 8, height: 8, borderRadius: 4, backgroundColor: '#E24B4A' },
+});
+
+const scannerModalStyles = StyleSheet.create({
+    overlay: {
+        flex: 1,
+        backgroundColor: 'rgba(0,0,0,0.85)',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    container: {
+        width: '90%',
+        height: '80%',
+        backgroundColor: '#1E1E1E',
+        borderRadius: 16,
+        overflow: 'hidden',
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.1)',
+        paddingBottom: 16,
+    },
+    header: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingHorizontal: 16,
+        paddingVertical: 12,
+        backgroundColor: 'rgba(0,0,0,0.3)',
+        borderBottomWidth: 1,
+        borderColor: 'rgba(255,255,255,0.08)',
+    },
+    title: {
+        color: '#fff',
+        fontSize: 16,
+        fontWeight: 'bold',
+    },
+    closeBtn: {
+        padding: 4,
+    },
+    imageWrapper: {
+        flex: 1,
+        position: 'relative',
+        backgroundColor: '#000',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    image: {
+        width: '100%',
+        height: '100%',
+    },
+    blurryAlert: {
+        position: 'absolute',
+        bottom: 12,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        backgroundColor: 'rgba(0,0,0,0.7)',
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        borderRadius: 4,
+    },
+    blurryText: {
+        color: '#FFA500',
+        fontSize: 12,
+        fontWeight: 'bold',
+    },
+    actions: {
+        flexDirection: 'row',
+        justifyContent: 'space-around',
+        paddingTop: 12,
+        borderTopWidth: 1,
+        borderColor: 'rgba(255,255,255,0.08)',
+    },
+    actionBtn: {
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingVertical: 8,
+        width: 70,
+        borderRadius: 8,
+        gap: 4,
+    },
+    btnRotate: {
+        backgroundColor: 'rgba(255,255,255,0.08)',
+    },
+    btnCrop: {
+        backgroundColor: COLORS.primary,
+    },
+    btnRetake: {
+        backgroundColor: '#EF9F27',
+    },
+    btnDelete: {
+        backgroundColor: COLORS.error,
+    },
+    actionText: {
+        color: '#fff',
+        fontSize: 11,
+        fontWeight: 'bold',
+    },
 });

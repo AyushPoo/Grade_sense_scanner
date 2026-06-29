@@ -1234,7 +1234,7 @@ export default function ManageScreen() {
                                 style={styles.addStudentBtn}
                                 onPress={() => handleImportRoster(batch.batch_id)}
                               >
-                                <Ionicons name="upload-outline" size={14} color={COLORS.primary} />
+                                <Ionicons name="cloud-upload-outline" size={14} color={COLORS.primary} />
                                 <Text style={styles.addStudentBtnText}>Import</Text>
                               </TouchableOpacity>
 

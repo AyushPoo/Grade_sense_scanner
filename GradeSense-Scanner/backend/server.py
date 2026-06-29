@@ -6375,20 +6375,29 @@ async def get_public_student_report_pdf(submission_id: str):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@api_router.get("/v1/exams/{exam_id}/export/zip")
-async def get_exam_export_zip(exam_id: str, authorization: Optional[str] = Header(None)):
-    """Downloads all student papers compiled with feedback in a single ZIP file"""
-    user = await get_current_user(authorization)
-    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
-    if not webapp_db_url:
-        raise HTTPException(status_code=500, detail="Database connection not configured")
-        
+async def compile_and_upload_zip_task(exam_id: str, user_id: str, webapp_db_url: str):
+    import tempfile
+    import zipfile
+    from pathlib import Path
+    
+    await db.zip_exports.update_one(
+        {"exam_id": exam_id},
+        {"$set": {
+            "status": "processing",
+            "processed": 0,
+            "total": 0,
+            "error": None,
+            "updated_at": datetime.now(timezone.utc)
+        }},
+        upsert=True
+    )
+    
     conn = None
     try:
         conn = await asyncpg.connect(webapp_db_url)
         exam_row = await conn.fetchrow("SELECT name, total_marks FROM exams WHERE id = $1", exam_id)
         if not exam_row:
-            raise HTTPException(status_code=404, detail="Exam not found")
+            raise Exception("Exam not found")
             
         sub_rows = await conn.fetch(
             '''
@@ -6399,19 +6408,44 @@ async def get_exam_export_zip(exam_id: str, authorization: Optional[str] = Heade
             exam_id
         )
         await conn.close()
+        conn = None
     except Exception as e:
         if conn:
-            await conn.close()
-        logger.error(f"Error querying database for ZIP export: {e}")
-        raise HTTPException(status_code=500, detail=f"Database query error: {str(e)}")
+            try:
+                await conn.close()
+            except:
+                pass
+        logger.error(f"Error querying database for background ZIP export: {e}")
+        await db.zip_exports.update_one(
+            {"exam_id": exam_id},
+            {"$set": {
+                "status": "failed",
+                "error": f"Database query error: {str(e)}",
+                "updated_at": datetime.now(timezone.utc)
+            }}
+        )
+        return
 
     if not sub_rows:
-        raise HTTPException(status_code=404, detail="No submissions found for this exam")
+        await db.zip_exports.update_one(
+            {"exam_id": exam_id},
+            {"$set": {
+                "status": "failed",
+                "error": "No submissions found for this exam",
+                "updated_at": datetime.now(timezone.utc)
+            }}
+        )
+        return
 
-    import tempfile
-    import zipfile
-    from pathlib import Path
-    
+    total = len(sub_rows)
+    await db.zip_exports.update_one(
+        {"exam_id": exam_id},
+        {"$set": {
+            "total": total,
+            "updated_at": datetime.now(timezone.utc)
+        }}
+    )
+
     uploads_dir = Path(__file__).parent / "uploads"
     storage_service = get_storage_service(uploads_dir)
     
@@ -6419,6 +6453,7 @@ async def get_exam_export_zip(exam_id: str, authorization: Optional[str] = Heade
     os.close(temp_zip_fd)
     temp_zip_path = Path(temp_zip_path_str)
 
+    processed_count = 0
     try:
         with zipfile.ZipFile(temp_zip_path, 'w') as zip_file:
             conn = await asyncpg.connect(webapp_db_url)
@@ -6433,6 +6468,14 @@ async def get_exam_export_zip(exam_id: str, authorization: Optional[str] = Heade
                     sub_id
                 )
                 if not file_rows:
+                    processed_count += 1
+                    await db.zip_exports.update_one(
+                        {"exam_id": exam_id},
+                        {"$set": {
+                            "processed": processed_count,
+                            "updated_at": datetime.now(timezone.utc)
+                        }}
+                    )
                     continue
                 score_rows = await conn.fetch(
                     '''
@@ -6473,27 +6516,127 @@ async def get_exam_export_zip(exam_id: str, authorization: Optional[str] = Heade
                 finally:
                     if single_temp_path.exists():
                         os.remove(single_temp_path)
+                
+                processed_count += 1
+                await db.zip_exports.update_one(
+                    {"exam_id": exam_id},
+                    {"$set": {
+                        "processed": processed_count,
+                        "updated_at": datetime.now(timezone.utc)
+                    }}
+                )
             await conn.close()
-            
-        def iterfile():
-            try:
-                with open(temp_zip_path, mode="rb") as fh:
-                    yield from fh
-            finally:
-                if temp_zip_path.exists():
-                    os.remove(temp_zip_path)
+            conn = None
 
         zip_filename = f"{exam_row['name'] or 'Exam'}_Reports.zip".replace(" ", "_")
-        return StreamingResponse(
-            iterfile(), 
-            media_type="application/zip", 
-            headers={"Content-Disposition": f"attachment; filename={zip_filename}"}
+        gcs_key = f"exports/zips/{exam_id}/{zip_filename}"
+        
+        if hasattr(storage_service, "bucket"):
+            logger.info(f"Uploading export ZIP to GCS at {gcs_key}...")
+            blob = storage_service.bucket.blob(gcs_key)
+            blob.upload_from_filename(str(temp_zip_path))
+            file_base_url = os.environ.get("FILE_BASE_URL", "")
+            download_url = build_gcs_proxy_url(file_base_url, gcs_key, cache_key=f"zip-{exam_id}-{int(datetime.now().timestamp())}")
+        else:
+            local_export_dir = Path(__file__).parent / "exports"
+            local_export_dir.mkdir(exist_ok=True)
+            dest_path = local_export_dir / f"{exam_id}_{zip_filename}"
+            import shutil
+            shutil.copy(str(temp_zip_path), str(dest_path))
+            download_url = f"/v1/exams/{exam_id}/export/zip/file/{zip_filename}"
+
+        await db.zip_exports.update_one(
+            {"exam_id": exam_id},
+            {"$set": {
+                "status": "completed",
+                "processed": total,
+                "url": download_url,
+                "updated_at": datetime.now(timezone.utc)
+            }}
         )
     except Exception as exc:
+        logger.error(f"Error compiling/uploading background export ZIP: {exc}")
+        await db.zip_exports.update_one(
+            {"exam_id": exam_id},
+            {"$set": {
+                "status": "failed",
+                "error": str(exc),
+                "updated_at": datetime.now(timezone.utc)
+            }}
+        )
+    finally:
+        if conn:
+            try:
+                await conn.close()
+            except:
+                pass
         if temp_zip_path.exists():
-            os.remove(temp_zip_path)
-        logger.error(f"Error generating ZIP export: {exc}")
-        raise HTTPException(status_code=500, detail=str(exc))
+            try:
+                os.remove(temp_zip_path)
+            except:
+                pass
+
+@api_router.post("/v1/exams/{exam_id}/export/zip/start")
+async def start_exam_export_zip(
+    exam_id: str,
+    background_tasks: BackgroundTasks,
+    authorization: Optional[str] = Header(None)
+):
+    """Starts the background ZIP export compilation"""
+    user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if not webapp_db_url:
+        raise HTTPException(status_code=500, detail="Database connection not configured")
+
+    # Check if a job is already running or completed
+    existing = await db.zip_exports.find_one({"exam_id": exam_id})
+    if existing and existing.get("status") == "processing":
+        # Check if the job has been updated in the last 5 minutes to avoid stuck jobs
+        updated_at = existing.get("updated_at")
+        if isinstance(updated_at, str):
+            updated_at = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+        if updated_at and (datetime.now(timezone.utc) - updated_at).total_seconds() < 300:
+            return {
+                "status": "processing",
+                "processed": existing.get("processed", 0),
+                "total": existing.get("total", 0)
+            }
+
+    # Start the task
+    background_tasks.add_task(compile_and_upload_zip_task, exam_id, user.user_id, webapp_db_url)
+    return {"status": "processing", "processed": 0, "total": 0}
+
+@api_router.get("/v1/exams/{exam_id}/export/zip/status")
+async def get_exam_export_zip_status(exam_id: str, authorization: Optional[str] = Header(None)):
+    """Polls the status of the background ZIP export compilation"""
+    user = await get_current_user(authorization)
+    existing = await db.zip_exports.find_one({"exam_id": exam_id})
+    if not existing:
+        return {"status": "idle", "processed": 0, "total": 0}
+    
+    return {
+        "status": existing.get("status", "idle"),
+        "processed": existing.get("processed", 0),
+        "total": existing.get("total", 0),
+        "url": existing.get("url"),
+        "error": existing.get("error")
+    }
+
+@api_router.get("/v1/exams/{exam_id}/export/zip")
+async def get_exam_export_zip(exam_id: str, authorization: Optional[str] = Header(None)):
+    """Downloads all student papers compiled with feedback in a single ZIP file (redirects to GCS)"""
+    user = await get_current_user(authorization)
+    existing = await db.zip_exports.find_one({"exam_id": exam_id})
+    if not existing or existing.get("status") != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail="ZIP compilation is not completed or was not started. Please trigger /start first."
+        )
+    url = existing.get("url")
+    if not url:
+        raise HTTPException(status_code=404, detail="ZIP download URL not found")
+    
+    return RedirectResponse(url=url)
 
 
 class EmailExportRequest(BaseModel):

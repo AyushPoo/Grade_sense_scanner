@@ -274,10 +274,57 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
     ]);
   };
 
+  const runZipExportJob = async (onProgress: (msg: string) => void): Promise<string> => {
+    const backendUrl = getBackendUrl();
+    if (!backendUrl) throw new Error('Missing Backend URL configuration');
+
+    onProgress('Starting export job...');
+    const startRes = await fetch(`${backendUrl}/api/v1/exams/${examId}/export/zip/start`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    if (!startRes.ok) {
+      const errTxt = await startRes.text();
+      throw new Error(`Failed to start export: ${errTxt}`);
+    }
+
+    while (true) {
+      const statusRes = await fetch(`${backendUrl}/api/v1/exams/${examId}/export/zip/status`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (!statusRes.ok) {
+        throw new Error('Failed to get export status');
+      }
+      const statusData = await statusRes.json();
+      if (statusData.status === 'completed') {
+        return statusData.url;
+      }
+      if (statusData.status === 'failed') {
+        throw new Error(statusData.error || 'Compilation failed on server');
+      }
+      if (statusData.status === 'processing') {
+        const total = statusData.total || 0;
+        const processed = statusData.processed || 0;
+        if (total > 0) {
+          onProgress(`Compiling reports: ${processed} of ${total} zipping...`);
+        } else {
+          onProgress('Compiling reports...');
+        }
+      }
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  };
+
   const handleDownloadZipOnly = async () => {
     setIsExporting(true);
-    setExportProgress('Downloading ZIP...');
     try {
+      await runZipExportJob((msg) => setExportProgress(msg));
+      setExportProgress('Downloading ZIP...');
       const downloadUrl = `${getBackendUrl()}/api/v1/exams/${examId}/export/zip?token=${token}`;
       await Linking.openURL(downloadUrl);
     } catch (err: any) {
@@ -290,8 +337,9 @@ export function ExportModal({ visible, onClose, examId, examName, token }: Expor
 
   const handleShareZip = async () => {
     setIsExporting(true);
-    setExportProgress('Preparing ZIP for share...');
     try {
+      await runZipExportJob((msg) => setExportProgress(msg));
+      setExportProgress('Preparing ZIP for share...');
       const localUri = `${FileSystem.documentDirectory}${examName.replace(/\s+/g, '_')}_Reports_Share.zip`;
       const downloadRes = await FileSystem.downloadAsync(
         `${getBackendUrl()}/api/v1/exams/${examId}/export/zip`,

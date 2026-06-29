@@ -118,6 +118,12 @@ export interface ScanSession {
   status: 'scanning' | 'ready' | 'uploading' | 'syncing' | 'grading' | 'graded' | 'uploaded' | 'completed' | 'failed' | 'sync_failed';
   upload_progress: number;
   last_sync_error?: string | null;
+  grading_job_id?: string | null;
+  grading_job_type?: string | null;
+  grading_status?: string | null;
+  grading_progress?: number | null;
+  grading_processed_items?: number | null;
+  grading_total_items?: number | null;
   settings: ScanSessionSettings;
   question_paper: {
     page_count: number;

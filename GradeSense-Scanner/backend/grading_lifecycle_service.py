@@ -151,10 +151,13 @@ def derive_scan_session_reconciliation(
         return None
 
     if exam_status and str(exam_status).lower() in ("graded", "published", "closed", "locked"):
+        total_items = max(submission_count, len(session.get("students") or []))
         return {
             "status": "graded",
             "grading_status": "completed",
             "grading_progress": 100.0,
+            "grading_processed_items": total_items,
+            "grading_total_items": total_items,
             "last_sync_error": None,
         }
 

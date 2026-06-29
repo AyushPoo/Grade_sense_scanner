@@ -37,13 +37,16 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
     const [imageDims, setImageDims] = useState<{ width: number; height: number } | null>(null);
     const [containerDims, setContainerDims] = useState<{ width: number; height: number; scale: number } | null>(null);
     const [points, setPoints] = useState<Quadrilateral | null>(null);
-    const [activeCorner, setActiveCorner] = useState<Corner | null>(null);
+    type Edge = 'topEdge' | 'rightEdge' | 'bottomEdge' | 'leftEdge';
+    type DragTarget = Corner | Edge;
+
+    const [activeCorner, setActiveCorner] = useState<DragTarget | null>(null);
 
     // All refs that PanResponders need to see up-to-date
     const pointsRef = useRef<Quadrilateral | null>(null);
     const containerRef = useRef<{ width: number; height: number; scale: number } | null>(null);
     const dragStartRef = useRef<{ x: number; y: number } | null>(null);
-    const activeCornerRef = useRef<Corner | null>(null);
+    const activeCornerRef = useRef<DragTarget | null>(null);
 
     // Keep refs in sync with state
     useEffect(() => { pointsRef.current = points; }, [points]);
@@ -133,36 +136,94 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
         }
     }, [imageDims, SCREEN_WIDTH, SCREEN_HEIGHT]);  // re-run when imageDims or screen dimensions change
 
-    // One PanResponder that handles a corner based on activeCornerRef
+    // One PanResponder that handles a corner or edge based on activeCornerRef
     const panResponder = useMemo(() => PanResponder.create({
         onStartShouldSetPanResponder: () => activeCornerRef.current !== null,
         onMoveShouldSetPanResponder: () => activeCornerRef.current !== null,
         onPanResponderGrant: (evt) => {
-            const corner = activeCornerRef.current;
-            if (!corner || !pointsRef.current) return;
-            dragStartRef.current = { ...pointsRef.current[corner] };
-            setActiveCorner(corner);
+            const target = activeCornerRef.current;
+            if (!target || !pointsRef.current) return;
+            
+            let startPt = { x: 0, y: 0 };
+            if (target === 'topLeft') {
+                startPt = { ...pointsRef.current.topLeft };
+            } else if (target === 'topRight') {
+                startPt = { ...pointsRef.current.topRight };
+            } else if (target === 'bottomRight') {
+                startPt = { ...pointsRef.current.bottomRight };
+            } else if (target === 'bottomLeft') {
+                startPt = { ...pointsRef.current.bottomLeft };
+            } else if (target === 'topEdge') {
+                startPt = {
+                    x: (pointsRef.current.topLeft.x + pointsRef.current.topRight.x) / 2,
+                    y: (pointsRef.current.topLeft.y + pointsRef.current.topRight.y) / 2,
+                };
+            } else if (target === 'bottomEdge') {
+                startPt = {
+                    x: (pointsRef.current.bottomLeft.x + pointsRef.current.bottomRight.x) / 2,
+                    y: (pointsRef.current.bottomLeft.y + pointsRef.current.bottomRight.y) / 2,
+                };
+            } else if (target === 'leftEdge') {
+                startPt = {
+                    x: (pointsRef.current.topLeft.x + pointsRef.current.bottomLeft.x) / 2,
+                    y: (pointsRef.current.topLeft.y + pointsRef.current.bottomLeft.y) / 2,
+                };
+            } else if (target === 'rightEdge') {
+                startPt = {
+                    x: (pointsRef.current.topRight.x + pointsRef.current.bottomRight.x) / 2,
+                    y: (pointsRef.current.topRight.y + pointsRef.current.bottomRight.y) / 2,
+                };
+            }
+            dragStartRef.current = startPt;
+            setActiveCorner(target);
         },
         onPanResponderMove: (evt, gestureState) => {
-            const corner = activeCornerRef.current;
+            const target = activeCornerRef.current;
             const start = dragStartRef.current;
             const c = containerRef.current;
-            if (!corner || !start || !c || !pointsRef.current) return;
+            if (!target || !start || !c || !pointsRef.current) return;
 
-            const newX = Math.max(0, Math.min(start.x + gestureState.dx, c.width));
-            const newY = Math.max(0, Math.min(start.y + gestureState.dy, c.height));
+            const dx = gestureState.dx;
+            const dy = gestureState.dy;
 
-            const updated = { ...pointsRef.current, [corner]: { x: newX, y: newY } };
-            
+            let updated = { ...pointsRef.current };
+
+            const clampX = (val: number) => Math.max(0, Math.min(val, c.width));
+            const clampY = (val: number) => Math.max(0, Math.min(val, c.height));
+
+            if (target === 'topLeft') {
+                updated.topLeft = { x: clampX(start.x + dx), y: clampY(start.y + dy) };
+            } else if (target === 'topRight') {
+                updated.topRight = { x: clampX(start.x + dx), y: clampY(start.y + dy) };
+            } else if (target === 'bottomRight') {
+                updated.bottomRight = { x: clampX(start.x + dx), y: clampY(start.y + dy) };
+            } else if (target === 'bottomLeft') {
+                updated.bottomLeft = { x: clampX(start.x + dx), y: clampY(start.y + dy) };
+            } else if (target === 'topEdge') {
+                const newY = clampY(start.y + dy);
+                updated.topLeft = { ...updated.topLeft, y: newY };
+                updated.topRight = { ...updated.topRight, y: newY };
+            } else if (target === 'bottomEdge') {
+                const newY = clampY(start.y + dy);
+                updated.bottomLeft = { ...updated.bottomLeft, y: newY };
+                updated.bottomRight = { ...updated.bottomRight, y: newY };
+            } else if (target === 'leftEdge') {
+                const newX = clampX(start.x + dx);
+                updated.topLeft = { ...updated.topLeft, x: newX };
+                updated.bottomLeft = { ...updated.bottomLeft, x: newX };
+            } else if (target === 'rightEdge') {
+                const newX = clampX(start.x + dx);
+                updated.topRight = { ...updated.topRight, x: newX };
+                updated.bottomRight = { ...updated.bottomRight, x: newX };
+            }
+
             if (ENABLE_MANUAL_CROP_VALIDATION) {
-                // Validate convexity, winding, and edge length (e.g. 10% of shortest container side)
                 const isValidGeometry = hasConsistentWinding(updated) && isConvexQuad(updated) && minimumEdgeLengthValid(updated, 0.1, c.width, c.height);
                 if (!isValidGeometry) {
-                    if (__DEV__) console.log("[DEBUG] Invalid crop geometry rejected.");
                     return; // Prevent update
                 }
             }
-            
+
             pointsRef.current = updated;
             setPoints(updated);
         },
@@ -214,7 +275,46 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
         { corner: 'bottomLeft',  p: points.bottomLeft },
     ];
 
-    const activePoint = activeCorner ? points[activeCorner] : null;
+    const midpoints = {
+        topEdge: {
+            x: (points.topLeft.x + points.topRight.x) / 2,
+            y: (points.topLeft.y + points.topRight.y) / 2,
+        },
+        bottomEdge: {
+            x: (points.bottomLeft.x + points.bottomRight.x) / 2,
+            y: (points.bottomLeft.y + points.bottomRight.y) / 2,
+        },
+        leftEdge: {
+            x: (points.topLeft.x + points.bottomLeft.x) / 2,
+            y: (points.topLeft.y + points.bottomLeft.y) / 2,
+        },
+        rightEdge: {
+            x: (points.topRight.x + points.bottomRight.x) / 2,
+            y: (points.topRight.y + points.bottomRight.y) / 2,
+        },
+    };
+
+    const edgeHandles: { edge: Edge; p: { x: number; y: number } }[] = [
+        { edge: 'topEdge', p: midpoints.topEdge },
+        { edge: 'bottomEdge', p: midpoints.bottomEdge },
+        { edge: 'leftEdge', p: midpoints.leftEdge },
+        { edge: 'rightEdge', p: midpoints.rightEdge },
+    ];
+
+    const getActivePoint = (): { x: number; y: number } | null => {
+        if (!activeCorner) return null;
+        if (activeCorner === 'topLeft') return points.topLeft;
+        if (activeCorner === 'topRight') return points.topRight;
+        if (activeCorner === 'bottomRight') return points.bottomRight;
+        if (activeCorner === 'bottomLeft') return points.bottomLeft;
+        if (activeCorner === 'topEdge') return midpoints.topEdge;
+        if (activeCorner === 'bottomEdge') return midpoints.bottomEdge;
+        if (activeCorner === 'leftEdge') return midpoints.leftEdge;
+        if (activeCorner === 'rightEdge') return midpoints.rightEdge;
+        return null;
+    };
+
+    const activePoint = getActivePoint();
     let loupeStyle: any = null;
     let zoomedImageStyle: any = null;
 
@@ -302,9 +402,47 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
                         <Line x1={points.topRight.x} y1={points.topRight.y} x2={points.bottomRight.x} y2={points.bottomRight.y} stroke="#2196F3" strokeWidth="2" />
                         <Line x1={points.bottomRight.x} y1={points.bottomRight.y} x2={points.bottomLeft.x} y2={points.bottomLeft.y} stroke="#2196F3" strokeWidth="2" />
                         <Line x1={points.bottomLeft.x} y1={points.bottomLeft.y} x2={points.topLeft.x} y2={points.topLeft.y} stroke="#2196F3" strokeWidth="2" />
+                        
+                        {/* Midpoint intersecting crosshair guides when dragging */}
+                        {activePoint && (
+                            <>
+                                <Line 
+                                    x1={0} 
+                                    y1={activePoint.y} 
+                                    x2={containerDims.width} 
+                                    y2={activePoint.y} 
+                                    stroke="rgba(33,150,243,0.75)" 
+                                    strokeWidth="1.5" 
+                                    strokeDasharray="4,4" 
+                                />
+                                <Line 
+                                    x1={activePoint.x} 
+                                    y1={0} 
+                                    x2={activePoint.x} 
+                                    y2={containerDims.height} 
+                                    stroke="rgba(33,150,243,0.75)" 
+                                    strokeWidth="1.5" 
+                                    strokeDasharray="4,4" 
+                                />
+                            </>
+                        )}
+
                         {/* Glowing corner dots */}
                         {corners.map(({ corner, p }) => (
                             <Circle key={corner} cx={p.x} cy={p.y} r={CORNER_DOT_SIZE / 2} fill="#2196F3" stroke="#fff" strokeWidth="2" />
+                        ))}
+
+                        {/* Midpoint edge handles */}
+                        {edgeHandles.map(({ edge, p }) => (
+                            <Circle 
+                                key={edge} 
+                                cx={p.x} 
+                                cy={p.y} 
+                                r={CORNER_DOT_SIZE * 0.4} 
+                                fill="#EF9F27" 
+                                stroke="#fff" 
+                                strokeWidth="2" 
+                            />
                         ))}
                     </Svg>
 
@@ -314,6 +452,24 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
                             key={corner}
                             onStartShouldSetResponder={() => {
                                 activeCornerRef.current = corner;
+                                return false; // let panResponder take over
+                            }}
+                            style={[
+                                styles.cornerHit,
+                                {
+                                    left: p.x - CORNER_HIT_SIZE / 2,
+                                    top:  p.y - CORNER_HIT_SIZE / 2,
+                                },
+                            ]}
+                        />
+                    ))}
+
+                    {/* Invisible large touch targets for each edge midpoint */}
+                    {edgeHandles.map(({ edge, p }) => (
+                        <View
+                            key={edge}
+                            onStartShouldSetResponder={() => {
+                                activeCornerRef.current = edge;
                                 return false; // let panResponder take over
                             }}
                             style={[
@@ -344,7 +500,7 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
             </View>
 
             <View style={styles.hint}>
-                <Text style={styles.hintText}>Drag the corners to adjust the crop area</Text>
+                <Text style={styles.hintText}>Drag the corners or orange edge midpoints to adjust the crop area</Text>
             </View>
         </View>
     );

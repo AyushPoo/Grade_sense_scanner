@@ -338,6 +338,14 @@ export default function UploadScreen() {
     );
   };
 
+  const handleClose = () => {
+    if (isUploading) {
+      router.replace('/(tabs)/home');
+    } else {
+      router.back();
+    }
+  };
+
   const handleCancel = () => {
     if (isUploading) {
       Alert.alert(
@@ -384,7 +392,7 @@ export default function UploadScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={handleCancel} style={styles.backButton}>
+        <TouchableOpacity onPress={handleClose} style={styles.backButton}>
           <Ionicons name="close" size={24} color={COLORS.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>
@@ -566,7 +574,7 @@ export default function UploadScreen() {
                 icon="people-outline"
                 label="Student Answer Papers"
                 required
-                value={getDocumentDisplayValue(session.students.flatMap(s => s.pages), 'Student Papers')}
+                value={getStudentsDocumentDisplayValue(session.students)}
                 hasDocument={session.students.length > 0}
                 onPress={() => pickDocuments('students')}
                 onClear={() => handleRemoveDocuments('students')}
@@ -605,7 +613,7 @@ export default function UploadScreen() {
                 <View style={styles.previewItemInfo}>
                   <Text style={styles.previewItemLabel}>Students</Text>
                   <Text style={styles.previewItemValue}>
-                    {getDocumentDisplayValue(session.students.flatMap(s => s.pages), 'Student Papers')}
+                    {getStudentsDocumentDisplayValue(session.students)}
                   </Text>
                 </View>
               </View>
@@ -752,13 +760,14 @@ function getDocumentDisplayValue(pages: any[], defaultLabel: string): string {
     if (page.original_name && !page.original_name.startsWith('native_scan_')) {
       return page.original_name;
     }
-    return '1 scanned page';
   }
-  const allImported = pages.every(p => p.scanner_engine === 'import');
-  if (allImported && pages.length <= 3) {
-    return pages.map(p => p.original_name).filter(Boolean).join(', ');
-  }
-  return `${pages.length} document${pages.length === 1 ? '' : 's'}`;
+  return '1 document';
+}
+
+function getStudentsDocumentDisplayValue(students: any[]): string {
+  if (!students || students.length === 0) return 'No document selected';
+  const count = students.length;
+  return `${count} document${count === 1 ? '' : 's'}`;
 }
 
 function DocumentAttachRow({

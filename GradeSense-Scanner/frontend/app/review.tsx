@@ -11,6 +11,7 @@ import {
   Alert,
   BackHandler,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -21,7 +22,11 @@ import { useScanStore, qualityScore, QualityLevel, PendingRetake } from '../src/
 import { useShallow } from 'zustand/react/shallow';
 import { ScannedStudent, ScannedPage } from '../src/types';
 import { applyFilter, FilterMode, Quadrilateral } from '../src/utils/cvProcessor';
+import * as FileSystem from 'expo-file-system/legacy';
 import { File, Paths } from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
+import * as Print from 'expo-print';
+import JSZip from 'jszip';
 import { CropOverlay } from '../src/components/CropOverlay';
 import { normalizeCapturedDocument } from '../src/utils/documentNormalizer';
 import * as ImageManipulator from 'expo-image-manipulator';
@@ -391,6 +396,169 @@ export default function ReviewScreen() {
     { id: 'adaptive_threshold', label: 'OCR Binarize', icon: 'scan-outline' },
   ];
   const [isApplyingGlobalFilter, setIsApplyingGlobalFilter] = useState(false);
+  const [isZipping, setIsZipping] = useState(false);
+  const [zipProgress, setZipProgress] = useState('');
+
+  const compileImagesToPdf = async (imageUris: string[], title: string): Promise<string> => {
+    const imgHtmls = [];
+    for (const uri of imageUris) {
+      try {
+        const filePath = uri.startsWith('file://') ? uri : `file://${uri}`;
+        const base64 = await FileSystem.readAsStringAsync(filePath, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        imgHtmls.push(
+          `<img src="data:image/jpeg;base64,${base64}" style="width: 100%; max-width: 100%; height: auto; display: block; page-break-after: always;" />`
+        );
+      } catch (err) {
+        console.warn(`Failed to read image for PDF ${title}:`, err);
+      }
+    }
+
+    const html = `
+      <html>
+        <head>
+          <title>${title}</title>
+          <style>
+            @page { size: A4; margin: 0; }
+            body { margin: 0; padding: 0; background: white; }
+            img { width: 100%; height: auto; page-break-after: always; display: block; }
+          </style>
+        </head>
+        <body>
+          ${imgHtmls.join('')}
+        </body>
+      </html>
+    `;
+    
+    const { uri } = await Print.printToFileAsync({ html });
+    return uri;
+  };
+
+  const handleDownloadBackup = async () => {
+    if (!session) return;
+    setIsZipping(true);
+    setZipProgress('Starting local compilation...');
+    const tempFiles: string[] = [];
+    try {
+      const zip = new JSZip();
+      
+      // 1. Add Question Paper as a PDF
+      if (session.question_paper?.pages && session.question_paper.pages.length > 0) {
+        try {
+          setZipProgress('Compiling Question Paper PDF...');
+          const uris = session.question_paper.pages.map(p => p.file_path);
+          const pdfUri = await compileImagesToPdf(uris, 'question_paper');
+          tempFiles.push(pdfUri);
+          const base64 = await FileSystem.readAsStringAsync(pdfUri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          zip.file('question_paper.pdf', base64, { base64: true });
+        } catch (err) {
+          console.warn('Failed to add QP PDF to zip:', err);
+        }
+      }
+
+      // 2. Add Model Answer as a PDF
+      if (session.model_answer?.pages && session.model_answer.pages.length > 0) {
+        try {
+          setZipProgress('Compiling Model Answer PDF...');
+          const uris = session.model_answer.pages.map(p => p.file_path);
+          const pdfUri = await compileImagesToPdf(uris, 'model_answer');
+          tempFiles.push(pdfUri);
+          const base64 = await FileSystem.readAsStringAsync(pdfUri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          zip.file('model_answer.pdf', base64, { base64: true });
+        } catch (err) {
+          console.warn('Failed to add Model Answer PDF to zip:', err);
+        }
+      }
+
+      // 3. Add Student Answer Papers as PDFs (one PDF per student)
+      if (session.students) {
+        const totalStudents = session.students.length;
+        let count = 0;
+        for (const student of session.students) {
+          count++;
+          const studentName = student.name || `student_${student.id || student.roll_number || 'unknown'}`;
+          setZipProgress(`Compiling student PDFs: ${count} of ${totalStudents}...`);
+          if (student.pages && student.pages.length > 0) {
+            try {
+              const uris = student.pages.map(p => p.file_path);
+              const sanitizedName = studentName.replace(/\s+/g, '_');
+              const pdfUri = await compileImagesToPdf(uris, sanitizedName);
+              tempFiles.push(pdfUri);
+              const base64 = await FileSystem.readAsStringAsync(pdfUri, {
+                encoding: FileSystem.EncodingType.Base64,
+              });
+              zip.file(`students/${sanitizedName}.pdf`, base64, { base64: true });
+            } catch (err) {
+              console.warn(`Failed to add Student ${studentName} PDF to zip:`, err);
+            }
+          }
+        }
+      }
+
+      // Generate ZIP file
+      setZipProgress('Packaging ZIP file...');
+      const content = await zip.generateAsync({ type: 'base64' });
+      const filename = `${session.session_name.replace(/\s+/g, '_')}_Backup_Scans.zip`;
+
+      const shareZip = async (zipContent: string, zipFilename: string) => {
+        const fileUri = `${FileSystem.cacheDirectory}${zipFilename}`;
+        await FileSystem.writeAsStringAsync(fileUri, zipContent, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(fileUri, {
+            mimeType: 'application/zip',
+            dialogTitle: 'Export Scanned Pages',
+            UTI: 'public.zip-archive',
+          });
+        } else {
+          Alert.alert('Sharing not available', 'Sharing is not supported on this device.');
+        }
+      };
+
+      if (Platform.OS === 'android') {
+        try {
+          const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+          if (permissions.granted) {
+            const directoryUri = permissions.directoryUri;
+            const fileUri = await FileSystem.StorageAccessFramework.createFileAsync(
+              directoryUri,
+              filename,
+              'application/zip'
+            );
+            await FileSystem.writeAsStringAsync(fileUri, content, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+            Alert.alert('Download Complete', 'Backup ZIP has been saved to your selected directory.');
+          } else {
+            await shareZip(content, filename);
+          }
+        } catch (err) {
+          console.warn('SAF failed, falling back to share sheet:', err);
+          await shareZip(content, filename);
+        }
+      } else {
+        await shareZip(content, filename);
+      }
+    } catch (err: any) {
+      console.error('Error generating backup zip:', err);
+      Alert.alert('Backup Failed', err.message || 'Could not compile backup ZIP.');
+    } finally {
+      // Clean up temporary PDF files
+      for (const fileUri of tempFiles) {
+        try {
+          await FileSystem.deleteAsync(fileUri, { idempotent: true });
+        } catch (_) {}
+      }
+      setIsZipping(false);
+      setZipProgress('');
+    }
+  };
   const [cropTarget, setCropTarget] = useState<{ student: ScannedStudent, page: ScannedPage, pageIndex: number } | null>(null);
   const [isProcessingCrop, setIsProcessingCrop] = useState(false);
 
@@ -733,15 +901,42 @@ export default function ReviewScreen() {
         ))}
       </ScrollView>
 
-      {/* Upload CTA */}
+            {/* Upload CTA */}
       <View style={styles.footer}>
-        <TouchableOpacity
-          style={styles.uploadButton}
-          onPress={() => router.push({ pathname: '/upload', params: { sessionId: session.session_id } })}
-        >
-          <Text style={styles.uploadButtonText}>Upload to GradeSense</Text>
-        </TouchableOpacity>
+        <View style={styles.footerRow}>
+          <TouchableOpacity
+            style={[styles.uploadButton, { flex: 1 }]}
+            onPress={() => router.push({ pathname: '/upload', params: { sessionId: session.session_id } })}
+          >
+            <Text style={styles.uploadButtonText}>Upload to GradeSense</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.downloadBackupButton}
+            onPress={handleDownloadBackup}
+            disabled={isZipping}
+            activeOpacity={0.7}
+          >
+            {isZipping ? (
+              <ActivityIndicator size="small" color={COLORS.primary} />
+            ) : (
+              <Ionicons name="download-outline" size={24} color={COLORS.primary} />
+            )}
+          </TouchableOpacity>
+        </View>
       </View>
+
+      {isZipping && (
+        <View style={styles.globalFilterOverlay}>
+          <ActivityIndicator size="large" color={COLORS.primary} />
+          <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700', marginTop: 16, textAlign: 'center', paddingHorizontal: 24 }}>
+            {zipProgress || 'Preparing backup ZIP...'}
+          </Text>
+          <Text style={{ color: '#aaa', fontSize: 12, marginTop: 8, textAlign: 'center', paddingHorizontal: 24 }}>
+            Please keep the app open. This can take a few minutes for 280+ pages.
+          </Text>
+        </View>
+      )}
 
       {cropTarget && (cropTarget.page.raw_file_path || cropTarget.page.file_path) && (
         <View style={StyleSheet.absoluteFill}>
@@ -966,8 +1161,10 @@ const styles = StyleSheet.create({
   thumbActionLabel: { fontSize: 11, color: COLORS.primary },
 
   footer:           { padding: 16, borderTopWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border },
+  footerRow:        { flexDirection: 'row', alignItems: 'center', gap: 12 },
   uploadButton:     { backgroundColor: COLORS.primary, borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
   uploadButtonText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  downloadBackupButton: { width: 50, height: 50, borderRadius: 12, borderWidth: 1.5, borderColor: COLORS.primary, backgroundColor: COLORS.primaryXLight || '#FFF4EF', justifyContent: 'center', alignItems: 'center' },
 
   filterPaletteContainer: { borderBottomWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border, position: 'relative' },
   filterChip:       { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20, backgroundColor: COLORS.backgroundDark, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },

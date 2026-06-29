@@ -90,7 +90,7 @@ const statStyles = StyleSheet.create({
 });
 
 // ─── Grading Progress Card ─────────────────────────────────────────────
-function GradingProgressCard({ session, job, onPress, onRetry, isRetrying }: any) {
+function GradingProgressCard({ session, job, onPress, onRetry, isRetrying, onDismiss }: any) {
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const { processed, total, percent } = normalizeJobProgress(job);
   const isSyncFailed = session.status === 'sync_failed' || session.status === 'failed';
@@ -111,9 +111,21 @@ function GradingProgressCard({ session, job, onPress, onRetry, isRetrying }: any
     }
   }, [isComplete, pulseAnim]);
 
+  const renderDismissButton = () => (
+    <TouchableOpacity
+      style={gradingStyles.dismissBtn}
+      onPress={onDismiss}
+      activeOpacity={0.7}
+      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+    >
+      <Ionicons name="close" size={18} color={COLORS.textLight} />
+    </TouchableOpacity>
+  );
+
   if (isSyncFailed || isGradingFailed) {
     return (
       <View style={[gradingStyles.card, gradingStyles.failedCard]}>
+        {renderDismissButton()}
         <View style={gradingStyles.completeTop}>
           <View style={[gradingStyles.completeIconBadge, gradingStyles.failedIconBadge]}>
             <Ionicons name="alert-circle" size={28} color={COLORS.error} />
@@ -146,6 +158,7 @@ function GradingProgressCard({ session, job, onPress, onRetry, isRetrying }: any
   if (isComplete) {
     return (
       <TouchableOpacity style={[gradingStyles.card, gradingStyles.completeCard]} onPress={onPress} activeOpacity={0.88}>
+        {renderDismissButton()}
         <View style={gradingStyles.completeTop}>
           <View style={gradingStyles.completeIconBadge}>
             <Ionicons name="checkmark-circle" size={28} color={COLORS.success} />
@@ -167,6 +180,7 @@ function GradingProgressCard({ session, job, onPress, onRetry, isRetrying }: any
   if (isAwaitingFirstReview) {
     return (
       <TouchableOpacity style={[gradingStyles.card, gradingStyles.pilotReviewCard]} onPress={onPress} activeOpacity={0.88}>
+        {renderDismissButton()}
         <View style={gradingStyles.completeTop}>
           <View style={gradingStyles.pilotReviewIconBadge}>
             <Ionicons name="reader" size={25} color={COLORS.primary} />
@@ -189,6 +203,7 @@ function GradingProgressCard({ session, job, onPress, onRetry, isRetrying }: any
 
   return (
     <View style={gradingStyles.card}>
+      {renderDismissButton()}
       <View style={gradingStyles.cardTop}>
         <View style={{ flex: 1 }}>
           <Text style={gradingStyles.sessionTitle} numberOfLines={1}>{session.session_name}</Text>
@@ -336,6 +351,13 @@ const gradingStyles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
   },
+  dismissBtn: {
+    position: 'absolute',
+    top: 14,
+    right: 14,
+    zIndex: 10,
+    padding: 4,
+  },
 });
 
 // ─── Session Row Item ──────────────────────────────────────────────────
@@ -436,6 +458,7 @@ export default function HomeScreen() {
   const [localConsentChecked, setLocalConsentChecked] = useState(false);
   const [exams, setExams] = useState<any[]>([]);
   const [dismissedExamIds, setDismissedExamIds] = useState<string[]>([]);
+  const [dismissedSessionIds, setDismissedSessionIds] = useState<string[]>([]);
   const [retryingExamIds, setRetryingExamIds] = useState<string[]>([]);
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const completedJobRefreshRef = useRef<Set<string>>(new Set());
@@ -474,6 +497,11 @@ export default function HomeScreen() {
     AsyncStorage.getItem('gradesense.dismissedReviewExamIds')
       .then(value => {
         if (value) setDismissedExamIds(JSON.parse(value));
+      })
+      .catch(() => {});
+    AsyncStorage.getItem('gradesense.dismissedSessionIds')
+      .then(value => {
+        if (value) setDismissedSessionIds(JSON.parse(value));
       })
       .catch(() => {});
   }, [fadeAnim, fetchExams, fetchSessions]);
@@ -567,6 +595,18 @@ export default function HomeScreen() {
     return () => { active = false; clearInterval(interval); };
   }, [pollingSessions]);
 
+  // Periodic session status polling fail-safe (every 15s)
+  useEffect(() => {
+    const token = useAuthStore.getState().sessionToken;
+    if (!token) return;
+
+    const interval = setInterval(() => {
+      fetchSessions().catch(() => {});
+    }, 15000);
+
+    return () => clearInterval(interval);
+  }, [fetchSessions]);
+
   const todaySessions = sessions.filter(s => s.created_at && new Date(s.created_at).toDateString() === new Date().toDateString()).length;
   const pendingUploads = sessions.filter(s => s.status === 'ready' || s.status === 'failed').length;
   const totalPages = sessions.reduce((sum, s) => sum + (s.stats?.total_pages || 0), 0);
@@ -592,11 +632,27 @@ export default function HomeScreen() {
   };
 
   const firstName = user?.name?.split(' ')[0] || 'Teacher';
-  const visibleStatusSessions = sessions.filter(session =>
-    shouldShowGradingStatus(session, gradingProgress[session.session_id]) &&
-    (!session.exam_id || !dismissedExamIds.includes(String(session.exam_id)))
-  );
+  const visibleStatusSessions = sessions.filter(session => {
+    const job = gradingProgress[session.session_id] || (session.grading_job_id ? {
+      id: session.grading_job_id,
+      type: session.grading_job_type || 'grade_submissions',
+      status: session.grading_status || 'completed',
+      progress: session.grading_progress || 100.0,
+      processedItems: session.grading_processed_items || 0,
+      totalItems: session.grading_total_items || 0,
+    } : null);
+
+    return shouldShowGradingStatus(session, job) &&
+      (!session.exam_id || !dismissedExamIds.includes(String(session.exam_id))) &&
+      !dismissedSessionIds.includes(session.session_id);
+  });
   const readyExams = exams.filter(exam => !dismissedExamIds.includes(String(exam.id)));
+
+  const dismissSession = async (sessionId: string) => {
+    const nextDismissed = Array.from(new Set([...dismissedSessionIds, sessionId]));
+    setDismissedSessionIds(nextDismissed);
+    AsyncStorage.setItem('gradesense.dismissedSessionIds', JSON.stringify(nextDismissed)).catch(() => {});
+  };
 
   const openReadyExam = async (exam: any) => {
     const examId = String(exam.id);
@@ -713,7 +769,14 @@ export default function HomeScreen() {
               {visibleStatusSessions
                 .slice(0, 3)
                 .map(session => {
-                  const job = gradingProgress[session.session_id];
+                  const job = gradingProgress[session.session_id] || (session.grading_job_id ? {
+                    id: session.grading_job_id,
+                    type: session.grading_job_type || 'grade_submissions',
+                    status: session.grading_status || 'completed',
+                    progress: session.grading_progress || 100.0,
+                    processedItems: session.grading_processed_items || 0,
+                    totalItems: session.grading_total_items || 0,
+                  } : null);
                   const isComplete = isCompletedGradingJob(job);
                   return (
                     <GradingProgressCard
@@ -723,6 +786,7 @@ export default function HomeScreen() {
                       onRetry={() => retryGrading(session)}
                       isRetrying={retryingExamIds.includes(String(session.exam_id))}
                       onPress={isComplete ? () => openCompletedGradingSession(session) : undefined}
+                      onDismiss={() => dismissSession(session.session_id)}
                     />
                   );
                 })}

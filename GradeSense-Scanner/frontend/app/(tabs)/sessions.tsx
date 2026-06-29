@@ -10,6 +10,8 @@ import {
   ActivityIndicator,
   TextInput,
   ScrollView,
+  Modal,
+  Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -56,7 +58,75 @@ export default function SessionsScreen() {
   const [selectedSubject, setSelectedSubject] = useState('All');
   const [sortBy, setSortBy] = useState<'date' | 'name'>('date');
 
+  const [showFiltersModal, setShowFiltersModal] = useState(false);
+  const [activeFilterCategory, setActiveFilterCategory] = useState<'batch' | 'subject'>('batch');
+  const [tempBatch, setTempBatch] = useState('All');
+  const [tempSubject, setTempSubject] = useState('All');
+
+  const openFilters = () => {
+    setTempBatch(selectedBatch);
+    setTempSubject(selectedSubject);
+    setShowFiltersModal(true);
+  };
+
+  const applyFilters = () => {
+    setSelectedBatch(tempBatch);
+    setSelectedSubject(tempSubject);
+    setShowFiltersModal(false);
+  };
+
+  const clearTempFilters = () => {
+    setTempBatch('All');
+    setTempSubject('All');
+  };
+
+  const getActiveFiltersCount = () => {
+    let count = 0;
+    if (selectedBatch !== 'All') count++;
+    if (selectedSubject !== 'All') count++;
+    return count;
+  };
+
   const sessions = Array.isArray(savedSessions) ? savedSessions : [];
+
+  const tempFilteredCount = React.useMemo(() => {
+    if (activeTab === 'review') {
+      let list = [...reviewExams];
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        list = list.filter(e => 
+          e.name.toLowerCase().includes(q) || 
+          (e.subjectName && e.subjectName.toLowerCase().includes(q)) ||
+          (e.batchName && e.batchName.toLowerCase().includes(q))
+        );
+      }
+      if (tempBatch !== 'All') {
+        list = list.filter(e => e.batchName === tempBatch);
+      }
+      if (tempSubject !== 'All') {
+        list = list.filter(e => e.subjectName === tempSubject);
+      }
+      return list.length;
+    } else {
+      let list = [...sessions];
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        list = list.filter(s => s.session_name.toLowerCase().includes(q));
+      }
+      if (tempBatch !== 'All') {
+        list = list.filter(s => s.batch_name === tempBatch);
+      }
+      if (tempSubject !== 'All') {
+        list = list.filter(s => {
+          if (!s.subject_id) return false;
+          const subj = savedSubjects.find(sub => sub.id === s.subject_id);
+          const name = subj ? subj.name : 'Unknown Subject';
+          return name === tempSubject;
+        });
+      }
+      return list.length;
+    }
+  }, [activeTab, sessions, reviewExams, searchQuery, tempBatch, tempSubject, savedSubjects]);
 
   const filteredSessions = React.useMemo(() => {
     let list = [...sessions];
@@ -381,66 +451,125 @@ export default function SessionsScreen() {
             {sortBy === 'date' ? 'Latest' : 'A-Z'}
           </Text>
         </TouchableOpacity>
+
+        {/* Filters Trigger */}
+        <TouchableOpacity
+          style={[
+            styles.sortToggle,
+            getActiveFiltersCount() > 0 && styles.filterToggleActive
+          ]}
+          onPress={openFilters}
+          activeOpacity={0.8}
+        >
+          <Ionicons 
+            name="funnel-outline" 
+            size={15} 
+            color={getActiveFiltersCount() > 0 ? COLORS.primary : COLORS.textMuted} 
+          />
+          <Text 
+            style={[
+              styles.sortToggleText,
+              { color: getActiveFiltersCount() > 0 ? COLORS.primary : COLORS.textMuted }
+            ]}
+          >
+            {getActiveFiltersCount() > 0 ? `Filters (${getActiveFiltersCount()})` : 'Filters'}
+          </Text>
+        </TouchableOpacity>
       </View>
 
-      {/* Dynamic Filters Row */}
-      {(uniqueBatches.length > 2 || uniqueSubjects.length > 2) && (
-        <View style={styles.filtersContainer}>
-          {uniqueBatches.length > 2 && (
-            <View style={styles.filterGroup}>
-              <Text style={styles.filterGroupLabel}>Batch:</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
-                {uniqueBatches.map(batchName => (
+      {/* FILTERS MODAL */}
+      <Modal
+        visible={showFiltersModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowFiltersModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            {/* Modal Header */}
+            <View style={styles.modalHeader}>
+              <View style={styles.headerLeft}>
+                <TouchableOpacity onPress={() => setShowFiltersModal(false)} style={styles.backButton}>
+                  <Ionicons name="close" size={24} color={COLORS.text} />
+                </TouchableOpacity>
+                <Text style={styles.modalTitle}>Filters</Text>
+              </View>
+              {(tempBatch !== 'All' || tempSubject !== 'All') && (
+                <TouchableOpacity onPress={clearTempFilters}>
+                  <Text style={styles.clearAllText}>Clear Filters</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Split Content */}
+            <View style={styles.splitContent}>
+              {/* Left Column: Categories List */}
+              <View style={styles.leftColumn}>
+                <TouchableOpacity
+                  style={[styles.categoryTab, activeFilterCategory === 'batch' && styles.categoryTabActive]}
+                  onPress={() => setActiveFilterCategory('batch')}
+                >
+                  <Text style={[styles.categoryText, activeFilterCategory === 'batch' && styles.categoryTextActive]}>
+                    Batch {tempBatch !== 'All' ? '•' : ''}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.categoryTab, activeFilterCategory === 'subject' && styles.categoryTabActive]}
+                  onPress={() => setActiveFilterCategory('subject')}
+                >
+                  <Text style={[styles.categoryText, activeFilterCategory === 'subject' && styles.categoryTextActive]}>
+                    Subject {tempSubject !== 'All' ? '•' : ''}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Right Column: Options List */}
+              <ScrollView style={styles.rightColumn} contentContainerStyle={styles.rightColumnContent}>
+                {activeFilterCategory === 'batch' && uniqueBatches.map(batchName => (
                   <TouchableOpacity
                     key={batchName}
-                    style={[
-                      styles.filterChip,
-                      selectedBatch === batchName && styles.filterChipActive
-                    ]}
-                    onPress={() => setSelectedBatch(batchName)}
+                    style={styles.optionItem}
+                    onPress={() => setTempBatch(batchName)}
                   >
-                    <Text
-                      style={[
-                        styles.filterChipText,
-                        selectedBatch === batchName && styles.filterChipTextActive
-                      ]}
-                    >
+                    <View style={[styles.radioOuter, tempBatch === batchName && styles.radioOuterSelected]}>
+                      {tempBatch === batchName && <View style={styles.radioInner} />}
+                    </View>
+                    <Text style={[styles.optionText, tempBatch === batchName && styles.optionTextSelected]}>
                       {batchName}
                     </Text>
                   </TouchableOpacity>
                 ))}
-              </ScrollView>
-            </View>
-          )}
 
-          {uniqueSubjects.length > 2 && (
-            <View style={styles.filterGroup}>
-              <Text style={styles.filterGroupLabel}>Subject:</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
-                {uniqueSubjects.map(subjName => (
+                {activeFilterCategory === 'subject' && uniqueSubjects.map(subjName => (
                   <TouchableOpacity
                     key={subjName}
-                    style={[
-                      styles.filterChip,
-                      selectedSubject === subjName && styles.filterChipActive
-                    ]}
-                    onPress={() => setSelectedSubject(subjName)}
+                    style={styles.optionItem}
+                    onPress={() => setTempSubject(subjName)}
                   >
-                    <Text
-                      style={[
-                        styles.filterChipText,
-                        selectedSubject === subjName && styles.filterChipTextActive
-                      ]}
-                    >
+                    <View style={[styles.radioOuter, tempSubject === subjName && styles.radioOuterSelected]}>
+                      {tempSubject === subjName && <View style={styles.radioInner} />}
+                    </View>
+                    <Text style={[styles.optionText, tempSubject === subjName && styles.optionTextSelected]}>
                       {subjName}
                     </Text>
                   </TouchableOpacity>
                 ))}
               </ScrollView>
             </View>
-          )}
+
+            {/* Bottom Actions */}
+            <View style={styles.bottomActions}>
+              <Text style={styles.resultsText}>
+                {tempFilteredCount} {activeTab === 'drafts' ? (tempFilteredCount === 1 ? 'draft' : 'drafts') : (tempFilteredCount === 1 ? 'exam' : 'exams')} found
+              </Text>
+              <TouchableOpacity style={styles.applyButton} onPress={applyFilters}>
+                <Text style={styles.applyButtonText}>Apply</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
         </View>
-      )}
+      </Modal>
 
       {activeTab === 'drafts' ? (
         sessions.length === 0 ? (
@@ -624,54 +753,55 @@ const styles = StyleSheet.create({
 
   // Divider
   divider: { height: 1, backgroundColor: COLORS.borderLight, marginBottom: 12 },
-
+  
   // Stats row
-  statsRow: { flexDirection: 'row', alignItems: 'center' },
-  stat: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  statVal: { fontSize: 13, fontWeight: '700', color: COLORS.text },
-  statLabel: { fontSize: 11, color: COLORS.textMuted },
-  statSep: { width: 1, height: 14, backgroundColor: COLORS.border, marginHorizontal: 10 },
-  spacer: { flex: 1 },
+  statsRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'nowrap' },
+  stat: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  statVal: { fontSize: 12, fontWeight: '700', color: COLORS.text },
+  statLabel: { fontSize: 10, color: COLORS.textMuted },
+  statSep: { width: 1, height: 12, backgroundColor: COLORS.border, marginHorizontal: 6 },
+  spacer: { flex: 1, minWidth: 4 },
 
   statusBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
+    gap: 3,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
     borderRadius: 20,
+    flexShrink: 1,
   },
-  statusText: { fontSize: 11, fontWeight: '700' },
+  statusText: { fontSize: 10, fontWeight: '700' },
 
   uploadCTA: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    gap: 4,
     backgroundColor: COLORS.primary,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     borderRadius: 20,
-    marginLeft: 8,
+    marginLeft: 6,
     shadowColor: COLORS.primary,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.2,
     shadowRadius: 4,
     elevation: 2,
   },
-  uploadCTAText: { color: '#fff', fontSize: 12, fontWeight: '700' },
+  uploadCTAText: { color: '#fff', fontSize: 11, fontWeight: '700' },
 
   reviewCTA: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 3,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    gap: 2,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     borderRadius: 20,
     borderWidth: 1.5,
     borderColor: COLORS.primary,
-    marginLeft: 8,
+    marginLeft: 6,
   },
-  reviewCTAText: { color: COLORS.primary, fontSize: 12, fontWeight: '700' },
+  reviewCTAText: { color: COLORS.primary, fontSize: 11, fontWeight: '700' },
 
   reviewExamCard: {
     alignItems: 'center',
@@ -803,44 +933,142 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
-  filtersContainer: {
-    marginHorizontal: 16,
-    marginBottom: 8,
-    gap: 6,
-  },
-  filterGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  filterGroupLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: COLORS.textMuted,
-    width: 55,
-  },
-  filterScroll: {
-    paddingRight: 16,
-    gap: 6,
-  },
-  filterChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-    backgroundColor: COLORS.surfaceElevated,
-    borderWidth: 1,
-    borderColor: COLORS.borderLight,
-  },
-  filterChipActive: {
-    backgroundColor: COLORS.primary,
+  filterToggleActive: {
+    backgroundColor: COLORS.primaryXLight,
     borderColor: COLORS.primary,
   },
-  filterChipText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: COLORS.textLight,
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: COLORS.overlay,
+    justifyContent: 'flex-end',
   },
-  filterChipTextActive: {
-    color: '#fff',
+  modalContainer: {
+    backgroundColor: COLORS.background,
+    height: Dimensions.get('window').height * 0.75,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    overflow: 'hidden',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    height: 56,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.borderLight,
+  },
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  backButton: {
+    padding: 4,
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  clearAllText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.primary,
+  },
+  splitContent: {
+    flex: 1,
+    flexDirection: 'row',
+  },
+  leftColumn: {
+    width: '35%',
+    backgroundColor: '#F0F2F5',
+    borderRightWidth: 1,
+    borderRightColor: COLORS.borderLight,
+  },
+  categoryTab: {
+    paddingVertical: 16,
+    paddingHorizontal: 12,
+    borderLeftWidth: 4,
+    borderLeftColor: 'transparent',
+  },
+  categoryTabActive: {
+    backgroundColor: COLORS.background,
+    borderLeftColor: COLORS.primary,
+  },
+  categoryText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: COLORS.textMuted,
+  },
+  categoryTextActive: {
+    fontWeight: '700',
+    color: COLORS.primary,
+  },
+  rightColumn: {
+    flex: 1,
+    backgroundColor: COLORS.background,
+  },
+  rightColumnContent: {
+    paddingVertical: 8,
+  },
+  optionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    gap: 12,
+  },
+  radioOuter: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 2,
+    borderColor: COLORS.textMuted,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  radioOuterSelected: {
+    borderColor: COLORS.primary,
+  },
+  radioInner: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: COLORS.primary,
+  },
+  optionText: {
+    fontSize: 14,
+    color: COLORS.text,
+  },
+  optionTextSelected: {
+    color: COLORS.primary,
+    fontWeight: '600',
+  },
+  bottomActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.borderLight,
+    backgroundColor: COLORS.background,
+  },
+  resultsText: {
+    fontSize: 13,
+    color: COLORS.textMuted,
+    fontWeight: '600',
+  },
+  applyButton: {
+    backgroundColor: '#FB641B',
+    borderRadius: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 32,
+  },
+  applyButtonText: {
+    color: '#FFF',
+    fontSize: 14,
     fontWeight: '700',
   },
 });

@@ -29,7 +29,7 @@ interface UploadPageTask {
   studentIndex?: number;
 }
 
-const MAX_PARALLEL_PAGE_UPLOADS = 3;
+const MAX_PARALLEL_PAGE_UPLOADS = 5;
 const OPTIMIZE_IMAGE_ABOVE_BYTES = 900 * 1024;
 const UPLOAD_IMAGE_COMPRESS = 0.78;
 
@@ -41,7 +41,7 @@ async function getExistingFileInfo(uri: string) {
   return fileInfo;
 }
 
-async function prepareUploadAsset(page: ScannedPage): Promise<UploadAsset> {
+async function prepareUploadAsset(page: ScannedPage, mode = 'enhanced'): Promise<UploadAsset> {
   const uploadUri = page.file_path.startsWith('file://') || page.file_path.startsWith('content://')
     ? page.file_path
     : `file://${page.file_path}`;
@@ -57,7 +57,9 @@ async function prepareUploadAsset(page: ScannedPage): Promise<UploadAsset> {
   try {
     const origInfo = await ImageManipulator.manipulateAsync(uploadUri, [], { compress: 1 });
     const actions = [];
-    const maxDim = 1600;
+    const maxDim = mode === 'original' ? 900 : 1600;
+    const compressQuality = mode === 'original' ? 0.45 : UPLOAD_IMAGE_COMPRESS;
+
     if (origInfo.width > maxDim || origInfo.height > maxDim) {
       if (origInfo.width > origInfo.height) {
         actions.push({ resize: { width: maxDim } });
@@ -70,13 +72,13 @@ async function prepareUploadAsset(page: ScannedPage): Promise<UploadAsset> {
       uploadUri,
       actions,
       {
-        compress: UPLOAD_IMAGE_COMPRESS,
+        compress: compressQuality,
         format: ImageManipulator.SaveFormat.JPEG,
       }
     );
     const optimizedInfo = await getExistingFileInfo(optimized.uri);
     if (optimizedInfo.size && (optimizedInfo.size < fileInfo.size || actions.length > 0)) {
-      console.log(`[Upload] Optimized ${fileName}: ${fileInfo.size || 0} -> ${optimizedInfo.size} bytes (${optimized.width}x${optimized.height})`);
+      console.log(`[Upload] Optimized ${fileName} (${mode}): ${fileInfo.size || 0} -> ${optimizedInfo.size} bytes (${optimized.width}x${optimized.height})`);
       return {
         uri: optimized.uri,
         contentType,
@@ -130,7 +132,7 @@ async function uploadPageFile(
     let asset: UploadAsset | null = null;
     try {
       const startedAt = Date.now();
-      asset = await prepareUploadAsset(page);
+      asset = await prepareUploadAsset(page, mode);
       console.log(`[Upload] File confirmed: ${asset.uri} (${asset.size || 0} bytes)`);
       console.log(`[Upload] Attempt ${i + 1}/${retries} for page ${page.page_number} (${phase}) [mode=${mode}]`);
 
