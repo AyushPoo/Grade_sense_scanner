@@ -31,6 +31,7 @@ import { CropOverlay } from '../src/components/CropOverlay';
 import { normalizeCapturedDocument } from '../src/utils/documentNormalizer';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { isPdfScannedPage } from '../src/utils/scannedPageAssets';
+import Svg, { Circle } from 'react-native-svg';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -397,22 +398,15 @@ export default function ReviewScreen() {
   ];
   const [isApplyingGlobalFilter, setIsApplyingGlobalFilter] = useState(false);
   const [isZipping, setIsZipping] = useState(false);
-  const [zipProgress, setZipProgress] = useState('');
+  const [zipProgressPercentage, setZipProgressPercentage] = useState(0);
 
   const compileImagesToPdf = async (imageUris: string[], title: string): Promise<string> => {
     const imgHtmls = [];
     for (const uri of imageUris) {
-      try {
-        const filePath = uri.startsWith('file://') ? uri : `file://${uri}`;
-        const base64 = await FileSystem.readAsStringAsync(filePath, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-        imgHtmls.push(
-          `<img src="data:image/jpeg;base64,${base64}" style="width: 100%; max-width: 100%; height: auto; display: block; page-break-after: always;" />`
-        );
-      } catch (err) {
-        console.warn(`Failed to read image for PDF ${title}:`, err);
-      }
+      const filePath = uri.startsWith('file://') ? uri : `file://${uri}`;
+      imgHtmls.push(
+        `<img src="${filePath}" style="width: 100%; max-width: 100%; height: auto; display: block; page-break-after: always;" />`
+      );
     }
 
     const html = `
@@ -438,7 +432,7 @@ export default function ReviewScreen() {
   const handleDownloadBackup = async () => {
     if (!session) return;
     setIsZipping(true);
-    setZipProgress('Starting local compilation...');
+    setZipProgressPercentage(2);
     const tempFiles: string[] = [];
     try {
       const zip = new JSZip();
@@ -446,7 +440,7 @@ export default function ReviewScreen() {
       // 1. Add Question Paper as a PDF
       if (session.question_paper?.pages && session.question_paper.pages.length > 0) {
         try {
-          setZipProgress('Compiling Question Paper PDF...');
+          setZipProgressPercentage(4);
           const uris = session.question_paper.pages.map(p => p.file_path);
           const pdfUri = await compileImagesToPdf(uris, 'question_paper');
           tempFiles.push(pdfUri);
@@ -462,7 +456,7 @@ export default function ReviewScreen() {
       // 2. Add Model Answer as a PDF
       if (session.model_answer?.pages && session.model_answer.pages.length > 0) {
         try {
-          setZipProgress('Compiling Model Answer PDF...');
+          setZipProgressPercentage(6);
           const uris = session.model_answer.pages.map(p => p.file_path);
           const pdfUri = await compileImagesToPdf(uris, 'model_answer');
           tempFiles.push(pdfUri);
@@ -482,7 +476,8 @@ export default function ReviewScreen() {
         for (const student of session.students) {
           count++;
           const studentName = student.name || `student_${student.id || student.roll_number || 'unknown'}`;
-          setZipProgress(`Compiling student PDFs: ${count} of ${totalStudents}...`);
+          const pct = Math.round(6 + (count / totalStudents) * 88);
+          setZipProgressPercentage(pct);
           if (student.pages && student.pages.length > 0) {
             try {
               const uris = student.pages.map(p => p.file_path);
@@ -501,7 +496,7 @@ export default function ReviewScreen() {
       }
 
       // Generate ZIP file
-      setZipProgress('Packaging ZIP file...');
+      setZipProgressPercentage(96);
       const content = await zip.generateAsync({ type: 'base64' });
       const filename = `${session.session_name.replace(/\s+/g, '_')}_Backup_Scans.zip`;
 
@@ -556,7 +551,7 @@ export default function ReviewScreen() {
         } catch (_) {}
       }
       setIsZipping(false);
-      setZipProgress('');
+      setZipProgressPercentage(0);
     }
   };
   const [cropTarget, setCropTarget] = useState<{ student: ScannedStudent, page: ScannedPage, pageIndex: number } | null>(null);
@@ -918,25 +913,41 @@ export default function ReviewScreen() {
             activeOpacity={0.7}
           >
             {isZipping ? (
-              <ActivityIndicator size="small" color={COLORS.primary} />
+              <View style={{ width: 50, height: 50, justifyContent: 'center', alignItems: 'center' }}>
+                <Svg width={46} height={46} viewBox="0 0 50 50">
+                  <Circle
+                    cx="25"
+                    cy="25"
+                    r="20"
+                    stroke="#E5E7EB"
+                    strokeWidth="3"
+                    fill="transparent"
+                  />
+                  <Circle
+                    cx="25"
+                    cy="25"
+                    r="20"
+                    stroke={COLORS.primary}
+                    strokeWidth="3"
+                    fill="transparent"
+                    strokeDasharray="125.66"
+                    strokeDashoffset={125.66 * (1 - zipProgressPercentage / 100)}
+                    strokeLinecap="round"
+                    transform="rotate(-90 25 25)"
+                  />
+                </Svg>
+                <View style={{ position: 'absolute', justifyContent: 'center', alignItems: 'center' }}>
+                  <Text style={{ fontSize: 10, fontWeight: 'bold', color: COLORS.primary }}>
+                    {zipProgressPercentage}%
+                  </Text>
+                </View>
+              </View>
             ) : (
               <Ionicons name="download-outline" size={24} color={COLORS.primary} />
             )}
           </TouchableOpacity>
         </View>
       </View>
-
-      {isZipping && (
-        <View style={styles.globalFilterOverlay}>
-          <ActivityIndicator size="large" color={COLORS.primary} />
-          <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700', marginTop: 16, textAlign: 'center', paddingHorizontal: 24 }}>
-            {zipProgress || 'Preparing backup ZIP...'}
-          </Text>
-          <Text style={{ color: '#aaa', fontSize: 12, marginTop: 8, textAlign: 'center', paddingHorizontal: 24 }}>
-            Please keep the app open. This can take a few minutes for 280+ pages.
-          </Text>
-        </View>
-      )}
 
       {cropTarget && (cropTarget.page.raw_file_path || cropTarget.page.file_path) && (
         <View style={StyleSheet.absoluteFill}>
