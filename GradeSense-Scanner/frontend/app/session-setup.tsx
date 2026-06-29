@@ -78,6 +78,7 @@ export default function SessionSetupScreen() {
     scan_model_answer: true,
     auto_capture: true,
     auto_crop: false,
+    auto_student_split: false,
     barcode_detection: false,
     blur_detection: false,
     flash_mode: 'auto',
@@ -155,6 +156,7 @@ export default function SessionSetupScreen() {
           pilot_review_first: Boolean(existing.settings.pilot_review_first || (existing.settings as any).pilotReviewFirst),
           feedback_enabled: existing.settings.feedback_enabled ?? (existing.settings as any).feedbackEnabled ?? true,
           annotations_enabled: existing.settings.annotations_enabled ?? (existing.settings as any).annotationsEnabled ?? false,
+          auto_student_split: existing.settings.auto_student_split === true,
         });
       }
     }
@@ -728,7 +730,7 @@ export default function SessionSetupScreen() {
 
 
 
-              <View style={[styles.optionRow, { borderBottomWidth: 0 }]}>
+              <View style={styles.optionRow}>
                 <View style={styles.optionLeft}>
                   <View style={[styles.optionIcon, { backgroundColor: '#FFEBEE' }]}>
                     <Ionicons name="eye" size={20} color="#D32F2F" />
@@ -743,6 +745,25 @@ export default function SessionSetupScreen() {
                   onValueChange={(value) => { if (!isLocked) updateSetting('blur_detection', value); }}
                   trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
                   thumbColor={settings.blur_detection ? COLORS.primary : '#f4f3f4'}
+                  disabled={isLocked}
+                />
+              </View>
+
+              <View style={[styles.optionRow, { borderBottomWidth: 0 }]}>
+                <View style={styles.optionLeft}>
+                  <View style={[styles.optionIcon, { backgroundColor: '#E0F2F1' }]}>
+                    <Ionicons name="people-outline" size={20} color="#00796B" />
+                  </View>
+                  <View style={styles.optionTextContainer}>
+                    <Text style={styles.optionLabel}>Auto Student Split</Text>
+                    <Text style={styles.optionHint}>Detect student name headers to split booklet</Text>
+                  </View>
+                </View>
+                <Switch
+                  value={settings.auto_student_split === true}
+                  onValueChange={(value) => { if (!isLocked) updateSetting('auto_student_split', value); }}
+                  trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
+                  thumbColor={settings.auto_student_split === true ? COLORS.primary : '#f4f3f4'}
                   disabled={isLocked}
                 />
               </View>

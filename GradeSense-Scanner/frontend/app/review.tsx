@@ -403,10 +403,30 @@ export default function ReviewScreen() {
   const compileImagesToPdf = async (imageUris: string[], title: string): Promise<string> => {
     const imgHtmls = [];
     for (const uri of imageUris) {
-      const filePath = uri.startsWith('file://') ? uri : `file://${uri}`;
-      imgHtmls.push(
-        `<img src="${filePath}" style="width: 100%; max-width: 100%; height: auto; display: block; page-break-after: always;" />`
-      );
+      try {
+        const filePath = uri.startsWith('file://') ? uri : `file://${uri}`;
+
+        // Resize and compress the image first to prevent OOM crashes on large sessions (e.g. 280+ pages)
+        const manipResult = await ImageManipulator.manipulateAsync(
+          filePath,
+          [{ resize: { width: 1000 } }],
+          { compress: 0.65, format: ImageManipulator.SaveFormat.JPEG }
+        );
+
+        // Read the compressed image as Base64
+        const base64 = await FileSystem.readAsStringAsync(manipResult.uri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+
+        // Clean up the temporary compressed image file
+        await FileSystem.deleteAsync(manipResult.uri, { idempotent: true });
+
+        imgHtmls.push(
+          `<div class="page"><img src="data:image/jpeg;base64,${base64}" /></div>`
+        );
+      } catch (err) {
+        console.warn(`Failed to process image for PDF ${title}:`, err);
+      }
     }
 
     const html = `
@@ -415,8 +435,22 @@ export default function ReviewScreen() {
           <title>${title}</title>
           <style>
             @page { size: A4; margin: 0; }
-            body { margin: 0; padding: 0; background: white; }
-            img { width: 100%; height: auto; page-break-after: always; display: block; }
+            html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: white; }
+            .page {
+              width: 100%;
+              height: 100vh;
+              page-break-after: always;
+              page-break-inside: avoid;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+            }
+            img {
+              max-width: 100%;
+              max-height: 100%;
+              object-fit: contain;
+              display: block;
+            }
           </style>
         </head>
         <body>
@@ -475,13 +509,19 @@ export default function ReviewScreen() {
         let count = 0;
         for (const student of session.students) {
           count++;
-          const studentName = student.name || `student_${student.id || student.roll_number || 'unknown'}`;
+          const studentIndexSuffix = student.student_index !== undefined ? `_${student.student_index + 1}` : `_${count}`;
+          const rawStudentName = student.name 
+            ? `${student.name}${studentIndexSuffix}`
+            : student.label 
+              ? `${student.label}${studentIndexSuffix}`
+              : `Student${studentIndexSuffix}`;
+          const sanitizedName = rawStudentName.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/_+/g, '_');
+
           const pct = Math.round(6 + (count / totalStudents) * 88);
           setZipProgressPercentage(pct);
           if (student.pages && student.pages.length > 0) {
             try {
               const uris = student.pages.map(p => p.file_path);
-              const sanitizedName = studentName.replace(/\s+/g, '_');
               const pdfUri = await compileImagesToPdf(uris, sanitizedName);
               tempFiles.push(pdfUri);
               const base64 = await FileSystem.readAsStringAsync(pdfUri, {
@@ -489,7 +529,7 @@ export default function ReviewScreen() {
               });
               zip.file(`students/${sanitizedName}.pdf`, base64, { base64: true });
             } catch (err) {
-              console.warn(`Failed to add Student ${studentName} PDF to zip:`, err);
+              console.warn(`Failed to add Student ${rawStudentName} PDF to zip:`, err);
             }
           }
         }
@@ -635,16 +675,18 @@ export default function ReviewScreen() {
   }, [deletePage, isSynced]);
 
   const handlePreview = useCallback((student: ScannedStudent, pageIndex: number) => {
+    if (!session) return;
     const phaseToUse = student.student_index === -1 ? 'question_paper' : student.student_index === -2 ? 'model_answer' : 'students';
     router.push({
       pathname: '/page-preview',
       params: {
+        sessionId: session.session_id,
         studentIndex: student.student_index.toString(),
         pageNumber: student.pages[pageIndex]?.page_number.toString(),
         phase: phaseToUse,
       },
     });
-  }, [router]);
+  }, [router, session]);
 
   const handleRename = useCallback((studentIndex: number, newLabel: string) => {
     if (isSynced) {

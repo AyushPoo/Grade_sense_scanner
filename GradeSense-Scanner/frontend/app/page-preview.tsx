@@ -174,13 +174,21 @@ function InlineZoomableImage({
 
 export default function PagePreviewScreen() {
   const router = useRouter();
-  const { pageNumber, phase, studentIndex } = useLocalSearchParams<{
+  const { sessionId, pageNumber, phase, studentIndex } = useLocalSearchParams<{
+    sessionId?: string;
     pageNumber: string;
     phase: string;
     studentIndex?: string;
   }>();
 
-  const { currentSession, removePage, startRetake, currentPhase, currentStudentIndex, updatePagePathAndFilter, rotatePage } = useScanStore();
+  const { savedSessions, currentSession, removePage, startRetake, currentPhase, currentStudentIndex, updatePagePathAndFilter, rotatePage } = useScanStore();
+
+  const session = sessionId 
+    ? (savedSessions.find(s => s.session_id === sessionId) || currentSession)
+    : currentSession;
+
+  const isSynced = session ? ['syncing', 'grading', 'graded', 'uploaded'].includes(session.status) : false;
+
   const flatListRef = useRef<FlatList>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isApplyingFilter, setIsApplyingFilter] = useState(false);
@@ -201,17 +209,17 @@ export default function PagePreviewScreen() {
 
   // Get pages based on phase
   const getPages = (): ScannedPage[] => {
-    if (!currentSession) return [];
+    if (!session) return [];
     
     const phaseToUse = phase || currentPhase;
     const studentIdx = studentIndex ? parseInt(studentIndex) : currentStudentIndex;
     
     if (phaseToUse === 'question_paper') {
-      return currentSession.question_paper.pages;
+      return session.question_paper.pages;
     } else if (phaseToUse === 'model_answer') {
-      return currentSession.model_answer.pages;
+      return session.model_answer.pages;
     } else {
-      return currentSession.students[studentIdx]?.pages || [];
+      return session.students[studentIdx]?.pages || [];
     }
   };
 
@@ -424,7 +432,7 @@ export default function PagePreviewScreen() {
   };
 
   const replaceCurrentPage = (updatedPage: ScannedPage) => {
-    const targetSessionId = currentSession?.session_id;
+    const targetSessionId = session?.session_id;
     const phaseToUse = (phase || currentPhase) as ScanPhase;
     const studentIdx = studentIndex ? parseInt(studentIndex) : currentStudentIndex;
 
@@ -724,7 +732,7 @@ export default function PagePreviewScreen() {
           </View>
         </View>
 
-        {!currentPageIsPdf && (
+        {!currentPageIsPdf && !isSynced && (
         <View style={styles.filterPalette}>
           <FlatList
             data={FILTERS}
@@ -736,7 +744,7 @@ export default function PagePreviewScreen() {
               const isActive = (currentPage?.filter_mode || 'original') === item.id;
               return (
                 <TouchableOpacity
-                  style={[styles.filterChip, isActive && styles.filterChipActive]}
+                   style={[styles.filterChip, isActive && styles.filterChipActive]}
                   onPress={() => handleApplyFilter(item.id)}
                   disabled={isApplyingFilter}
                 >
@@ -759,37 +767,37 @@ export default function PagePreviewScreen() {
           <TouchableOpacity 
             style={styles.actionButton} 
             onPress={handleRetake}
-            disabled={isApplyingFilter || isRotating}
+            disabled={isSynced || isApplyingFilter || isRotating}
           >
-            <Ionicons name="refresh" size={20} color={COLORS.text} />
-            <Text style={styles.actionText}>Retake</Text>
+            <Ionicons name="refresh" size={20} color={isSynced ? COLORS.textMuted : COLORS.text} />
+            <Text style={[styles.actionText, isSynced && { color: COLORS.textMuted }]}>Retake</Text>
           </TouchableOpacity>
 
           <TouchableOpacity 
             style={styles.actionButton} 
             onPress={handleRotate}
-            disabled={currentPageIsPdf || isApplyingFilter || isRotating}
+            disabled={currentPageIsPdf || isSynced || isApplyingFilter || isRotating}
           >
-            <Ionicons name="sync-outline" size={20} color={COLORS.text} />
-            <Text style={styles.actionText}>Rotate</Text>
+            <Ionicons name="sync-outline" size={20} color={currentPageIsPdf || isSynced ? COLORS.textMuted : COLORS.text} />
+            <Text style={[styles.actionText, (currentPageIsPdf || isSynced) && { color: COLORS.textMuted }]}>Rotate</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
             style={styles.actionButton}
             onPress={handleCrop}
-            disabled={currentPageIsPdf || isApplyingFilter || isRotating}
+            disabled={currentPageIsPdf || isSynced || isApplyingFilter || isRotating}
           >
-            <Ionicons name="crop-outline" size={20} color={COLORS.text} />
-            <Text style={styles.actionText}>Crop</Text>
+            <Ionicons name="crop-outline" size={20} color={currentPageIsPdf || isSynced ? COLORS.textMuted : COLORS.text} />
+            <Text style={[styles.actionText, (currentPageIsPdf || isSynced) && { color: COLORS.textMuted }]}>Crop</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
             style={[styles.actionButton, styles.deleteButton]}
             onPress={handleDelete}
-            disabled={isApplyingFilter || isRotating}
+            disabled={isSynced || isApplyingFilter || isRotating}
           >
-            <Ionicons name="trash" size={20} color={COLORS.error} />
-            <Text style={[styles.actionText, { color: COLORS.error }]}>Delete</Text>
+            <Ionicons name="trash" size={20} color={isSynced ? COLORS.textMuted : COLORS.error} />
+            <Text style={[styles.actionText, { color: isSynced ? COLORS.textMuted : COLORS.error }]}>Delete</Text>
           </TouchableOpacity>
         </View>
       </View>

@@ -100,6 +100,7 @@ export interface ScanSessionSettings {
   pilot_review_first?: boolean;
   feedback_enabled?: boolean;
   annotations_enabled?: boolean;
+  auto_student_split?: boolean;
 }
 
 export interface ScanSession {

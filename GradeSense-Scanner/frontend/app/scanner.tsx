@@ -39,6 +39,7 @@ import { useLocalSearchParams } from 'expo-router';
 import { evaluateAutoCropCandidate, CropQualityResult } from '../src/utils/cropQuality';
 import { detectTextOrientationAndBounds, detectDocumentCorners, detectDocumentWithDocQuad, TextOrientationAndBoundsResult, TextBlockDiagnostic } from '../src/utils/docQuadDetector';
 import { getFallbackA4Quad } from '../src/utils/geometryUtils';
+import { detectStudentHeaderTransition } from '../src/utils/studentSplitDetector';
 import type { ScannedPage, ScanPhase } from '../src/types';
 import * as Sentry from '@sentry/react-native';
 import { useNetworkQuality } from '../src/utils/networkUtils';
@@ -98,6 +99,7 @@ interface PendingCapture {
     phase: ScanPhase;
     studentIndex: number;
     autoCropEnabled: boolean;
+    autoStudentSplitEnabled: boolean;
 }
 
 type PageSplitPart = 'left' | 'right' | 'top' | 'bottom';
@@ -958,6 +960,7 @@ export default function ScannerScreen() {
     const currentPhase = useScanStore(s => s.currentPhase);
     const currentStudentIndex = useScanStore(s => s.currentStudentIndex);
     const autoCaptureEnabled = useScanStore(s => s.autoCaptureEnabled);
+    const autoStudentSplitEnabled = useScanStore(s => s.autoStudentSplitEnabled);
     const flashMode = useScanStore(s => s.flashMode);
     const pendingRetake = useScanStore(s => s.pendingRetake);
     const pageMode = useScanStore(s => s.currentSession?.settings.page_mode ?? 'single');
@@ -1222,6 +1225,7 @@ export default function ScannerScreen() {
                 phase: storeState.currentPhase,
                 studentIndex: storeState.currentStudentIndex,
                 autoCropEnabled: storeState.autoCropEnabled,
+                autoStudentSplitEnabled: storeState.autoStudentSplitEnabled,
             };
 
             // Commit with a natural document-clean filter, while preserving the
@@ -1256,10 +1260,14 @@ export default function ScannerScreen() {
             // ImageManipulator applies EXIF rotation, producing a physically
             // upright bitmap. OpenCV.imread ignores EXIF, so we must feed it
             // this pre-rotated image to keep coordinate spaces unified.
+            // Downscale the raw image to 2000px width immediately to make all downstream processing fast (prevents OOM & lag)
             const canonical = await ImageManipulator.manipulateAsync(
                 pending.uri,
-                [{ rotate: 0 }],
-                { compress: 0.98, format: ImageManipulator.SaveFormat.JPEG }
+                [
+                    { rotate: 0 },
+                    { resize: { width: Math.min(2000, pending.rawDims.width) } }
+                ],
+                { compress: 0.95, format: ImageManipulator.SaveFormat.JPEG }
             );
             const canonicalUri = canonical.uri;
             const canonicalDims = { width: canonical.width, height: canonical.height };
@@ -1847,12 +1855,22 @@ export default function ScannerScreen() {
             const didSplitDoublePage = imageParts.length > 1;
             const splitSourcePageId = didSplitDoublePage ? generateUUID() : undefined;
 
-            const persistPagePart = async (part: PreparedImagePart, index: number) => {
-                const oriented = await autoOrientPageImage(
-                    part.uri,
-                    part.width,
-                    part.height
-                );
+            const processPagePart = async (part: PreparedImagePart, index: number) => {
+                // If text orientation was already successfully detected and resolved on the parent image,
+                // we can bypass this expensive individual page orientation scan.
+                const oriented = textOrientationDetected
+                    ? {
+                        uri: part.uri,
+                        width: part.width,
+                        height: part.height,
+                        orientationDegrees: 0 as 0 | 90 | 180 | 270,
+                        needsReview: false,
+                      }
+                    : await autoOrientPageImage(
+                        part.uri,
+                        part.width,
+                        part.height
+                      );
 
                 const suffix = `${Date.now()}_${index}`;
                 const origFilename = `orig_${suffix}.jpg`;
@@ -1915,6 +1933,22 @@ export default function ScannerScreen() {
                     }
                 }
 
+                // OCR Student Split check
+                let shouldTriggerNewStudent = false;
+                if (pending.autoStudentSplitEnabled && pending.phase === 'students') {
+                    try {
+                        const ocrRes = await detectTextOrientationAndBounds(oriented.uri);
+                        if (ocrRes && ocrRes.blocks) {
+                            const isHeader = detectStudentHeaderTransition(ocrRes.blocks, { width: oriented.width, height: oriented.height });
+                            if (isHeader) {
+                                shouldTriggerNewStudent = true;
+                            }
+                        }
+                    } catch (err) {
+                        console.warn('[commitCapture] Auto student split OCR failed:', err);
+                    }
+                }
+
                 const page: ScannedPage = {
                     id: generateUUID(),
                     ui_id: '',
@@ -1937,13 +1971,24 @@ export default function ScannerScreen() {
                     diagnostics: partsDiagnostics[index],
                 };
 
-                // Pass the phase and studentIndex snapshotted at shutter-release time so that
-                // any UI changes the user made during processing do not redirect this page.
-                addPageRef.current(page, pending.phase, pending.studentIndex);
+                return { page, shouldTriggerNewStudent };
             };
 
-            for (let i = 0; i < imageParts.length; i++) {
-                await persistPagePart(imageParts[i], i);
+            // 1. Process all split/cropped page parts in parallel to utilize multi-core device CPUs
+            const processedParts = await Promise.all(imageParts.map((part, i) => processPagePart(part, i)));
+
+            // 2. Commit the processed pages to the Zustand store sequentially to preserve correct student order
+            for (const res of processedParts) {
+                if (res.shouldTriggerNewStudent) {
+                    const store = useScanStore.getState();
+                    const activeStudent = store.currentSession?.students[store.currentStudentIndex];
+                    if (activeStudent && activeStudent.pages.length > 0) {
+                        store.silentNextStudent();
+                    }
+                }
+
+                const currentState = useScanStore.getState();
+                addPageRef.current(res.page, pending.phase, currentState.currentStudentIndex);
             }
         } catch (e) {
             console.warn('[commitCapture] error:', e);

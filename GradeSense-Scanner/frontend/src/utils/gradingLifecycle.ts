@@ -25,8 +25,8 @@ const FAILED_JOB_STATUSES = new Set(['failed', 'cancelled']);
 const PILOT_REVIEW_JOB_STATUS = 'awaiting_first_review';
 
 export function normalizeJobProgress(job: MaybeJob | null | undefined) {
-  const processed = Number(job?.processed ?? job?.processedItems ?? 0);
-  const total = Number(job?.total ?? job?.totalItems ?? 0);
+  const processed = Number(job?.processed ?? job?.processedItems ?? (job as any)?.processed_items ?? 0);
+  const total = Number(job?.total ?? job?.totalItems ?? (job as any)?.total_items ?? 0);
   let percent = total > 0 ? Math.round((processed / total) * 100) : 0;
 
   if (job?.status === 'completed') {

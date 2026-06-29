@@ -532,8 +532,8 @@ export default function HomeScreen() {
               sessionId: session.session_id,
               progress: {
                 progress: job.progress,
-                processed: job.processedItems || 0,
-                total: job.totalItems || 0,
+                processed: job.processedItems ?? job.processed_items ?? 0,
+                total: job.totalItems ?? job.total_items ?? 0,
                 status: job.status,
                 type: job.type,
                 error: job.error || null,

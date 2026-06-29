@@ -8,6 +8,7 @@ import { reconcileFetchedScanSessions } from '../utils/sessionReconciliation';
 import { fetchWithTimeout } from '../utils/fetchWithTimeout';
 import { findReusableDraftSession } from '../utils/sessionDrafts';
 import { prepareSessionForScanningPhase } from '../utils/scanContinuation';
+import { Quadrilateral } from '../utils/cvProcessor';
 
 // Simple UUID generator
 export const generateUUID = () => {
@@ -59,6 +60,7 @@ interface ScanState {
   flashMode: 'off' | 'on' | 'auto';
   autoCaptureEnabled: boolean;
   autoCropEnabled: boolean;
+  autoStudentSplitEnabled: boolean;
   pendingRetake: PendingRetake | null;
   hasHydrated: boolean;
 
@@ -121,6 +123,7 @@ interface ScanState {
   setFlashMode: (mode: 'off' | 'on' | 'auto') => void;
   setAutoCaptureEnabled: (enabled: boolean) => void;
   setAutoCropEnabled: (enabled: boolean) => void;
+  setAutoStudentSplitEnabled: (enabled: boolean) => void;
   checkFileSystemIntegrity: () => Promise<void>;
   setHasHydrated: (val: boolean) => void;
   performPostHydrationCleanup: () => Promise<void>;
@@ -253,6 +256,7 @@ export const useScanStore = create<ScanState>()(
       flashMode: 'auto',
       autoCaptureEnabled: true,
       autoCropEnabled: false,
+      autoStudentSplitEnabled: false,
       pendingRetake: null,
       hasHydrated: false,
       uploadQueue: [],
@@ -345,6 +349,7 @@ export const useScanStore = create<ScanState>()(
             isScanning: true,
             autoCaptureEnabled: reusableDraft.settings.auto_capture,
             autoCropEnabled: reusableDraft.settings.auto_crop === true,
+            autoStudentSplitEnabled: reusableDraft.settings.auto_student_split === true,
           });
 
           return reusableDraft;
@@ -387,6 +392,7 @@ export const useScanStore = create<ScanState>()(
           isScanning: true,
           autoCaptureEnabled: settings.auto_capture,
           autoCropEnabled: settings.auto_crop === true,
+          autoStudentSplitEnabled: settings.auto_student_split === true,
         });
 
         return session;
@@ -1039,6 +1045,9 @@ export const useScanStore = create<ScanState>()(
           currentStudentIndex: prepared.studentIndex,
           isScanning: true,
           savedSessions: newSavedSessions,
+          autoCaptureEnabled: prepared.session.settings.auto_capture,
+          autoCropEnabled: prepared.session.settings.auto_crop === true,
+          autoStudentSplitEnabled: prepared.session.settings.auto_student_split === true,
         });
       },
 
@@ -1070,6 +1079,7 @@ export const useScanStore = create<ScanState>()(
       setFlashMode: (mode) => set({ flashMode: mode }),
       setAutoCaptureEnabled: (enabled) => set({ autoCaptureEnabled: enabled }),
       setAutoCropEnabled: (enabled) => set({ autoCropEnabled: enabled }),
+      setAutoStudentSplitEnabled: (enabled) => set({ autoStudentSplitEnabled: enabled }),
 
       clearCurrentSession: () => set({
         currentSession: null,
@@ -1751,7 +1761,7 @@ export const useScanStore = create<ScanState>()(
       })),
       partialize: (state) => {
         // HYDRATION ISOLATION: Do not persist hydration, transient UI flags, or retake context
-        const { hasHydrated, isScanning, pendingRetake, autoCropEnabled, isProcessingQueue, ...persistentState } = state;
+        const { hasHydrated, isScanning, pendingRetake, autoCropEnabled, autoStudentSplitEnabled, isProcessingQueue, ...persistentState } = state;
 
         // Deeply strip base64 from sessions before persisting
         const cleanupSession = (session: any) => {
@@ -1828,6 +1838,7 @@ export const useScanStore = create<ScanState>()(
           state.savedSessions?.forEach(cleanupSession);
           cleanupSession(state.currentSession);
           state.autoCropEnabled = false;
+          state.autoStudentSplitEnabled = false;
 
           // HYDRATION ISOLATION: Mark hydration complete without triggering setItem
           state.setHasHydrated(true);
