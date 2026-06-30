@@ -92,6 +92,16 @@ function mergeFetchedSession({
   const localPages = countPages(local);
   const fetchedPages = countPages(fetched);
 
+  if (local.status === 'scanning') {
+    return {
+      ...fetched,
+      ...local,
+      status: 'scanning',
+      exam_id: local.exam_id,
+      stats: recomputeStats(local),
+    };
+  }
+
   if (SERVER_TERMINAL_STATUSES.has(fetched.status)) {
     const statsSource = localPages >= fetchedPages ? local : fetched;
     return {
