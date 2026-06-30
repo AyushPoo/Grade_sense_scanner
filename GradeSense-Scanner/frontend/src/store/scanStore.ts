@@ -100,6 +100,9 @@ interface ScanState {
   fetchSubjects: () => Promise<void>;
   createBatch: (name: string, studentCount?: number) => Promise<Batch>;
   createSubject: (name: string, classStandard?: string) => Promise<Subject>;
+  deleteSubject: (subjectId: string) => Promise<void>;
+  updateSubjectName: (subjectId: string, newName: string) => Promise<void>;
+  mergeSubjects: (sourceId: string, destinationId: string) => Promise<void>;
   createSession: (
     name: string,
     batchId: string,
@@ -1372,6 +1375,125 @@ export const useScanStore = create<ScanState>()(
           ],
         }));
         return normalizedSubject;
+      },
+
+      deleteSubject: async (subjectId: string) => {
+        const { useAuthStore } = await import('./authStore');
+        const token = useAuthStore.getState().sessionToken;
+        const backendUrl = getBackendUrl();
+
+        const response = await fetchWithTimeout(`${backendUrl}/api/subjects/${subjectId}`, {
+          method: 'DELETE',
+          headers: {
+            'Authorization': token ? `Bearer ${token}` : '',
+            'Bypass-Tunnel-Reminder': 'true',
+          },
+        }, 15000);
+
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(text || `Failed to delete subject: ${response.status}`);
+        }
+
+        // Update local state
+        set(state => ({
+          savedSubjects: state.savedSubjects.filter(sub => sub.id !== subjectId),
+          // Clean up subject reference in saved sessions if any
+          savedSessions: state.savedSessions.map(session => {
+            if (session.subject_id === subjectId) {
+              return { ...session, subject_id: null };
+            }
+            return session;
+          }),
+          currentSession: state.currentSession && state.currentSession.subject_id === subjectId
+            ? { ...state.currentSession, subject_id: null }
+            : state.currentSession
+        }));
+      },
+
+      updateSubjectName: async (subjectId: string, newName: string) => {
+        const cleanName = newName.trim();
+        if (!cleanName) {
+          throw new Error('Subject name is required');
+        }
+
+        const { useAuthStore } = await import('./authStore');
+        const token = useAuthStore.getState().sessionToken;
+        const backendUrl = getBackendUrl();
+
+        const response = await fetchWithTimeout(`${backendUrl}/api/subjects/${subjectId}`, {
+          method: 'PATCH',
+          headers: {
+            'Authorization': token ? `Bearer ${token}` : '',
+            'Bypass-Tunnel-Reminder': 'true',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ name: cleanName }),
+        }, 15000);
+
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(text || `Failed to update subject: ${response.status}`);
+        }
+
+        // Update local state
+        set(state => ({
+          savedSubjects: state.savedSubjects.map(sub => 
+            sub.id === subjectId ? { ...sub, name: cleanName } : sub
+          ),
+          savedSessions: state.savedSessions.map(session => {
+            if (session.subject_id === subjectId) {
+              return { ...session, subject_name: cleanName };
+            }
+            return session;
+          }),
+          currentSession: state.currentSession && state.currentSession.subject_id === subjectId
+            ? { ...state.currentSession, subject_name: cleanName }
+            : state.currentSession
+        }));
+      },
+
+      mergeSubjects: async (sourceId: string, destinationId: string) => {
+        if (sourceId === destinationId) {
+          throw new Error('Cannot merge a subject into itself');
+        }
+
+        const { useAuthStore } = await import('./authStore');
+        const token = useAuthStore.getState().sessionToken;
+        const backendUrl = getBackendUrl();
+
+        const response = await fetchWithTimeout(`${backendUrl}/api/subjects/merge`, {
+          method: 'POST',
+          headers: {
+            'Authorization': token ? `Bearer ${token}` : '',
+            'Bypass-Tunnel-Reminder': 'true',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ source_id: sourceId, destination_id: destinationId }),
+        }, 15000);
+
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(text || `Failed to merge subjects: ${response.status}`);
+        }
+
+        // Update local state: reassign sessions & delete source subject
+        set(state => {
+          const destSubject = state.savedSubjects.find(sub => sub.id === destinationId);
+          const destName = destSubject?.name || 'Merged Subject';
+          return {
+            savedSubjects: state.savedSubjects.filter(sub => sub.id !== sourceId),
+            savedSessions: state.savedSessions.map(session => {
+              if (session.subject_id === sourceId) {
+                return { ...session, subject_id: destinationId, subject_name: destName };
+              }
+              return session;
+            }),
+            currentSession: state.currentSession && state.currentSession.subject_id === sourceId
+              ? { ...state.currentSession, subject_id: destinationId, subject_name: destName }
+              : state.currentSession
+          };
+        });
       },
 
       syncCurrentMetadata: async (phaseOverride?: 'question_paper' | 'model_answer' | 'student', studentIndexOverride?: number) => {

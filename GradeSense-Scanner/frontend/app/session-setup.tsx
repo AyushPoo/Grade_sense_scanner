@@ -21,6 +21,7 @@ import { useScanStore } from '../src/store/scanStore';
 import { useAuthStore } from '../src/store/authStore';
 import { Batch, ScanSessionSettings, Subject } from '../src/types';
 import { useHardwareAwareBottomInset } from '../src/utils/safeArea';
+import { SelectorBottomSheet } from '../src/components/SelectorBottomSheet';
 
 export default function SessionSetupScreen() {
   const router = useRouter();
@@ -40,7 +41,7 @@ export default function SessionSetupScreen() {
 
   const insets = useSafeAreaInsets();
   const bottomContentInset = useHardwareAwareBottomInset(insets.bottom, 24);
-  const { createSession, savedSessions, updateSessionDetails, savedBatches, createBatch, deleteBatch, fetchBatches, savedSubjects, fetchSubjects, createSubject } = useScanStore();
+  const { createSession, savedSessions, updateSessionDetails, savedBatches, createBatch, deleteBatch, fetchBatches, savedSubjects, fetchSubjects, createSubject, deleteSubject, updateSubjectName, mergeSubjects } = useScanStore();
   
   useEffect(() => {
     fetchBatches().catch(err => console.error('Failed to load batches:', err));
@@ -61,6 +62,9 @@ export default function SessionSetupScreen() {
   const [isStartingSession, setIsStartingSession] = useState(false);
   const isStartingSessionRef = useRef(false);
   const [hasParentalConsent, setHasParentalConsent] = useState(hasAcceptedDPDPConsent);
+  
+  const [showSubjectPicker, setShowSubjectPicker] = useState(false);
+  const [showBatchPicker, setShowBatchPicker] = useState(false);
   
   // Create batch modal
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -333,54 +337,25 @@ export default function SessionSetupScreen() {
 
           {/* Subject Selection */}
           <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.label}>Select Subject</Text>
-              {!isLocked && (
-                <TouchableOpacity
-                  style={styles.createBatchBtn}
-                  onPress={() => setShowSubjectModal(true)}
-                >
-                  <Ionicons name="add-circle" size={20} color={COLORS.primary} />
-                  <Text style={styles.createBatchText}>New Subject</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-            {savedSubjects.length === 0 ? (
-              <View style={styles.emptySubjectBox}>
-                <Text style={styles.emptyTextSub}>No subjects available yet.</Text>
-                <TouchableOpacity style={styles.inlineCreateBtn} onPress={() => setShowSubjectModal(true)}>
-                  <Text style={styles.inlineCreateText}>Add subject</Text>
-                </TouchableOpacity>
+            <Text style={styles.label}>Subject</Text>
+            <TouchableOpacity
+              style={[styles.selectorCard, isLocked && styles.selectorCardDisabled]}
+              onPress={() => { if (!isLocked) setShowSubjectPicker(true); }}
+              activeOpacity={isLocked ? 1 : 0.7}
+            >
+              <View style={styles.selectorLeft}>
+                <Ionicons
+                  name="book"
+                  size={20}
+                  color={selectedSubject ? COLORS.primary : COLORS.textMuted}
+                  style={{ marginRight: 12 }}
+                />
+                <Text style={[styles.selectorValue, !selectedSubject && styles.selectorPlaceholder]}>
+                  {selectedSubject ? selectedSubject.name : 'Select subject'}
+                </Text>
               </View>
-            ) : (
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.subjectScroll}>
-                {savedSubjects.map(subject => {
-                  const isSelected = selectedSubject?.id === subject.id;
-                  return (
-                    <TouchableOpacity
-                      key={subject.id}
-                      style={[
-                        styles.subjectPill,
-                        isSelected && styles.subjectPillSelected
-                      ]}
-                      onPress={() => { if (!isLocked) setSelectedSubject(subject); }}
-                      activeOpacity={isLocked ? 1 : 0.7}
-                    >
-                      <Ionicons
-                        name="book"
-                        size={16}
-                        color={isSelected ? '#fff' : COLORS.textMuted}
-                        style={{ marginRight: 6 }}
-                      />
-                      <Text style={[
-                        styles.subjectText,
-                        isSelected && styles.subjectTextSelected
-                      ]}>{subject.name}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-            )}
+              {!isLocked && <Ionicons name="chevron-down" size={20} color={COLORS.textMuted} />}
+            </TouchableOpacity>
           </View>
 
           {/* Total Marks & Date Row */}
@@ -417,72 +392,27 @@ export default function SessionSetupScreen() {
 
           {/* Batch Selection */}
           <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.label}>Select or Create Batch</Text>
-              {!isLocked && (
-                <TouchableOpacity 
-                  style={styles.createBatchBtn}
-                  onPress={() => setShowCreateModal(true)}
-                >
-                  <Ionicons name="add-circle" size={20} color={COLORS.primary} />
-                  <Text style={styles.createBatchText}>New Batch</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-            
-            {savedBatches.length === 0 ? (
-              <View style={styles.emptyBatches}>
-                <Ionicons name="folder-open-outline" size={48} color={COLORS.textMuted} />
-                <Text style={styles.emptyText}>No batches yet</Text>
-                <Text style={styles.emptySubtext}>Create a new batch to get started</Text>
-                <TouchableOpacity 
-                  style={styles.createFirstBatch}
-                  onPress={() => setShowCreateModal(true)}
-                >
-                  <Ionicons name="add" size={20} color="#fff" />
-                  <Text style={styles.createFirstBatchText}>Create First Batch</Text>
-                </TouchableOpacity>
+            <Text style={styles.label}>Batch / Class</Text>
+            <TouchableOpacity
+              style={[styles.selectorCard, isLocked && styles.selectorCardDisabled]}
+              onPress={() => { if (!isLocked) setShowBatchPicker(true); }}
+              activeOpacity={isLocked ? 1 : 0.7}
+            >
+              <View style={styles.selectorLeft}>
+                <Ionicons
+                  name="school"
+                  size={20}
+                  color={selectedBatch ? COLORS.primary : COLORS.textMuted}
+                  style={{ marginRight: 12 }}
+                />
+                <Text style={[styles.selectorValue, !selectedBatch && styles.selectorPlaceholder]}>
+                  {selectedBatch
+                    ? `${selectedBatch.name}${selectedBatch.student_count > 0 ? ` (${selectedBatch.student_count} students)` : ' (Students: TBD)'}`
+                    : 'Select batch'}
+                </Text>
               </View>
-            ) : (
-              <View style={styles.batchList}>
-                {savedBatches.map(batch => (
-                  <TouchableOpacity
-                    key={batch.batch_id}
-                    style={[
-                      styles.batchItem,
-                      selectedBatch?.batch_id === batch.batch_id && styles.batchItemSelected,
-                    ]}
-                    onPress={() => { if (!isLocked) setSelectedBatch(batch); }}
-                    activeOpacity={isLocked ? 1 : 0.7}
-                  >
-                    <View style={styles.batchInfo}>
-                      <View style={[
-                        styles.batchRadio,
-                        selectedBatch?.batch_id === batch.batch_id && styles.batchRadioSelected,
-                      ]}>
-                        {selectedBatch?.batch_id === batch.batch_id && (
-                          <Ionicons name="checkmark" size={14} color="#fff" />
-                        )}
-                      </View>
-                      <View>
-                        <Text style={styles.batchName}>{batch.name}</Text>
-                        <Text style={styles.batchStudents}>
-                          {batch.student_count > 0 ? `${batch.student_count} students` : 'Students: TBD'}
-                        </Text>
-                      </View>
-                    </View>
-                    {!isLocked && (
-                      <TouchableOpacity 
-                        onPress={() => handleDeleteBatch(batch.batch_id)}
-                        style={styles.deleteBatchBtn}
-                      >
-                        <Ionicons name="trash-outline" size={18} color={COLORS.error} />
-                      </TouchableOpacity>
-                    )}
-                  </TouchableOpacity>
-                ))}
-              </View>
-            )}
+              {!isLocked && <Ionicons name="chevron-down" size={20} color={COLORS.textMuted} />}
+            </TouchableOpacity>
           </View>
 
           {/* Grading Mode / Correction Type Selection */}
@@ -1005,6 +935,68 @@ export default function SessionSetupScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Subject Picker Bottom Sheet */}
+      <SelectorBottomSheet
+        visible={showSubjectPicker}
+        onClose={() => setShowSubjectPicker(false)}
+        title="Select Subject"
+        placeholder="Search subjects..."
+        data={savedSubjects.map(sub => ({
+          id: sub.id,
+          name: sub.name,
+          subtitle: sub.classStandard ? `Class: ${sub.classStandard}` : undefined
+        }))}
+        selectedValueId={selectedSubject?.id}
+        onSelect={(item) => {
+          const found = savedSubjects.find(sub => sub.id === item.id);
+          if (found) setSelectedSubject(found);
+        }}
+        onCreateNew={() => {
+          setShowSubjectPicker(false);
+          setShowSubjectModal(true);
+        }}
+        createLabel="New Subject"
+        mode="subject"
+        onEditSubject={updateSubjectName}
+        onDeleteSubject={async (id) => {
+          await deleteSubject(id);
+          if (selectedSubject?.id === id) {
+            setSelectedSubject(null);
+          }
+        }}
+        onMergeSubject={async (src, dest) => {
+          await mergeSubjects(src, dest);
+          if (selectedSubject?.id === src) {
+            const destSub = savedSubjects.find(sub => sub.id === dest);
+            setSelectedSubject(destSub || null);
+          }
+        }}
+      />
+
+      {/* Batch Picker Bottom Sheet */}
+      <SelectorBottomSheet
+        visible={showBatchPicker}
+        onClose={() => setShowBatchPicker(false)}
+        title="Select Batch / Class"
+        placeholder="Search batches..."
+        data={savedBatches.map(batch => ({
+          id: batch.batch_id,
+          name: batch.name,
+          subtitle: batch.student_count > 0 ? `${batch.student_count} students` : 'Students: TBD'
+        }))}
+        selectedValueId={selectedBatch?.batch_id}
+        onSelect={(item) => {
+          const found = savedBatches.find(b => b.batch_id === item.id);
+          if (found) setSelectedBatch(found);
+        }}
+        onCreateNew={() => {
+          setShowBatchPicker(false);
+          setShowCreateModal(true);
+        }}
+        createLabel="New Batch"
+        mode="batch"
+      />
     </SafeAreaView>
   );
 }
@@ -1013,6 +1005,35 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.backgroundDark,
+  },
+  selectorCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    height: 52,
+    backgroundColor: COLORS.cardBg,
+    marginTop: 8,
+  },
+  selectorCardDisabled: {
+    backgroundColor: COLORS.backgroundDark,
+    opacity: 0.7,
+  },
+  selectorLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  selectorValue: {
+    fontSize: 15,
+    color: COLORS.text,
+    fontWeight: '500',
+  },
+  selectorPlaceholder: {
+    color: COLORS.textMuted,
   },
   header: {
     flexDirection: 'row',

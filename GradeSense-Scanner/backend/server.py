@@ -349,6 +349,15 @@ class SubjectCreateRequest(BaseModel):
     classStandard: Optional[str] = None
 
 
+class SubjectUpdateRequest(BaseModel):
+    name: str
+
+
+class SubjectMergeRequest(BaseModel):
+    source_id: str
+    destination_id: str
+
+
 # ==================== AUTH HELPERS ====================
 
 async def validate_token_with_webapp(token: str) -> Optional[dict]:
@@ -2081,6 +2090,142 @@ async def create_subject(data: SubjectCreateRequest, authorization: Optional[str
 
     await db.subjects.update_one({"id": subject["id"]}, {"$set": subject}, upsert=True)
     return {"subject": subject}
+
+
+@api_router.patch("/subjects/{subject_id}")
+async def update_subject(subject_id: str, data: SubjectUpdateRequest, authorization: Optional[str] = Header(None)):
+    """Update a subject name"""
+    user = await get_current_user(authorization)
+    new_name = data.name.strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="Subject name is required")
+
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if webapp_db_url:
+        conn = None
+        try:
+            conn = await connect_to_neon_db(webapp_db_url)
+            await conn.execute(
+                '''
+                UPDATE subjects
+                SET name = $1, updated_at = $2
+                WHERE id = $3 AND teacher_id = $4
+                ''',
+                new_name,
+                utc_now_text(),
+                subject_id,
+                user.user_id
+            )
+        except Exception as e:
+            logger.error(f"Error updating subject in Neon: {e}")
+            raise HTTPException(status_code=500, detail="Failed to update subject")
+        finally:
+            if conn:
+                await conn.close()
+
+    # Update in MongoDB
+    await db.subjects.update_one(
+        {"id": subject_id, "teacher_id": user.user_id},
+        {"$set": {"name": new_name}}
+    )
+    return {"status": "success", "subject_id": subject_id, "name": new_name}
+
+
+@api_router.delete("/subjects/{subject_id}")
+async def delete_subject(subject_id: str, authorization: Optional[str] = Header(None)):
+    """Delete a subject"""
+    user = await get_current_user(authorization)
+
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if webapp_db_url:
+        conn = None
+        try:
+            conn = await connect_to_neon_db(webapp_db_url)
+            # 1. Unassign exams using this subject
+            await conn.execute(
+                '''
+                UPDATE exams
+                SET subject_id = NULL
+                WHERE subject_id = $1 AND teacher_id = $2
+                ''',
+                subject_id,
+                user.user_id
+            )
+            # 2. Delete the subject
+            await conn.execute(
+                '''
+                DELETE FROM subjects
+                WHERE id = $1 AND teacher_id = $2
+                ''',
+                subject_id,
+                user.user_id
+            )
+        except Exception as e:
+            logger.error(f"Error deleting subject in Neon: {e}")
+            raise HTTPException(status_code=500, detail="Failed to delete subject")
+        finally:
+            if conn:
+                await conn.close()
+
+    # Update MongoDB
+    await db.subjects.delete_one({"id": subject_id, "teacher_id": user.user_id})
+    await db.scan_sessions.update_many(
+        {"subject_id": subject_id, "teacher_id": user.user_id},
+        {"$set": {"subject_id": None}}
+    )
+    return {"status": "success", "deleted_subject_id": subject_id}
+
+
+@api_router.post("/subjects/merge")
+async def merge_subjects(data: SubjectMergeRequest, authorization: Optional[str] = Header(None)):
+    """Merge source subject into destination subject and delete source subject"""
+    user = await get_current_user(authorization)
+    src_id = data.source_id
+    dest_id = data.destination_id
+
+    if src_id == dest_id:
+        raise HTTPException(status_code=400, detail="Cannot merge a subject into itself")
+
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if webapp_db_url:
+        conn = None
+        try:
+            conn = await connect_to_neon_db(webapp_db_url)
+            # 1. Reassign exams from source to destination
+            await conn.execute(
+                '''
+                UPDATE exams
+                SET subject_id = $1
+                WHERE subject_id = $2 AND teacher_id = $3
+                ''',
+                dest_id,
+                src_id,
+                user.user_id
+            )
+            # 2. Delete source subject
+            await conn.execute(
+                '''
+                DELETE FROM subjects
+                WHERE id = $1 AND teacher_id = $2
+                ''',
+                src_id,
+                user.user_id
+            )
+        except Exception as e:
+            logger.error(f"Error merging subjects in Neon: {e}")
+            raise HTTPException(status_code=500, detail="Failed to merge subjects")
+        finally:
+            if conn:
+                await conn.close()
+
+    # Update MongoDB
+    await db.scan_sessions.update_many(
+        {"subject_id": src_id, "teacher_id": user.user_id},
+        {"$set": {"subject_id": dest_id}}
+    )
+    await db.subjects.delete_one({"id": src_id, "teacher_id": user.user_id})
+    return {"status": "success", "merged_source_id": src_id, "destination_id": dest_id}
+
 
 
 # ==================== SCAN SESSIONS ROUTES ====================
