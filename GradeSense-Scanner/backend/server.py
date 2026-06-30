@@ -2122,6 +2122,25 @@ async def update_subject(subject_id: str, data: SubjectUpdateRequest, authorizat
         finally:
             if conn:
                 await conn.close()
+    else:
+        webapp_url = os.environ.get("WEBAPP_URL")
+        token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
+        if webapp_url and token != "sess_mock_token_12345":
+            try:
+                async with httpx.AsyncClient() as client_http:
+                    response = await client_http.patch(
+                        f"{webapp_url.rstrip('/')}/api/v1/subjects/{subject_id}",
+                        json={"name": new_name},
+                        headers={"Authorization": f"Bearer {token}", "Bypass-Tunnel-Reminder": "true"},
+                        timeout=15.0,
+                    )
+                    if response.status_code != 200:
+                        raise HTTPException(status_code=response.status_code, detail=response.text)
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error updating subject through webapp: {e}")
+                raise HTTPException(status_code=500, detail="Failed to update subject")
 
     # Update in MongoDB
     await db.subjects.update_one(
@@ -2166,6 +2185,24 @@ async def delete_subject(subject_id: str, authorization: Optional[str] = Header(
         finally:
             if conn:
                 await conn.close()
+    else:
+        webapp_url = os.environ.get("WEBAPP_URL")
+        token = authorization.replace("Bearer ", "") if authorization and authorization.startswith("Bearer ") else authorization
+        if webapp_url and token != "sess_mock_token_12345":
+            try:
+                async with httpx.AsyncClient() as client_http:
+                    response = await client_http.delete(
+                        f"{webapp_url.rstrip('/')}/api/v1/subjects/{subject_id}",
+                        headers={"Authorization": f"Bearer {token}", "Bypass-Tunnel-Reminder": "true"},
+                        timeout=15.0,
+                    )
+                    if response.status_code not in (200, 204):
+                        raise HTTPException(status_code=response.status_code, detail=response.text)
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error deleting subject through webapp: {e}")
+                raise HTTPException(status_code=500, detail="Failed to delete subject")
 
     # Update MongoDB
     await db.subjects.delete_one({"id": subject_id, "teacher_id": user.user_id})
