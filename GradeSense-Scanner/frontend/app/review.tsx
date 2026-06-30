@@ -400,6 +400,73 @@ export default function ReviewScreen() {
   const [isZipping, setIsZipping] = useState(false);
   const [zipProgressPercentage, setZipProgressPercentage] = useState(0);
 
+  const handleShowOptions = () => {
+    if (!session) return;
+    
+    const options: { text: string; onPress: () => void | Promise<void> }[] = [
+      {
+        text: 'Duplicate Draft',
+        onPress: async () => {
+          try {
+            const { duplicateSession } = useScanStore.getState();
+            const newSessionId = await duplicateSession(session.session_id);
+            Alert.alert(
+              'Draft Duplicated',
+              'A new duplicate draft has been created successfully. Would you like to switch to it now?',
+              [
+                { text: 'No', style: 'cancel' },
+                {
+                  text: 'Yes',
+                  onPress: () => {
+                    router.setParams({ sessionId: newSessionId });
+                  }
+                }
+              ]
+            );
+          } catch (err: any) {
+            Alert.alert('Duplication Failed', err.message || 'Could not duplicate draft.');
+          }
+        }
+      }
+    ];
+
+    if (isSynced) {
+      options.unshift({
+        text: 'Unlock Draft (Edit & Re-upload)',
+        onPress: () => {
+          Alert.alert(
+            'Unlock Draft?',
+            'This will unlock the local draft and allow you to scan more pages or change settings. You can then re-upload it. Continue?',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Unlock',
+                style: 'destructive',
+                onPress: () => {
+                  const { unlockSession } = useScanStore.getState();
+                  unlockSession(session.session_id);
+                  Alert.alert('Unlocked', 'The draft is now unlocked and editable.');
+                }
+              }
+            ]
+          );
+        }
+      });
+    }
+
+    Alert.alert(
+      'Draft Options',
+      'Manage this grading session draft.',
+      [
+        ...options.map(opt => ({
+          text: opt.text,
+          onPress: opt.onPress,
+        })),
+        { text: 'Cancel', style: 'cancel' }
+      ]
+    );
+  };
+
   const compileImagesToPdf = async (imageUris: string[], title: string): Promise<string> => {
     const imgHtmls = [];
     for (const uri of imageUris) {
@@ -817,12 +884,17 @@ export default function ReviewScreen() {
           </View>
           <Text style={styles.batchName}>{session.batch_name}</Text>
         </View>
-        {!isSynced && (
-          <TouchableOpacity onPress={() => router.push('/scanner')} style={styles.scanMoreBtn}>
-            <Ionicons name="camera-outline" size={18} color={COLORS.primary} />
-            <Text style={styles.scanMoreText}>Scan more</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          {!isSynced && (
+            <TouchableOpacity onPress={() => router.push('/scanner')} style={styles.scanMoreBtn}>
+              <Ionicons name="camera-outline" size={18} color={COLORS.primary} />
+              <Text style={styles.scanMoreText}>Scan more</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity onPress={handleShowOptions} style={styles.optionsBtn}>
+            <Ionicons name="ellipsis-vertical" size={20} color={COLORS.textPrimary} />
           </TouchableOpacity>
-        )}
+        </View>
       </View>
 
       {/* Quality summary bar */}
@@ -1258,5 +1330,10 @@ const styles = StyleSheet.create({
   diagLabel: {
     color: '#aaa',
     fontWeight: 'bold',
+  },
+  optionsBtn: {
+    padding: 8,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
   },
 });

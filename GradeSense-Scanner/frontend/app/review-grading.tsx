@@ -29,7 +29,7 @@ import { Image } from 'expo-image';
 import { COLORS, getBackendUrl } from '../src/config';
 import { useAuthStore } from '../src/store/authStore';
 import { useScanStore } from '../src/store/scanStore';
-import { fetchBatchStudents } from '../src/api/manage';
+import { fetchBatchStudents, shareExam } from '../src/api/manage';
 import { GradingControlPanel } from '../src/components/review/GradingControlPanel';
 import { PaperFileViewer, PaperFileViewerState } from '../src/components/review/PaperFileViewer';
 import { RubricReviewPanel } from '../src/components/review/RubricReviewPanel';
@@ -68,6 +68,29 @@ export default function ReviewGradingScreen() {
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
   const [isSharingIndividual, setIsSharingIndividual] = useState(false);
+  const [showShareExamModal, setShowShareExamModal] = useState(false);
+  const [shareEmail, setShareEmail] = useState('');
+  const [isSubmittingShare, setIsSubmittingShare] = useState(false);
+
+  const handleShareExam = async () => {
+    if (!examId || !token || !webappUrl) return;
+    const email = shareEmail.trim();
+    if (!email) {
+      Alert.alert('Email Required', 'Please enter a teacher email address.');
+      return;
+    }
+    setIsSubmittingShare(true);
+    try {
+      const res = await shareExam({ backendUrl: webappUrl, token, examId }, email);
+      setShowShareExamModal(false);
+      setShareEmail('');
+      Alert.alert('Success', res.message || `Exam successfully shared with ${email}`);
+    } catch (err: any) {
+      Alert.alert('Sharing Failed', err.message || 'Could not share the exam. Please check that the email belongs to a registered teacher.');
+    } finally {
+      setIsSubmittingShare(false);
+    }
+  };
 
   const handleShareIndividualReport = async () => {
     if (!activeSub || !token || !webappUrl) return;
@@ -867,6 +890,13 @@ export default function ReviewGradingScreen() {
           </Text>
         </View>
         <View style={styles.headerActions}>
+          <TouchableOpacity
+            style={[styles.headerIconBtn, { marginRight: 8 }]}
+            onPress={() => setShowShareExamModal(true)}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="person-add-outline" size={18} color={COLORS.primary} />
+          </TouchableOpacity>
           {isSharingIndividual ? (
             <ActivityIndicator size="small" color={COLORS.primary} style={{ marginRight: 8 }} />
           ) : (
@@ -1064,6 +1094,71 @@ export default function ReviewGradingScreen() {
         examName={sessionName || 'Exam'}
         token={token}
       />
+      <Modal
+        visible={showShareExamModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!isSubmittingShare) setShowShareExamModal(false);
+        }}
+      >
+        <TouchableOpacity
+          style={styles.modalCenteredOverlay}
+          activeOpacity={1}
+          onPress={() => {
+            if (!isSubmittingShare) setShowShareExamModal(false);
+          }}
+        >
+          <View style={styles.shareModalContent} onStartShouldSetResponder={() => true}>
+            <View style={styles.shareModalHeader}>
+              <Text style={styles.shareModalTitle}>Share Exam</Text>
+              <TouchableOpacity
+                onPress={() => setShowShareExamModal(false)}
+                disabled={isSubmittingShare}
+              >
+                <Ionicons name="close" size={22} color={COLORS.textLight} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.shareModalLabel}>
+              Share this exam with another teacher to collaborate and view results.
+            </Text>
+
+            <TextInput
+              style={styles.shareInput}
+              placeholder="teacher@school.com"
+              placeholderTextColor={COLORS.textMuted}
+              value={shareEmail}
+              onChangeText={setShareEmail}
+              keyboardType="email-address"
+              autoCapitalize="none"
+              autoCorrect={false}
+              editable={!isSubmittingShare}
+            />
+
+            <View style={styles.shareModalActions}>
+              <TouchableOpacity
+                style={[styles.shareBtn, styles.shareCancelBtn]}
+                onPress={() => setShowShareExamModal(false)}
+                disabled={isSubmittingShare}
+              >
+                <Text style={styles.shareCancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.shareBtn, styles.shareSubmitBtn]}
+                onPress={handleShareExam}
+                disabled={isSubmittingShare}
+              >
+                {isSubmittingShare ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.shareSubmitBtnText}>Share</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </TouchableOpacity>
+      </Modal>
       <Modal
         visible={isMergeModalVisible}
         transparent={true}
@@ -1538,5 +1633,83 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
     color: COLORS.text,
+  },
+  modalCenteredOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  shareModalContent: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 16,
+    padding: 20,
+    width: '90%',
+    maxWidth: 400,
+    alignSelf: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 5,
+  },
+  shareModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  shareModalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: COLORS.text,
+  },
+  shareModalLabel: {
+    fontSize: 14,
+    color: COLORS.textLight,
+    lineHeight: 20,
+    marginBottom: 16,
+  },
+  shareInput: {
+    backgroundColor: COLORS.backgroundDark,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: COLORS.text,
+    fontSize: 15,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginBottom: 20,
+  },
+  shareModalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+  },
+  shareBtn: {
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 80,
+  },
+  shareCancelBtn: {
+    backgroundColor: COLORS.backgroundDark,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  shareCancelBtnText: {
+    color: COLORS.text,
+    fontWeight: '600',
+    fontSize: 14,
+  },
+  shareSubmitBtn: {
+    backgroundColor: COLORS.primary,
+  },
+  shareSubmitBtnText: {
+    color: '#fff',
+    fontWeight: '600',
+    fontSize: 14,
   },
 });

@@ -14,6 +14,8 @@ export interface ManagedExam {
   gradedSubmissionCount: number;
   reviewReady: boolean;
   averagePercentage: number;
+  isShared: boolean;
+  ownerName: string | null;
 }
 
 export interface ManagedBatch {
@@ -181,6 +183,8 @@ export function normalizeManagedExams(rows: unknown): ManagedExam[] {
         gradedSubmissionCount: readNumber(item.gradedSubmissionCount ?? item.graded_submission_count),
         reviewReady: readBoolean(item.reviewReady ?? item.review_ready),
         averagePercentage: rounded(item.averagePercentage ?? item.average_percentage),
+        isShared: readBoolean(item.isShared ?? item.is_shared),
+        ownerName: readNullableString(item.ownerName ?? item.owner_name),
       };
     })
     .filter((item): item is ManagedExam => item !== null);

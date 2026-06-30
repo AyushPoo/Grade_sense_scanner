@@ -3,6 +3,7 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ScanSession, ScanPhase, ScannedPage, ScanSessionSettings, Batch, Subject } from '../types';
 import * as FileSystem from 'expo-file-system';
+import * as FileSystemLegacy from 'expo-file-system/legacy';
 import { getBackendUrl } from '../config';
 import { reconcileFetchedScanSessions } from '../utils/sessionReconciliation';
 import { fetchWithTimeout } from '../utils/fetchWithTimeout';
@@ -80,6 +81,8 @@ interface ScanState {
   clearCurrentSession: () => void;
   deleteSession: (sessionId: string) => Promise<void>;
   loadSession: (sessionId: string) => void;
+  unlockSession: (sessionId: string) => void;
+  duplicateSession: (sessionId: string) => Promise<string>;
   updatePageUrls: (
     sessionId: string,
     pageId: string,
@@ -830,6 +833,113 @@ export const useScanStore = create<ScanState>()(
             }
           }
         }
+      },
+
+      unlockSession: (sessionId: string) => {
+        set(state => {
+          const updatedSessions = state.savedSessions.map(s => {
+            if (s.session_id === sessionId) {
+              return {
+                ...s,
+                status: 'scanning' as const,
+                exam_id: undefined,
+              };
+            }
+            return s;
+          });
+          const current = state.currentSession?.session_id === sessionId
+            ? { ...state.currentSession, status: 'scanning' as const, exam_id: undefined }
+            : state.currentSession;
+          return {
+            savedSessions: updatedSessions,
+            currentSession: current,
+          };
+        });
+      },
+
+      duplicateSession: async (sessionId: string): Promise<string> => {
+        const { savedSessions } = get();
+        const session = savedSessions.find(s => s.session_id === sessionId);
+        if (!session) {
+          throw new Error('Session not found');
+        }
+
+        const newSessionId = `local_${generateUUID()}`;
+
+        const copyFileIfExists = async (originalUri: string | undefined): Promise<string | undefined> => {
+          if (!originalUri) return undefined;
+          try {
+            const fileExtension = originalUri.split('.').pop() || 'jpg';
+            const newUri = `${FileSystemLegacy.documentDirectory}gs_dup_${generateUUID()}.${fileExtension}`;
+            await FileSystemLegacy.copyAsync({
+              from: originalUri,
+              to: newUri
+            });
+            return newUri;
+          } catch (err) {
+            console.warn(`Failed to copy local file from ${originalUri}:`, err);
+            return originalUri;
+          }
+        };
+
+        const copyPage = async (p: ScannedPage): Promise<ScannedPage> => {
+          const file_path = await copyFileIfExists(p.file_path) || '';
+          const original_file_path = await copyFileIfExists(p.original_file_path);
+          const raw_file_path = await copyFileIfExists(p.raw_file_path);
+          return {
+            ...p,
+            id: generateUUID(),
+            file_path,
+            original_file_path,
+            raw_file_path,
+            sync_status: 'unsynced',
+          };
+        };
+
+        const questionPaperPages = session.question_paper?.pages
+          ? await Promise.all(session.question_paper.pages.map(p => copyPage(p)))
+          : [];
+        const modelAnswerPages = session.model_answer?.pages
+          ? await Promise.all(session.model_answer.pages.map(p => copyPage(p)))
+          : [];
+        const students = session.students
+          ? await Promise.all(session.students.map(async s => {
+              const pages = s.pages
+                ? await Promise.all(s.pages.map(p => copyPage(p)))
+                : [];
+              return {
+                ...s,
+                id: generateUUID(),
+                pages,
+              };
+            }))
+          : [];
+
+        const newSession: ScanSession = {
+          ...session,
+          session_id: newSessionId,
+          session_name: `${session.session_name} (Copy)`,
+          status: 'scanning',
+          exam_id: undefined,
+          created_at: new Date().toISOString(),
+          question_paper: {
+            ...session.question_paper,
+            pages: questionPaperPages,
+            page_count: questionPaperPages.length,
+          },
+          model_answer: {
+            ...session.model_answer,
+            pages: modelAnswerPages,
+            page_count: modelAnswerPages.length,
+          },
+          students,
+        };
+
+        set(state => ({
+          savedSessions: [newSession, ...state.savedSessions],
+        }));
+
+        return newSessionId;
       },
 
       updateSessionId: (oldId: string, newId: string) => {

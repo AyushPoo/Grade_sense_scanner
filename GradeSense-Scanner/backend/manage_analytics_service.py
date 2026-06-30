@@ -91,6 +91,8 @@ def build_managed_exams(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
             "gradedSubmissionCount": int(row.get("graded_submission_count") or 0),
             "reviewReady": is_review_ready_exam(row),
             "averagePercentage": round(float(row.get("average_percentage") or 0), 1),
+            "isShared": bool(row.get("is_shared")),
+            "ownerName": row.get("owner_name") or None,
         })
     return exams
 

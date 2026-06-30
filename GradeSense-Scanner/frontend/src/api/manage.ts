@@ -330,3 +330,21 @@ export async function regradeExam(
 
   return res.json();
 }
+
+export async function shareExam(
+  { backendUrl, token, examId }: ExamApiOptions,
+  email: string
+): Promise<{ status: string; message: string }> {
+  const res = await fetchWithTimeout(`${backendUrl}/api/v1/exams/${examId}/share`, {
+    method: 'POST',
+    headers: jsonHeaders(token),
+    body: JSON.stringify({ email }),
+  }, 20000);
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Status ${res.status}`);
+  }
+
+  return res.json();
+}

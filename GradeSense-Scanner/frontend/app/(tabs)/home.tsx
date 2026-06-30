@@ -482,7 +482,12 @@ export default function HomeScreen() {
       });
       if (res.ok) {
         const json = await res.json();
-        setExams((json.data || []).filter((exam: any) => isReviewReadyExam(exam)));
+        const mapped = (json.data || []).map((exam: any) => ({
+          ...exam,
+          isShared: exam.is_shared || false,
+          ownerName: exam.owner_name || null,
+        }));
+        setExams(mapped.filter((exam: any) => isReviewReadyExam(exam)));
       }
     } catch (err) {
       console.warn('Failed to fetch exams for home:', err);
@@ -812,9 +817,18 @@ export default function HomeScreen() {
                     <Ionicons name="checkbox-outline" size={20} color={COLORS.success} />
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.examName} numberOfLines={1}>{exam.name}</Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+                      <Text style={styles.examName} numberOfLines={1}>{exam.name}</Text>
+                      {exam.isShared && (
+                        <View style={styles.sharedBadge}>
+                          <Ionicons name="people" size={10} color={COLORS.primary} style={{ marginRight: 2 }} />
+                          <Text style={styles.sharedBadgeText}>Shared</Text>
+                        </View>
+                      )}
+                    </View>
                     <Text style={styles.examMeta}>
                       Marks: {exam.totalMarks || 100} • Date: {exam.examDate ? new Date(exam.examDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A'}
+                      {exam.isShared && ` • From: ${exam.ownerName || 'Collaborator'}`}
                     </Text>
                   </View>
                   <View style={styles.reviewBadge}>
@@ -1218,5 +1232,18 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     letterSpacing: 0.5,
+  },
+  sharedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.primaryXLight,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  sharedBadgeText: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: COLORS.primary,
   },
 });

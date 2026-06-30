@@ -107,6 +107,17 @@ logger = logging.getLogger(__name__)
 
 async def connect_to_neon_db(webapp_db_url: str, retries: int = 5, initial_delay: float = 1.0) -> asyncpg.Connection:
     import asyncio
+    from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
+    
+    try:
+        parsed = urlparse(webapp_db_url)
+        qsl = parse_qsl(parsed.query)
+        filtered_qsl = [(k, v) for k, v in qsl if k != 'uselibpqcompat']
+        parsed = parsed._replace(query=urlencode(filtered_qsl))
+        webapp_db_url = urlunparse(parsed)
+    except Exception as e:
+        logger.error(f"Error sanitizing database URL for asyncpg: {e}")
+
     for attempt in range(retries):
         try:
             conn = await asyncpg.connect(webapp_db_url, timeout=30)
@@ -4078,11 +4089,17 @@ async def get_exam_submissions_proxy(exam_id: str, authorization: Optional[str] 
                 LEFT JOIN student_invitations si ON si.accepted_by_user_id = s.student_id OR (s.student_id IS NULL AND si.roll_number = s.student_roll_number AND si.batch_id = e.batch_id)
                 WHERE s.exam_id = $1
                   AND COALESCE(s.status, '') <> 'deleted'
+                  AND (e.teacher_id = $2 OR EXISTS (
+                      SELECT 1 FROM exam_shares
+                      WHERE exam_id = e.id
+                        AND shared_with_teacher_id = $2
+                  ))
                 ORDER BY s.student_roll_number ASC NULLS LAST,
                          s.created_at ASC NULLS LAST,
                          s.id ASC
                 ''',
-                exam_id
+                exam_id,
+                user.user_id
             )
             await conn.close()
             submissions = []
@@ -4191,7 +4208,13 @@ async def get_submission_detail_proxy(submission_id: str, request: Request, auth
                     LIMIT 1
                 ) roster ON TRUE
                 LEFT JOIN student_invitations si ON si.accepted_by_user_id = rs.student_id OR (rs.student_id IS NULL AND si.roll_number = rs.student_roll_number AND si.batch_id = rs.batch_id)
-                WHERE rs.id = $1 AND rs.teacher_id = $2
+                WHERE rs.id = $1 
+                  AND (rs.teacher_id = $2 
+                       OR EXISTS (
+                           SELECT 1 FROM exam_shares 
+                           WHERE exam_id = rs.exam_id 
+                             AND shared_with_teacher_id = $2
+                       ))
                 ''',
                 submission_id,
                 user.user_id
@@ -4982,19 +5005,23 @@ async def fetch_managed_exam(conn, exam_id: str, teacher_id: str):
                e.results_published, e.published_at,
                COUNT(s.id) AS submission_count,
                COUNT(CASE WHEN s.status IN ('ai_graded', 'graded', 'reviewed', 'published') THEN 1 END) AS graded_submission_count,
-               AVG(s.percentage) AS average_percentage
+               AVG(s.percentage) AS average_percentage,
+               CASE WHEN e.teacher_id <> $2 THEN TRUE ELSE FALSE END AS is_shared,
+               own.name AS owner_name
         FROM exams e
         LEFT JOIN batches b ON b.id = e.batch_id
         LEFT JOIN subjects subj ON subj.id = e.subject_id
         LEFT JOIN submissions s ON s.exam_id = e.id
+        LEFT JOIN exam_shares es ON es.exam_id = e.id
+        LEFT JOIN users own ON own.id = e.teacher_id
         WHERE e.id = $1
-          AND e.teacher_id = $2
+          AND (e.teacher_id = $2 OR es.shared_with_teacher_id = $2)
           AND COALESCE(e.status, '') <> 'deleted'
           AND COALESCE(b.status, 'active') NOT IN ('archived', 'deleted')
         GROUP BY e.id, e.name, e.batch_id, e.subject_id, e.total_marks, e.exam_date, e.status,
                  b.name, subj.name,
                  e.grading_mode, e.grading_instructions, e.feedback_enabled,
-                 e.results_published, e.published_at, e.created_at
+                 e.results_published, e.published_at, e.created_at, own.name
         ''',
         exam_id,
         teacher_id
@@ -5053,18 +5080,22 @@ async def list_exams_v1(authorization: Optional[str] = Header(None)):
                        e.results_published, e.published_at,
                        COUNT(s.id) AS submission_count,
                        COUNT(CASE WHEN s.status IN ('ai_graded', 'graded', 'reviewed', 'published') THEN 1 END) AS graded_submission_count,
-                       AVG(s.percentage) AS average_percentage
+                       AVG(s.percentage) AS average_percentage,
+                       CASE WHEN e.teacher_id <> $1 THEN TRUE ELSE FALSE END AS is_shared,
+                       own.name AS owner_name
                 FROM exams e
                 LEFT JOIN batches b ON b.id = e.batch_id
                 LEFT JOIN subjects subj ON subj.id = e.subject_id
                 LEFT JOIN submissions s ON s.exam_id = e.id
-                WHERE e.teacher_id = $1
+                LEFT JOIN exam_shares es ON es.exam_id = e.id
+                LEFT JOIN users own ON own.id = e.teacher_id
+                WHERE (e.teacher_id = $1 OR es.shared_with_teacher_id = $1)
                   AND COALESCE(e.status, '') <> 'deleted'
                   AND COALESCE(b.status, 'active') NOT IN ('archived', 'deleted')
                 GROUP BY e.id, e.name, e.batch_id, e.subject_id, e.total_marks, e.exam_date, e.status,
                          b.name, subj.name,
                          e.grading_mode, e.grading_instructions, e.feedback_enabled,
-                         e.results_published, e.published_at, e.created_at
+                         e.results_published, e.published_at, e.created_at, own.name
                 ORDER BY e.created_at DESC
                 LIMIT 50
                 ''',
@@ -5092,6 +5123,72 @@ async def list_exams_v1(authorization: Optional[str] = Header(None)):
         for s in sessions
     ]
     return {"data": exams}
+
+
+class ShareExamRequest(BaseModel):
+    email: str
+
+
+@api_router.post("/v1/exams/{exam_id}/share")
+async def share_exam(exam_id: str, data: ShareExamRequest, authorization: Optional[str] = Header(None)):
+    """Share an exam with another teacher by email."""
+    user = await get_current_user(authorization)
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if not webapp_db_url:
+        raise HTTPException(status_code=503, detail="Webapp database is not configured")
+
+    email_to_share = data.email.strip().lower()
+    if not email_to_share:
+        raise HTTPException(status_code=400, detail="Email is required")
+
+    conn = None
+    try:
+        conn = await connect_to_neon_db(webapp_db_url)
+
+        # 1. Verify caller owns the exam
+        exam_row = await conn.fetchrow(
+            "SELECT id, teacher_id FROM exams WHERE id = $1 AND COALESCE(status, '') <> 'deleted'",
+            exam_id
+        )
+        if not exam_row:
+            raise HTTPException(status_code=404, detail="Exam not found")
+        if exam_row["teacher_id"] != user.user_id:
+            raise HTTPException(status_code=403, detail="Only the exam owner can share it")
+
+        # 2. Find target teacher by email
+        target_user = await conn.fetchrow(
+            "SELECT id, name FROM users WHERE LOWER(email) = $1 AND role = 'teacher'",
+            email_to_share
+        )
+        if not target_user:
+            raise HTTPException(status_code=404, detail="Teacher with this email not found")
+
+        if target_user["id"] == user.user_id:
+            raise HTTPException(status_code=400, detail="You cannot share an exam with yourself")
+
+        # 3. Create the share entry
+        share_id = generate_drizzle_id("exs_")
+        now = utc_now_text()
+        await conn.execute(
+            '''
+            INSERT INTO exam_shares (id, exam_id, shared_with_teacher_id, created_at)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (exam_id, shared_with_teacher_id) DO NOTHING
+            ''',
+            share_id,
+            exam_id,
+            target_user["id"],
+            now
+        )
+        return {"status": "success", "message": f"Exam successfully shared with {target_user['name']}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error sharing exam: {e}")
+        raise HTTPException(status_code=500, detail="Failed to share exam due to database error")
+    finally:
+        if conn:
+            await conn.close()
 
 
 @api_router.patch("/v1/exams/{exam_id}")
@@ -5365,7 +5462,13 @@ async def get_exam_review_settings(exam_id: str, authorization: Optional[str] = 
                 ORDER BY created_at DESC
                 LIMIT 1
             ) u ON TRUE
-            WHERE e.id = $1 AND e.teacher_id = $2
+            WHERE e.id = $1 
+              AND (e.teacher_id = $2 
+                   OR EXISTS (
+                       SELECT 1 FROM exam_shares 
+                       WHERE exam_id = e.id 
+                         AND shared_with_teacher_id = $2
+                   ))
             ''',
             exam_id,
             user.user_id
@@ -7349,12 +7452,36 @@ async def root():
     return {"message": "GradeSense Scanner API", "status": "healthy"}
 
 
+async def initialize_postgres_tables():
+    webapp_db_url = os.environ.get("WEBAPP_DB_URL")
+    if webapp_db_url:
+        conn = None
+        try:
+            conn = await connect_to_neon_db(webapp_db_url)
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS exam_shares (
+                    id TEXT PRIMARY KEY,
+                    exam_id TEXT NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+                    shared_with_teacher_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(exam_id, shared_with_teacher_id)
+                );
+            ''')
+            logger.info("Checked/created postgres tables successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize postgres tables: {e}")
+        finally:
+            if conn:
+                await conn.close()
+
+
 @app.on_event("startup")
 async def startup_db_client():
     try:
         await client.admin.command("ping")
         logger.info("Connected to MongoDB successfully")
         start_whatsapp_node_service()
+        await initialize_postgres_tables()
     except PyMongoError as exc:
         logger.exception("MongoDB ping failed during startup")
         raise RuntimeError("Failed to connect to MongoDB during startup") from exc
