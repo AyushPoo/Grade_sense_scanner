@@ -471,6 +471,16 @@ export default function HomeScreen() {
     [sessions]
   );
 
+  const inProgressExams = useMemo(() => {
+    return exams.filter(exam => {
+      if (isReviewReadyExam(exam)) return false;
+      const status = (exam.status || '').toLowerCase();
+      const hasActiveStatus = ['syncing', 'grading', 'processing', 'uploaded'].includes(status);
+      const isGradingSubmissions = exam.submissionCount > 0 && exam.gradedSubmissionCount < exam.submissionCount;
+      return hasActiveStatus || isGradingSubmissions;
+    });
+  }, [exams]);
+
   const fetchExams = useCallback(async () => {
     const token = useAuthStore.getState().sessionToken;
     const backendUrl = getBackendUrl();
@@ -487,7 +497,7 @@ export default function HomeScreen() {
           isShared: exam.is_shared || false,
           ownerName: exam.owner_name || null,
         }));
-        setExams(mapped.filter((exam: any) => isReviewReadyExam(exam)));
+        setExams(mapped);
       }
     } catch (err) {
       console.warn('Failed to fetch exams for home:', err);
@@ -511,6 +521,36 @@ export default function HomeScreen() {
       .catch(() => {});
   }, [fadeAnim, fetchExams, fetchSessions]);
 
+  const itemsToPoll = useMemo(() => {
+    const list: { key: string; examId: string; isLocal: boolean; name: string }[] = [];
+    
+    // 1. Add local sessions
+    pollingSessions.forEach(s => {
+      if (s.exam_id) {
+        list.push({
+          key: s.session_id,
+          examId: String(s.exam_id),
+          isLocal: true,
+          name: s.session_name,
+        });
+      }
+    });
+
+    // 2. Add backend-only in-progress exams
+    inProgressExams.forEach(e => {
+      if (!list.some(item => item.examId === String(e.id))) {
+        list.push({
+          key: String(e.id),
+          examId: String(e.id),
+          isLocal: false,
+          name: e.name,
+        });
+      }
+    });
+
+    return list;
+  }, [pollingSessions, inProgressExams]);
+
   // Poll active grading jobs
   useEffect(() => {
     let active = true;
@@ -518,13 +558,13 @@ export default function HomeScreen() {
     const webappUrl = getBackendUrl();
     if (!token || !webappUrl) return;
 
-    if (pollingSessions.length === 0) return;
+    if (itemsToPoll.length === 0) return;
 
     const pollJobs = async () => {
       const updates = await Promise.all(
-        pollingSessions.map(async session => {
+        itemsToPoll.map(async item => {
           try {
-            const res = await fetch(`${webappUrl}/api/v1/exams/${session.exam_id}/jobs`, {
+            const res = await fetch(`${webappUrl}/api/v1/exams/${item.examId}/jobs`, {
               headers: { 'Authorization': `Bearer ${token}`, 'Bypass-Tunnel-Reminder': 'true' }
             });
             if (!res.ok) return null;
@@ -534,7 +574,7 @@ export default function HomeScreen() {
             const job = gradingJobs.find((j: any) => j.status !== 'completed') || gradingJobs[0];
             if (!job) return null;
             return {
-              sessionId: session.session_id,
+              key: item.key,
               progress: {
                 progress: job.progress,
                 processed: job.processedItems ?? job.processed_items ?? 0,
@@ -552,7 +592,7 @@ export default function HomeScreen() {
 
       if (!active) return;
       const validUpdates = updates.filter(Boolean) as {
-        sessionId: string;
+        key: string;
         progress: { progress: number; processed: number; total: number; status: string; type?: string; error?: string | null };
       }[];
       if (!validUpdates.length) return;
@@ -560,16 +600,16 @@ export default function HomeScreen() {
       setGradingProgress(prev => {
         const next = { ...prev };
         validUpdates.forEach(update => {
-          next[update.sessionId] = update.progress;
+          next[update.key] = update.progress;
         });
         return next;
       });
 
       validUpdates.forEach(update => {
-        const session = pollingSessions.find(item => item.session_id === update.sessionId);
-        if (!session?.exam_id) return;
+        const item = itemsToPoll.find(p => p.key === update.key);
+        if (!item) return;
 
-        const examId = String(session.exam_id);
+        const examId = item.examId;
         if (
           isActualGradingJob(update.progress)
           && !isCompletedGradingJob(update.progress)
@@ -577,7 +617,7 @@ export default function HomeScreen() {
         ) {
           notifyGradingProgress(
             examId,
-            session.session_name,
+            item.name,
             update.progress.processed,
             update.progress.total,
             update.progress.progress,
@@ -589,7 +629,7 @@ export default function HomeScreen() {
         if (completedJobRefreshRef.current.has(examId)) return;
         completedJobRefreshRef.current.add(examId);
 
-        notifyGradingCompleteOnce(examId, session.session_name).catch(() => {});
+        notifyGradingCompleteOnce(examId, item.name).catch(() => {});
         fetchExams().catch(() => {});
         fetchSessions().catch(() => {});
       });
@@ -598,7 +638,7 @@ export default function HomeScreen() {
     pollJobs();
     const interval = setInterval(pollJobs, 2000);
     return () => { active = false; clearInterval(interval); };
-  }, [pollingSessions]);
+  }, [itemsToPoll]);
 
   // Periodic session status polling fail-safe (every 15s)
   useEffect(() => {
@@ -637,21 +677,68 @@ export default function HomeScreen() {
   };
 
   const firstName = user?.name?.split(' ')[0] || 'Teacher';
-  const visibleStatusSessions = sessions.filter(session => {
-    const job = gradingProgress[session.session_id] || (session.grading_job_id ? {
-      id: session.grading_job_id,
-      type: session.grading_job_type || 'grade_submissions',
-      status: session.grading_status || 'completed',
-      progress: session.grading_progress || 100.0,
-      processedItems: session.grading_processed_items || 0,
-      totalItems: session.grading_total_items || 0,
-    } : null);
+  const visibleProgressItems = useMemo(() => {
+    const list: any[] = [];
 
-    return shouldShowGradingStatus(session, job) &&
-      (!session.exam_id || !dismissedExamIds.includes(String(session.exam_id))) &&
-      !dismissedSessionIds.includes(session.session_id);
-  });
-  const readyExams = exams.filter(exam => !dismissedExamIds.includes(String(exam.id)));
+    // 1. Local active sessions
+    sessions.forEach(session => {
+      const job = gradingProgress[session.session_id] || (session.grading_job_id ? {
+        id: session.grading_job_id,
+        type: session.grading_job_type || 'grade_submissions',
+        status: session.grading_status || 'completed',
+        progress: session.grading_progress || 100.0,
+        processedItems: session.grading_processed_items || 0,
+        totalItems: session.grading_total_items || 0,
+      } : null);
+
+      if (
+        shouldShowGradingStatus(session, job) &&
+        (!session.exam_id || !dismissedExamIds.includes(String(session.exam_id))) &&
+        !dismissedSessionIds.includes(session.session_id)
+      ) {
+        list.push({
+          isLocal: true,
+          id: session.session_id,
+          sessionName: session.session_name,
+          examId: session.exam_id,
+          session: session,
+          job: job,
+        });
+      }
+    });
+
+    // 2. Webapp-only active exams
+    inProgressExams.forEach(exam => {
+      if (list.some(item => item.examId === String(exam.id))) {
+        return;
+      }
+      
+      if (dismissedExamIds.includes(String(exam.id))) {
+        return;
+      }
+
+      const job = gradingProgress[String(exam.id)] || null;
+      
+      const mockSession = {
+        session_id: String(exam.id),
+        session_name: exam.name,
+        status: 'grading',
+        exam_id: exam.id,
+      };
+
+      list.push({
+        isLocal: false,
+        id: String(exam.id),
+        sessionName: exam.name,
+        examId: exam.id,
+        session: mockSession,
+        job: job,
+      });
+    });
+
+    return list;
+  }, [sessions, inProgressExams, gradingProgress, dismissedExamIds, dismissedSessionIds]);
+  const readyExams = exams.filter(exam => isReviewReadyExam(exam) && !dismissedExamIds.includes(String(exam.id)));
 
   const dismissSession = async (sessionId: string) => {
     const nextDismissed = Array.from(new Set([...dismissedSessionIds, sessionId]));
@@ -767,31 +854,41 @@ export default function HomeScreen() {
         </View>
 
         {/* Grading Progress Cards */}
-        {visibleStatusSessions.length > 0 && (
+        {visibleProgressItems.length > 0 && (
           <View style={styles.section}>
             <Text style={styles.sectionLabel}>GRADING STATUS</Text>
             <View style={styles.cardList}>
-              {visibleStatusSessions
+              {visibleProgressItems
                 .slice(0, 3)
-                .map(session => {
-                  const job = gradingProgress[session.session_id] || (session.grading_job_id ? {
-                    id: session.grading_job_id,
-                    type: session.grading_job_type || 'grade_submissions',
-                    status: session.grading_status || 'completed',
-                    progress: session.grading_progress || 100.0,
-                    processedItems: session.grading_processed_items || 0,
-                    totalItems: session.grading_total_items || 0,
-                  } : null);
-                  const isComplete = isCompletedGradingJob(job);
+                .map(item => {
+                  const isComplete = isCompletedGradingJob(item.job);
                   return (
                     <GradingProgressCard
-                      key={session.session_id}
-                      session={session}
-                      job={job}
-                      onRetry={() => retryGrading(session)}
-                      isRetrying={retryingExamIds.includes(String(session.exam_id))}
-                      onPress={isComplete ? () => openCompletedGradingSession(session) : undefined}
-                      onDismiss={() => dismissSession(session.session_id)}
+                      key={item.id}
+                      session={item.session}
+                      job={item.job}
+                      onRetry={item.examId ? () => retryGrading(item.session) : undefined}
+                      isRetrying={item.examId ? retryingExamIds.includes(String(item.examId)) : false}
+                      onPress={isComplete ? () => {
+                        if (item.isLocal) {
+                          openCompletedGradingSession(item.session);
+                        } else {
+                          router.push({
+                            pathname: '/review-grading' as any,
+                            params: { examId: item.examId, sessionName: item.sessionName }
+                          });
+                        }
+                      } : undefined}
+                      onDismiss={() => {
+                        if (item.isLocal) {
+                          dismissSession(item.session.session_id);
+                        } else {
+                          const examId = String(item.examId);
+                          const nextDismissed = Array.from(new Set([...dismissedExamIds, examId]));
+                          setDismissedExamIds(nextDismissed);
+                          AsyncStorage.setItem('gradesense.dismissedReviewExamIds', JSON.stringify(nextDismissed)).catch(() => {});
+                        }
+                      }}
                     />
                   );
                 })}

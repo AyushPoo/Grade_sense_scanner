@@ -290,7 +290,7 @@ export default function PagePreviewScreen() {
     if (isPdfScannedPage(currentPage)) return;
     if (currentPage.filter_mode === filter) return;
 
-    // Use original if available, else current (though without original, non-destructive is hard)
+    // Use original if available (non-destructive: always apply from the pristine crop)
     const sourceUri = currentPage.original_file_path || currentPage.file_path;
 
     setIsApplyingFilter(true);
@@ -308,9 +308,50 @@ export default function PagePreviewScreen() {
       }
 
       if (verified) {
-        const phaseToUse = phase || currentPhase;
-        const studentIdx = studentIndex ? parseInt(studentIndex) : undefined;
-        updatePagePathAndFilter(currentPage.id, phaseToUse, studentIdx, dest.uri, filter);
+        // Use direct Zustand state update (identical to replaceCurrentPage pattern) so
+        // that it correctly targets the session being viewed, not just currentSession.
+        const targetSessionId = session?.session_id;
+        const phaseToUse = (phase || currentPhase) as ScanPhase;
+        const studentIdx = studentIndex ? parseInt(studentIndex) : currentStudentIndex;
+
+        const updatedPage = {
+          ...currentPage,
+          file_path: dest.uri,
+          filter_mode: filter,
+        };
+
+        useScanStore.setState(state => {
+          const updateSession = (s: typeof state.currentSession) => {
+            if (!s || s.session_id !== targetSessionId) return s;
+            if (phaseToUse === 'question_paper') {
+              const pages = [...s.question_paper.pages];
+              const idx = pages.findIndex(p => p.id === updatedPage.id);
+              if (idx < 0) return s;
+              pages[idx] = updatedPage;
+              return { ...s, question_paper: { ...s.question_paper, pages } };
+            }
+            if (phaseToUse === 'model_answer') {
+              const pages = [...s.model_answer.pages];
+              const idx = pages.findIndex(p => p.id === updatedPage.id);
+              if (idx < 0) return s;
+              pages[idx] = updatedPage;
+              return { ...s, model_answer: { ...s.model_answer, pages } };
+            }
+            const students = [...s.students];
+            const student = students[studentIdx];
+            if (!student) return s;
+            const pages = [...student.pages];
+            const idx = pages.findIndex(p => p.id === updatedPage.id);
+            if (idx < 0) return s;
+            pages[idx] = updatedPage;
+            students[studentIdx] = { ...student, pages };
+            return { ...s, students };
+          };
+          return {
+            savedSessions: state.savedSessions.map(s => updateSession(s) || s),
+            currentSession: updateSession(state.currentSession),
+          };
+        });
       } else {
          Alert.alert('Error', 'Failed to save filtered image.');
       }
@@ -321,6 +362,7 @@ export default function PagePreviewScreen() {
       setIsApplyingFilter(false);
     }
   };
+
 
   const handleRetake = () => {
     Alert.alert(

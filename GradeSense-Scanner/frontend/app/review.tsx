@@ -1066,6 +1066,7 @@ export default function ReviewScreen() {
       {cropTarget && (cropTarget.page.raw_file_path || cropTarget.page.file_path) && (
         <View style={StyleSheet.absoluteFill}>
           <CropOverlay
+            key={cropTarget.page.id}
             imageUri={cropTarget.page.raw_file_path || cropTarget.page.file_path}
             initialQuad={cropTarget.page.crop_quad}
             onCancel={() => setCropTarget(null)}

@@ -890,13 +890,6 @@ export default function ReviewGradingScreen() {
           </Text>
         </View>
         <View style={styles.headerActions}>
-          <TouchableOpacity
-            style={[styles.headerIconBtn, { marginRight: 8 }]}
-            onPress={() => setShowShareExamModal(true)}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="person-add-outline" size={18} color={COLORS.primary} />
-          </TouchableOpacity>
           {isSharingIndividual ? (
             <ActivityIndicator size="small" color={COLORS.primary} style={{ marginRight: 8 }} />
           ) : (
@@ -1094,71 +1087,7 @@ export default function ReviewGradingScreen() {
         examName={sessionName || 'Exam'}
         token={token}
       />
-      <Modal
-        visible={showShareExamModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => {
-          if (!isSubmittingShare) setShowShareExamModal(false);
-        }}
-      >
-        <TouchableOpacity
-          style={styles.modalCenteredOverlay}
-          activeOpacity={1}
-          onPress={() => {
-            if (!isSubmittingShare) setShowShareExamModal(false);
-          }}
-        >
-          <View style={styles.shareModalContent} onStartShouldSetResponder={() => true}>
-            <View style={styles.shareModalHeader}>
-              <Text style={styles.shareModalTitle}>Share Exam</Text>
-              <TouchableOpacity
-                onPress={() => setShowShareExamModal(false)}
-                disabled={isSubmittingShare}
-              >
-                <Ionicons name="close" size={22} color={COLORS.textLight} />
-              </TouchableOpacity>
-            </View>
 
-            <Text style={styles.shareModalLabel}>
-              Share this exam with another teacher to collaborate and view results.
-            </Text>
-
-            <TextInput
-              style={styles.shareInput}
-              placeholder="teacher@school.com"
-              placeholderTextColor={COLORS.textMuted}
-              value={shareEmail}
-              onChangeText={setShareEmail}
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoCorrect={false}
-              editable={!isSubmittingShare}
-            />
-
-            <View style={styles.shareModalActions}>
-              <TouchableOpacity
-                style={[styles.shareBtn, styles.shareCancelBtn]}
-                onPress={() => setShowShareExamModal(false)}
-                disabled={isSubmittingShare}
-              >
-                <Text style={styles.shareCancelBtnText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.shareBtn, styles.shareSubmitBtn]}
-                onPress={handleShareExam}
-                disabled={isSubmittingShare}
-              >
-                {isSubmittingShare ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Text style={styles.shareSubmitBtnText}>Share</Text>
-                )}
-              </TouchableOpacity>
-            </View>
-          </View>
-        </TouchableOpacity>
-      </Modal>
       <Modal
         visible={isMergeModalVisible}
         transparent={true}

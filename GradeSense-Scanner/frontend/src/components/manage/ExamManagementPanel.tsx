@@ -18,6 +18,7 @@ interface Props {
   onAddPapers: (exam: ManagedExam) => void;
   onEditExam: (exam: ManagedExam) => void;
   onExport: (exam: ManagedExam) => void;
+  onShare: (exam: ManagedExam) => void;
 }
 
 function StatusBadge({ exam }: { exam: ManagedExam }) {
@@ -70,6 +71,7 @@ function ExamCard({
   onAddPapers,
   onEditExam,
   onExport,
+  onShare,
 }: {
   exam: ManagedExam;
   isProcessing: boolean;
@@ -80,6 +82,7 @@ function ExamCard({
   onAddPapers: (exam: ManagedExam) => void;
   onEditExam: (exam: ManagedExam) => void;
   onExport: (exam: ManagedExam) => void;
+  onShare: (exam: ManagedExam) => void;
 }) {
   return (
     <View style={styles.examCard}>
@@ -143,6 +146,12 @@ function ExamCard({
               onPress={() => onExport(exam)}
             />
             <ActionButton
+              icon="person-add-outline"
+              label="Share"
+              color={COLORS.primary}
+              onPress={() => onShare(exam)}
+            />
+            <ActionButton
               icon="lock-closed-outline"
               label="Close"
               color={COLORS.warning}
@@ -180,6 +189,7 @@ export function ExamManagementPanel({
   onAddPapers,
   onEditExam,
   onExport,
+  onShare,
 }: Props) {
   const [searchQuery, setSearchQuery] = React.useState('');
   const [selectedBatch, setSelectedBatch] = React.useState('All');
@@ -554,6 +564,7 @@ export function ExamManagementPanel({
             onAddPapers={onAddPapers}
             onEditExam={onEditExam}
             onExport={onExport}
+            onShare={onShare}
           />
         ))
       )}

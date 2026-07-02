@@ -43,6 +43,7 @@ import {
   updateManagedExam,
   replaceExamFile,
   regradeExam,
+  shareExam,
 } from '../../src/api/manage';
 import { AnalyticsPerformancePanel } from '../../src/components/manage/AnalyticsPerformancePanel';
 import { ExamManagementPanel } from '../../src/components/manage/ExamManagementPanel';
@@ -203,6 +204,33 @@ export default function ManageScreen() {
     setExportExamId(exam.id);
     setExportExamName(exam.name);
     setShowExportModal(true);
+  };
+
+  // Share states
+  const [sharingExam, setSharingExam] = useState<ManagedExam | null>(null);
+  const [shareEmail, setShareEmail] = useState('');
+  const [isSubmittingShare, setIsSubmittingShare] = useState(false);
+
+  const handleShareExam = async () => {
+    if (!sharingExam) return;
+    const email = shareEmail.trim();
+    if (!email) {
+      Alert.alert('Error', 'Please enter an email address.');
+      return;
+    }
+    
+    setIsSubmittingShare(true);
+    const backendUrl = getBackendUrl();
+    try {
+      const res = await shareExam({ backendUrl, token: token || '', examId: sharingExam.id }, email);
+      setSharingExam(null);
+      setShareEmail('');
+      Alert.alert('Success', res.message || `Exam successfully shared with ${email}`);
+    } catch (err: any) {
+      Alert.alert('Sharing Failed', err.message || 'Could not share the exam. Please check that the email belongs to a registered teacher.');
+    } finally {
+      setIsSubmittingShare(false);
+    }
   };
   // Classroom Management States
   const [batches, setBatches] = useState<Batch[]>([]);
@@ -1086,6 +1114,7 @@ export default function ManageScreen() {
               onAddPapers={handleAddPapers}
               onEditExam={handleEditExam}
               onExport={handleExportExam}
+              onShare={setSharingExam}
             />
           ) : activeTab === 'classroom' ? (
             // ==================== CLASSROOM MANAGEMENT VIEW ====================
@@ -1582,6 +1611,59 @@ export default function ManageScreen() {
               </View>
             </View>
           </KeyboardAvoidingView>
+        </View>
+      </Modal>
+
+      {/* Share Exam Modal */}
+      <Modal
+        visible={Boolean(sharingExam)}
+        transparent
+        animationType="slide"
+        onRequestClose={() => {
+          if (!isSubmittingShare) setSharingExam(null);
+        }}
+      >
+        <View style={modalStyles.backdrop}>
+          <View style={modalStyles.sheet}>
+            <View style={modalStyles.handle} />
+            <Text style={modalStyles.sheetTitle}>Share Exam</Text>
+            <Text style={modalStyles.sheetSub}>
+              Share this exam with another teacher to collaborate and view results.
+            </Text>
+
+            <TextInput
+              style={modalStyles.input}
+              placeholder="teacher@school.com"
+              placeholderTextColor={COLORS.textMuted}
+              value={shareEmail}
+              onChangeText={setShareEmail}
+              keyboardType="email-address"
+              autoCapitalize="none"
+              autoCorrect={false}
+              editable={!isSubmittingShare}
+            />
+
+            <View style={modalStyles.buttons}>
+              <TouchableOpacity
+                style={[modalStyles.btn, modalStyles.cancelBtn]}
+                onPress={() => setSharingExam(null)}
+                disabled={isSubmittingShare}
+              >
+                <Text style={modalStyles.cancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[modalStyles.btn, modalStyles.saveBtn, isSubmittingShare && { opacity: 0.7 }]}
+                onPress={handleShareExam}
+                disabled={isSubmittingShare}
+              >
+                {isSubmittingShare ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={modalStyles.saveText}>Share</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
         </View>
       </Modal>
     </SafeAreaView>

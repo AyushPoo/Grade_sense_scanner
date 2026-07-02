@@ -134,7 +134,7 @@ export function CropOverlay({ imageUri, initialQuad, onCropComplete, onCancel }:
             setPoints(q);
             pointsRef.current = q;
         }
-    }, [imageDims, SCREEN_WIDTH, SCREEN_HEIGHT]);  // re-run when imageDims or screen dimensions change
+    }, [imageDims, SCREEN_WIDTH, SCREEN_HEIGHT, initialQuad]);  // re-run when imageDims, screen dimensions, or initialQuad changes
 
     // One PanResponder that handles a corner or edge based on activeCornerRef
     const panResponder = useMemo(() => PanResponder.create({
